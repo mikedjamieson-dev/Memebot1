@@ -336,4 +336,5 @@ app.listen(PORT, function() {
   console.log('MemeBot V11 Server running on port ' + PORT);
   connectPump();
   fetchAll();
+  setTimeout(startBot, 5000);
 });
