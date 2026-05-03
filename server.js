@@ -9,7 +9,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 const CFG = {
-  MIN_SCORE: 68, SOL_GAS: 0.001, MAX_POS: 0.08, MAX_OPEN: 4,
+  MIN_SCORE: 75, SOL_GAS: 0.001, MAX_POS: 0.08, MAX_OPEN: 4,
   TRAIL_ACT: 0.05, TRAIL_PB: 0.02, WIN_BASE: 0.38, WIN_MAX: 0.52,
   LOSS_LIM: 0.10, POOL_MAX: 5000
 };
