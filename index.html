@@ -232,7 +232,7 @@ var tpDescs={
   '50':'🚀 50%: Aggressive target — let winners run to 2x',
   '75':'🚀 75%: High conviction — only for strong signals',
   '100':'💎 100%: Diamond hands — doubles or stop-loss',
-  'TRAIL':'📈 Trail: activates at +5%, exits on 2% pullback from peak ',
+  'TRAIL':'📈 Trail: captures 15–55% of move, exits on pullback',
   'AI':'🤖 AI: Dynamic — adapts target based on momentum & score'
 };
 function setTP(mode){
@@ -306,7 +306,7 @@ function estimateLivePnL(trade){
 
 async function fetchState(){
   try{
-    var res=await fetch('https://memebot1.onrender.com/api/state')
+    var res=await fetch('/api/state');
     if(!res.ok)throw new Error('HTTP '+res.status);
     var data=await res.json();
     botRunning=data.running;
