@@ -306,7 +306,7 @@ function estimateLivePnL(trade){
 
 async function fetchState(){
   try{
-    var res=await fetch('/api/state');
+    var res=await fetch('https://memebot1.onrender.com/api/state')
     if(!res.ok)throw new Error('HTTP '+res.status);
     var data=await res.json();
     botRunning=data.running;
