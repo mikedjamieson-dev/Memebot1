@@ -493,7 +493,7 @@ function score(t) {
 
     // Safety penalties
     if (t.bsr < 0.5) { s = Math.floor(s * 0.30); flags.push('Heavy sell'); }
-    if (t.liq < 2000) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
+    if (t.liq < 500) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
 
     return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
   }
