@@ -22,8 +22,8 @@ const CFG = {
   TRAIL_PB: 0.25,    // exit if price pulls back 25% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
   POOL_MAX: 10000,   // increased pool size
-  PRICE_INTERVAL: 1000,  // check prices every 1 second
-  SCAN_INTERVAL: 1000,   // scan for new trades every 1 second
+  PRICE_INTERVAL: 500,  // check prices every 1 second
+  SCAN_INTERVAL: 500,   // scan for new trades every 1 second
 };
 
 // ── STATE ─────────────────────────────────────────────────────
@@ -518,10 +518,12 @@ async function runScan() {
 
   if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
 
-  if (sc < CFG.MIN_SCORE) {
+  // Fresh Pump.fun launches under 1 min get a lower threshold
+  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 60 : CFG.MIN_SCORE;
+  if (sc < minScore) {
     S.rejectCount++;
     var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
-    log('SKIP ' + tok.n + ' ' + src + ' - Score ' + sc + '/' + CFG.MIN_SCORE + ' | ' + why, 'reject');
+    log('SKIP ' + tok.n + ' ' + src + ' - Score ' + sc + '/' + minScore + ' | ' + why, 'reject');
     return;
   }
 
