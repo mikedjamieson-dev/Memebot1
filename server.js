@@ -11,6 +11,8 @@ const PORT = process.env.PORT || 3000;
 // ── API KEYS ──────────────────────────────────────────────────
 const HELIUS_KEY = '04d7d86a-48da-45db-8364-1c57d40fc4b1';
 const HELIUS_URL = 'https://mainnet.helius-rpc.com/?api-key=' + HELIUS_KEY;
+const LUNAR_KEY = 'wzejf56fq9a5oamkc8qo6f7lpmot9qa4qoc8lpv';
+const LUNAR_URL = 'https://lunarcrush.com/api4/public';
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CFG = {
@@ -22,8 +24,8 @@ const CFG = {
   TRAIL_PB: 0.25,    // exit if price pulls back 25% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
   POOL_MAX: 10000,   // increased pool size
-  PRICE_INTERVAL: 500,  // check prices every 1 second
-  SCAN_INTERVAL: 500,   // scan for new trades every 1 second
+  PRICE_INTERVAL: 500,  // check prices every 500ms
+  SCAN_INTERVAL: 500,   // scan for new trades every 500ms
 };
 
 // ── STATE ─────────────────────────────────────────────────────
@@ -117,6 +119,42 @@ async function getHeliusTokenData(mintAddress) {
     var data = await res.json();
     return data.result || null;
   } catch(e) { return null; }
+}
+
+// ── LUNARCRUSH SOCIAL DATA ────────────────────────────────────
+// Cache social scores to avoid hammering the API
+var lunarCache = {}; // symbol -> { score, ts }
+var lunarTrending = []; // list of trending symbols from LunarCrush
+
+async function fetchLunarTrending() {
+  try {
+    var res = await fetch(LUNAR_URL + '/coins/list/v1?sort=galaxy_score&limit=50&key=' + LUNAR_KEY, { timeout: 8000 });
+    if (!res.ok) throw new Error();
+    var data = await res.json();
+    var coins = data.data || [];
+    lunarTrending = [];
+    coins.forEach(function(c) {
+      var sym = (c.symbol || '').toUpperCase();
+      var score = c.galaxy_score || 0;
+      var mentions = c.social_score || 0;
+      lunarCache[sym] = { score, mentions, ts: Date.now() };
+      lunarTrending.push(sym);
+    });
+    S.sources['LUNAR'] = 'live:' + lunarTrending.length;
+    log('LunarCrush: ' + lunarTrending.length + ' trending coins loaded', 'info');
+  } catch(e) { S.sources['LUNAR'] = 'dead'; }
+}
+
+function getLunarScore(symbol) {
+  var sym = (symbol || '').toUpperCase();
+  var cached = lunarCache[sym];
+  if (!cached) return 0;
+  // Galaxy score 0-100 — map to 0-15 bonus points
+  return Math.floor((cached.score / 100) * 15);
+}
+
+function isLunarTrending(symbol) {
+  return lunarTrending.indexOf((symbol || '').toUpperCase()) >= 0;
 }
 
 // ── GECKO TERMINAL (free, no key) ─────────────────────────────
@@ -426,35 +464,65 @@ function closeTradeReal(id, reason) {
 // ── SCORING ───────────────────────────────────────────────────
 function score(t) {
   var s = 0, pos = [], neg = [], flags = [];
+  var freshLaunch = (t.src === 'WS' && t.age < 0.017); // under 1 min old
 
-  // Liquidity score — real data from DexScreener/Gecko
+  // ── FRESH PUMP.FUN LAUNCH SCORING ──
+  // New launches have no history — judge purely on launch signals
+  if (freshLaunch) {
+    // Buy pressure at launch (most important signal)
+    var bp2 = t.bsr > 4 ? 35 : t.bsr > 3 ? 30 : t.bsr > 2 ? 25 : t.bsr > 1.5 ? 20 : t.bsr > 1 ? 10 : 0;
+    s += bp2;
+    if (bp2 >= 30) pos.push('Strong launch buys ' + t.bsr.toFixed(1) + 'x');
+    else if (bp2 >= 20) pos.push('Good launch buys ' + t.bsr.toFixed(1) + 'x');
+    else if (bp2 === 0) neg.push('No buy pressure');
+
+    // Initial liquidity
+    var lp2 = t.liq > 50000 ? 20 : t.liq > 20000 ? 15 : t.liq > 10000 ? 10 : t.liq > 5000 ? 5 : 0;
+    s += lp2;
+    if (lp2 >= 15) pos.push('Good launch liq $' + (t.liq/1000).toFixed(0) + 'k');
+    else if (lp2 === 0) neg.push('Low launch liq');
+
+    // Live launch bonus
+    s += 25;
+    pos.push('LIVE LAUNCH ⚡');
+
+    // LunarCrush social bonus
+    var lscore = getLunarScore(t.n);
+    if (lscore > 0) { s += lscore; pos.push('Social buzz +' + lscore); }
+    if (isLunarTrending(t.n)) { s += 10; pos.push('🔥 TRENDING'); }
+
+    // Safety penalties
+    if (t.bsr < 0.5) { s = Math.floor(s * 0.30); flags.push('Heavy sell'); }
+    if (t.liq < 2000) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
+
+    return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
+  }
+
+  // ── STANDARD SCORING for established tokens ──
+
+  // Liquidity
   var lp = t.liq > 2e6 ? 25 : t.liq > 5e5 ? 20 : t.liq > 1e5 ? 14 : t.liq > 3e4 ? 9 : t.liq > 1e4 ? 5 : t.liq > 2000 ? 2 : 0;
   s += lp;
   if (lp >= 20) pos.push('Deep liq $' + (t.liq/1000).toFixed(0) + 'k');
   else if (lp >= 9) pos.push('Liq $' + (t.liq/1000).toFixed(0) + 'k');
   else if (lp < 2) neg.push('Micro liq');
 
-  // Volume ratio — skip for fresh Pump.fun launches under 1 minute old
-  var freshLaunch = (t.src === 'WS' && t.age < 0.017);
-  if (!freshLaunch) {
+  // Volume ratio
   var vr = t.vol1 / Math.max(t.vol24/24, 1);
   var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
   s += vp;
   if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
   else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
   else if (vp === 0) neg.push('Vol declining');
-  } else {
-    pos.push('NEW LAUNCH <1min');
-  }
 
-  // Buy/sell ratio — real transaction data
+  // Buy/sell ratio
   var bp = t.bsr > 3 ? 20 : t.bsr > 2 ? 16 : t.bsr > 1.5 ? 11 : t.bsr > 1.2 ? 7 : t.bsr > 1 ? 3 : 0;
   s += bp;
   if (bp >= 16) pos.push('Buys ' + t.bsr.toFixed(1) + 'x');
   else if (bp >= 11) pos.push('Buying ' + t.bsr.toFixed(1) + 'x');
   else if (bp === 0) neg.push('Selling');
 
-  // Price momentum — real price change data
+  // Price momentum
   var mp = t.c5 > 20 ? 15 : t.c5 > 10 ? 12 : t.c5 > 3 ? 8 : t.c5 > 0 ? 3 : t.c5 > -5 ? 0 : -2;
   s += Math.max(mp, 0);
   if (mp >= 12) pos.push('+' + t.c5.toFixed(1) + '% 5m');
@@ -467,11 +535,15 @@ function score(t) {
   if (hp >= 7) pos.push('+' + t.c1.toFixed(0) + '% 1h');
 
   // Source bonus
-  if (t.src === 'WS') { s += 20; pos.push('LIVE LAUNCH'); }
-  else if (t.hot) { s += 15; pos.push('HOT <10min'); }
+  if (t.hot) { s += 15; pos.push('HOT <10min'); }
   else if (t.isNew) { s += 10; pos.push('NEW <1h'); }
   else if (t.age < 6) { s += 5; pos.push(t.age.toFixed(1) + 'h old'); }
   if (t.pump && t.isNew) { s += 5; pos.push('pump.fun'); }
+
+  // LunarCrush social bonus
+  var lscore2 = getLunarScore(t.n);
+  if (lscore2 > 0) { s += lscore2; pos.push('Social buzz +' + lscore2); }
+  if (isLunarTrending(t.n)) { s += 10; pos.push('🔥 TRENDING'); }
 
   // Penalty flags
   if (t.c1 > 300) { s = Math.floor(s * 0.20); flags.push('Mega pump'); }
@@ -482,6 +554,7 @@ function score(t) {
 
   return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
 }
+
 
 // ── POSITION SIZING ───────────────────────────────────────────
 function cl(v, a, b) { return Math.min(Math.max(v, a), b); }
@@ -592,6 +665,8 @@ function startBot() {
   scanI = setInterval(runScan, CFG.SCAN_INTERVAL);
   fetchI = setInterval(fetchAll, 30000);
   startPriceUpdates();
+  fetchLunarTrending();
+  setInterval(fetchLunarTrending, 300000); // refresh every 5 mins
   log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Pump.fun', 'info');
 }
 
