@@ -22,8 +22,8 @@ const CFG = {
   TRAIL_PB: 0.25,    // exit if price pulls back 25% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
   POOL_MAX: 10000,   // increased pool size
-  PRICE_INTERVAL: 500,  // check prices every 1 second
-  SCAN_INTERVAL: 500,   // scan for new trades every 1 second
+  PRICE_INTERVAL: 1000,  // check prices every 1 second
+  SCAN_INTERVAL: 1000,   // scan for new trades every 1 second
 };
 
 // ── STATE ─────────────────────────────────────────────────────
@@ -434,13 +434,18 @@ function score(t) {
   else if (lp >= 9) pos.push('Liq $' + (t.liq/1000).toFixed(0) + 'k');
   else if (lp < 2) neg.push('Micro liq');
 
-  // Volume ratio
+  // Volume ratio — skip for fresh Pump.fun launches under 1 minute old
+  var freshLaunch = (t.src === 'WS' && t.age < 0.017);
+  if (!freshLaunch) {
   var vr = t.vol1 / Math.max(t.vol24/24, 1);
   var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
   s += vp;
   if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
   else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
   else if (vp === 0) neg.push('Vol declining');
+  } else {
+    pos.push('NEW LAUNCH <1min');
+  }
 
   // Buy/sell ratio — real transaction data
   var bp = t.bsr > 3 ? 20 : t.bsr > 2 ? 16 : t.bsr > 1.5 ? 11 : t.bsr > 1.2 ? 7 : t.bsr > 1 ? 3 : 0;
