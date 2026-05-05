@@ -14,7 +14,7 @@ const HELIUS_URL = 'https://mainnet.helius-rpc.com/?api-key=' + HELIUS_KEY;
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CFG = {
-  MIN_SCORE: 75,
+  MIN_SCORE: 80,
   SOL_GAS: 0.001,
   MAX_POS: 0.08,
   MAX_OPEN: 4,
