@@ -310,7 +310,7 @@ function startBot() {
   S.running = true; S.startTime = Date.now();
   connectPump(); fetchAll();
   // FIX 2: Scan every 8 seconds instead of 200ms — realistic trade frequency
-  scanI = setInterval(runScan, 1000);
+  scanI = setInterval(runScan, 8000);
   setInterval(fetchAll, 30000);
   log('V11 Server started - pump.fun WS + DSC + CGK - score 75+', 'info');
 }
