@@ -22,8 +22,8 @@ const CFG = {
   TRAIL_PB: 0.25,    // exit if price pulls back 25% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
   POOL_MAX: 10000,   // increased pool size
-  PRICE_INTERVAL: 1000,  // check prices every 1 second
-  SCAN_INTERVAL: 1000,   // scan for new trades every 1 second
+  PRICE_INTERVAL: 500,  // check prices every 1 second
+  SCAN_INTERVAL: 500,   // scan for new trades every 1 second
 };
 
 // ── STATE ─────────────────────────────────────────────────────
