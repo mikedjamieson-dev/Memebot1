@@ -676,7 +676,7 @@ async function runScan() {
   if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
 
   // Fresh Pump.fun launches under 1 min get a lower threshold
-  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 60 : CFG.MIN_SCORE;
+  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 45 : CFG.MIN_SCORE;
   if (sc < minScore) {
     S.rejectCount++;
     var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
