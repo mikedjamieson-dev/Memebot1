@@ -20,8 +20,8 @@ const CFG = {
   SOL_GAS: 0.001,
   MAX_POS: 0.08,
   MAX_OPEN: 4,
-  TRAIL_ACT: 0.04,   // trail activates at 5% gain
-  TRAIL_PB: 0.02,    // exit if price pulls back 25% from peak
+  TRAIL_ACT: 0.05,   // trail activates at 5% gain
+  TRAIL_PB: 0.25,    // exit if price pulls back 25% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
   POOL_MAX: 10000,   // increased pool size
   PRICE_INTERVAL: 500,  // check prices every 500ms
@@ -283,6 +283,88 @@ async function fetchAll() {
   log('Pool: ' + S.tokens.size + ' tokens | Pump.fun: ' + S.pumpCount + ' live', 'info');
 }
 
+// ── PUMP.FUN PRICE CALCULATOR ─────────────────────────────────
+// Calculates real token price directly from Pump.fun bonding curve data
+// This works instantly at launch — no need to wait for Jupiter listing
+// Formula: price = virtualSolReserves / (virtualTokenReserves * solPriceUsd)
+var SOL_PRICE_USD = 150; // updated periodically
+
+async function updateSolPrice() {
+  try {
+    var res = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112', { timeout: 5000 });
+    if (!res.ok) return;
+    var data = await res.json();
+    var sol = data.data && data.data['So11111111111111111111111111111111111111112'];
+    if (sol && sol.price) SOL_PRICE_USD = parseFloat(sol.price);
+  } catch(e) {}
+}
+
+function calcPumpPrice(d) {
+  // Pump.fun bonding curve price calculation
+  var vSol = parseFloat(d.vSolInBondingCurve) || 0;
+  var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
+  if (vSol > 0 && vTokens > 0) {
+    // Price in SOL per token, converted to USD
+    var priceInSol = vSol / vTokens;
+    return priceInSol * SOL_PRICE_USD;
+  }
+  // Fallback: use marketCapSol / total supply (1 billion tokens)
+  var mcapSol = parseFloat(d.marketCapSol) || 0;
+  if (mcapSol > 0) {
+    return (mcapSol / 1000000000) * SOL_PRICE_USD;
+  }
+  return null;
+}
+
+// Store pump prices keyed by mint for real time tracking
+var pumpPrices = {}; // mint -> { price, ts }
+
+function updatePumpPrice(mint, d) {
+  var price = calcPumpPrice(d);
+  if (price && price > 0) {
+    pumpPrices[mint] = { price: price, ts: Date.now() };
+    // Update any open trades on this token
+    S.open.forEach(function(trade) {
+      if (trade.mint === mint) {
+        var currentPrice = price;
+        trade.currentPrice = currentPrice;
+        // Set entry price if not set yet
+        if (!trade.entryPrice) {
+          trade.entryPrice = currentPrice;
+          trade.peakPrice = currentPrice;
+          log('PRICE SET ' + trade.tok.n + ' entry $' + currentPrice.toFixed(8) + ' [PUMP.FUN]', 'info');
+        }
+        // Calculate real P&L
+        if (trade.entryPrice > 0) {
+          var pricePct = (currentPrice - trade.entryPrice) / trade.entryPrice;
+          trade.realPnlPct = pricePct;
+          trade.realPnl = trade.size * pricePct;
+          // Update peak
+          if (currentPrice > trade.peakPrice) trade.peakPrice = currentPrice;
+          // Check trail stop
+          if (trade.tpl === 'TRAIL') {
+            var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+            if (peakGain >= CFG.TRAIL_ACT) {
+              var pullback = (trade.peakPrice - currentPrice) / trade.peakPrice;
+              if (pullback >= CFG.TRAIL_PB) {
+                log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+                closeTradeReal(trade.id, 'Trail exit');
+                return;
+              }
+            }
+          }
+          // Check stop loss
+          if (pricePct <= -trade.sl) {
+            log('SL HIT ' + trade.tok.n + ' | ' + (pricePct*100).toFixed(1) + '%', 'loss');
+            closeTradeReal(trade.id, 'Stop loss hit');
+            return;
+          }
+        }
+      }
+    });
+  }
+}
+
 // ── PUMP.FUN WEBSOCKET ────────────────────────────────────────
 var pumpWs = null;
 function connectPump() {
@@ -300,51 +382,54 @@ function connectPump() {
       try {
         var d = JSON.parse(raw.toString());
         if (d.mint && (d.symbol || d.name)) {
-          // New token launch — fetch real price from Jupiter
+          // New token launch
           var mint = d.mint;
           var name = ((d.symbol || d.name || 'NEW') + '').toUpperCase().slice(0, 12);
-          // Add with real on-chain data from the launch event
-          var initialLiq = (d.vSolInBondingCurve || 0) * 150; // SOL price estimate
-          var mktCap = (d.marketCapSol || 0) * 150;
+          var initialLiq = (d.vSolInBondingCurve || 0) * SOL_PRICE_USD;
+          // Calculate real price directly from bonding curve
+          var launchPrice = calcPumpPrice(d);
           addTok({
             id: mint, n: name, src: 'WS', pump: true,
             liq: initialLiq || 5000,
             vol1: (d.volume || 0),
             vol24: (d.volume || 0),
             c5: 0, c1: 0, c24: 0,
-            bsr: 2.0, // new launches start with buy pressure
+            bsr: 2.0,
             txns: 1,
             age: 0, isNew: true, hot: true,
-            price: null, // will be fetched from Jupiter
+            price: launchPrice, // real price from bonding curve
             mint: mint,
             rug: false, hp: false,
             launchData: d
           });
+          // Store pump price for real time tracking
+          if (launchPrice) pumpPrices[mint] = { price: launchPrice, ts: Date.now() };
           S.pumpCount++;
           S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
-          // Enrich with real price from Jupiter
-          enrichPumpToken(mint, name);
           if (S.pumpCount % 20 === 0) {
             log('Pump.fun: ' + S.pumpCount + ' launches - latest: ' + name, 'pump');
           }
         }
-        // Trade events — update token data with real trade info
+        // Trade events — real time price updates from pump.fun
         if (d.txType === 'buy' || d.txType === 'sell') {
           var mint2 = d.mint;
-          var name2 = ((d.symbol || '') + '').toUpperCase().slice(0, 12);
           if (mint2) {
+            // Update price from trade event
+            updatePumpPrice(mint2, d);
+            // Update token buy/sell ratio
+            var name2 = ((d.symbol || '') + '').toUpperCase().slice(0, 12);
             var key = name2 + mint2;
             var existing = S.tokens.get(key);
             if (existing) {
-              // Update with real trade data
               if (d.txType === 'buy') existing.bsr = Math.min((existing.bsr || 1) + 0.1, 5);
               else existing.bsr = Math.max((existing.bsr || 1) - 0.1, 0.1);
-              if (d.marketCapSol) existing.liq = d.marketCapSol * 150 * 0.05;
+              if (d.marketCapSol) existing.liq = d.marketCapSol * SOL_PRICE_USD * 0.05;
               S.tokens.set(key, existing);
             }
           }
         }
       } catch(e) {}
+    });
     });
     pumpWs.on('error', function() { S.pumpLive = false; S.sources['PUMP.FUN'] = 'dead'; });
     pumpWs.on('close', function() {
@@ -493,7 +578,7 @@ function score(t) {
 
     // Safety penalties
     if (t.bsr < 0.5) { s = Math.floor(s * 0.30); flags.push('Heavy sell'); }
-    if (t.liq < 500) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
+    if (t.liq < 2000) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
 
     return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
   }
@@ -592,7 +677,7 @@ async function runScan() {
   if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
 
   // Fresh Pump.fun launches under 1 min get a lower threshold
-  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 45 : CFG.MIN_SCORE;
+  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 60 : CFG.MIN_SCORE;
   if (sc < minScore) {
     S.rejectCount++;
     var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
@@ -603,13 +688,15 @@ async function runScan() {
   if (S.open.length >= CFG.MAX_OPEN) return;
   if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
 
-  // Get real entry price from Jupiter
+  // Get real entry price — Pump.fun direct first, then Jupiter
   var entryPrice = null;
-  if (tok.mint) {
-    entryPrice = await getJupiterPrice(tok.mint);
-  }
-  if (!entryPrice && tok.price) {
-    entryPrice = tok.price; // fall back to last known price
+  // Use Pump.fun bonding curve price first (instant, no API needed)
+  if (tok.mint && pumpPrices[tok.mint]) {
+    entryPrice = pumpPrices[tok.mint].price;
+  } else if (tok.price) {
+    entryPrice = tok.price; // use known price from data source
+  } else if (tok.mint) {
+    entryPrice = await getJupiterPrice(tok.mint); // fallback to Jupiter
   }
 
   var slip = getSlip(tok.liq, S.fund * 0.08);
@@ -665,9 +752,25 @@ function startBot() {
   scanI = setInterval(runScan, CFG.SCAN_INTERVAL);
   fetchI = setInterval(fetchAll, 30000);
   startPriceUpdates();
+  setInterval(checkStuckTrades, 30000); // check for stuck trades every 30s
+  updateSolPrice();
+  setInterval(updateSolPrice, 60000); // update SOL price every minute
   fetchLunarTrending();
   setInterval(fetchLunarTrending, 300000); // refresh every 5 mins
   log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Pump.fun', 'info');
+}
+
+// ── STUCK TRADE TIMEOUT ───────────────────────────────────────
+// If a trade has no price data after 3 minutes, close it to free the slot
+function checkStuckTrades() {
+  var now = Date.now();
+  var stuck = S.open.filter(function(t) {
+    return !t.entryPrice && (now - t.startTime) > 180000; // 3 minutes
+  });
+  stuck.forEach(function(t) {
+    log('TIMEOUT ' + t.tok.n + ' — no price after 3min, closing', 'warn');
+    closeTradeReal(t.id, 'Timeout — no price data');
+  });
 }
 
 function stopBot() {
