@@ -430,7 +430,6 @@ function connectPump() {
         }
       } catch(e) {}
     });
-    });
     pumpWs.on('error', function() { S.pumpLive = false; S.sources['PUMP.FUN'] = 'dead'; });
     pumpWs.on('close', function() {
       S.pumpLive = false;
