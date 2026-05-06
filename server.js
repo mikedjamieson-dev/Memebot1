@@ -20,9 +20,10 @@ const CFG = {
   SOL_GAS: 0.001,
   MAX_POS: 0.08,
   MAX_OPEN: 4,
-  TRAIL_ACT: 0.04,   // trail activates at 5% gain
-  TRAIL_PB: 0.02,    // exit if price pulls back 25% from peak
+  TRAIL_ACT: 0.04,   // trail activates at 4% gain
+  TRAIL_PB: 0.02,    // exit if price pulls back 2% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
+  MAX_HOLD: 1800000,  // max hold time 30 minutes in ms
   POOL_MAX: 10000,   // increased pool size
   PRICE_INTERVAL: 500,  // check prices every 500ms
   SCAN_INTERVAL: 500,   // scan for new trades every 500ms
@@ -414,18 +415,17 @@ function connectPump() {
         if (d.txType === 'buy' || d.txType === 'sell') {
           var mint2 = d.mint;
           if (mint2) {
-            // Update price from trade event
+            // Update price from trade event — match by mint only
             updatePumpPrice(mint2, d);
-            // Update token buy/sell ratio
-            var name2 = ((d.symbol || '') + '').toUpperCase().slice(0, 12);
-            var key = name2 + mint2;
-            var existing = S.tokens.get(key);
-            if (existing) {
-              if (d.txType === 'buy') existing.bsr = Math.min((existing.bsr || 1) + 0.1, 5);
-              else existing.bsr = Math.max((existing.bsr || 1) - 0.1, 0.1);
-              if (d.marketCapSol) existing.liq = d.marketCapSol * SOL_PRICE_USD * 0.05;
-              S.tokens.set(key, existing);
-            }
+            // Update token buy/sell ratio — search all keys for this mint
+            S.tokens.forEach(function(existing, key) {
+              if (existing.mint === mint2 || existing.id === mint2) {
+                if (d.txType === 'buy') existing.bsr = Math.min((existing.bsr || 1) + 0.1, 5);
+                else existing.bsr = Math.max((existing.bsr || 1) - 0.1, 0.1);
+                if (d.marketCapSol) existing.liq = d.marketCapSol * SOL_PRICE_USD * 0.05;
+                S.tokens.set(key, existing);
+              }
+            });
           }
         }
       } catch(e) {}
@@ -676,7 +676,7 @@ async function runScan() {
   if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
 
   // Fresh Pump.fun launches under 1 min get a lower threshold
-  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 45 : CFG.MIN_SCORE;
+  var minScore = (tok.src === 'WS' && tok.age < 0.017) ? 60 : CFG.MIN_SCORE;
   if (sc < minScore) {
     S.rejectCount++;
     var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
@@ -760,15 +760,22 @@ function startBot() {
 }
 
 // ── STUCK TRADE TIMEOUT ───────────────────────────────────────
-// If a trade has no price data after 3 minutes, close it to free the slot
+// Close trades with no price after 3 minutes OR held longer than MAX_HOLD
 function checkStuckTrades() {
   var now = Date.now();
-  var stuck = S.open.filter(function(t) {
-    return !t.entryPrice && (now - t.startTime) > 180000; // 3 minutes
-  });
-  stuck.forEach(function(t) {
-    log('TIMEOUT ' + t.tok.n + ' — no price after 3min, closing', 'warn');
-    closeTradeReal(t.id, 'Timeout — no price data');
+  S.open.slice().forEach(function(t) {
+    var age = now - t.startTime;
+    // No price data after 3 minutes
+    if (!t.entryPrice && age > 180000) {
+      log('TIMEOUT ' + t.tok.n + ' — no price after 3min, closing', 'warn');
+      closeTradeReal(t.id, 'Timeout — no price data');
+      return;
+    }
+    // Max hold time reached — close regardless
+    if (age > CFG.MAX_HOLD) {
+      log('MAX HOLD ' + t.tok.n + ' — 30min limit reached', 'warn');
+      closeTradeReal(t.id, 'Max hold time reached');
+    }
   });
 }
 
