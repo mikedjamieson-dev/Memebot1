@@ -20,8 +20,8 @@ const CFG = {
   SOL_GAS: 0.001,
   MAX_POS: 0.08,
   MAX_OPEN: 4,
-  TRAIL_ACT: 0.05,   // trail activates at 5% gain
-  TRAIL_PB: 0.25,    // exit if price pulls back 25% from peak
+  TRAIL_ACT: 0.04,   // trail activates at 5% gain
+  TRAIL_PB: 0.02,    // exit if price pulls back 25% from peak
   LOSS_LIM: 0.10,    // daily loss limit 10%
   POOL_MAX: 10000,   // increased pool size
   PRICE_INTERVAL: 500,  // check prices every 500ms
