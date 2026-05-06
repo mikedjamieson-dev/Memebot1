@@ -85,15 +85,30 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .wsbar{background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:6px 12px;font-size:9px;color:#ffd700;margin-bottom:8px;}
 .foot{text-align:center;font-size:8px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
 .real-badge{font-size:7px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:1px 5px;color:var(--green);margin-left:6px;vertical-align:middle;}
+/* ── GRADUATION SNIPER ── */
+.gradcard{background:var(--panel);border:1px solid #2a1f00;border-left:3px solid var(--yellow);border-radius:8px;padding:9px 11px;margin-bottom:7px;position:relative;}
+.gradcard::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--yellow),transparent);opacity:0.4;}
+.grad-badge{font-size:7px;background:rgba(255,194,51,0.15);border:1px solid var(--yellow);border-radius:3px;padding:1px 5px;color:var(--yellow);margin-left:5px;vertical-align:middle;animation:gblink 1s infinite;}
+@keyframes gblink{0%,100%{opacity:1;}50%{opacity:0.6;}}
+.grad-bar-wrap{background:rgba(0,0,0,0.3);border-radius:4px;height:6px;margin:6px 0;overflow:hidden;}
+.grad-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--yellow),var(--green));transition:width 0.5s;}
+.grad-stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;padding-top:5px;border-top:1px solid var(--border);}
+.grad-stat{background:rgba(255,194,51,0.05);border-radius:4px;padding:4px 6px;text-align:center;}
+.gsslbl{font-size:6px;color:var(--yellow);letter-spacing:1px;margin-bottom:1px;opacity:0.7;}
+.gssval{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;color:var(--yellow);}
+.grad-section{background:rgba(255,194,51,0.03);border:1px solid rgba(255,194,51,0.2);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
+.grad-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.grad-title{font-size:8px;letter-spacing:3px;color:var(--yellow);font-weight:bold;}
+
 </style>
 </head>
 <body>
 <div class="wrap">
 
   <div class="hdr">
-    <div class="htag"><span class="dot"></span>SNIPER V12 · REAL DATA · 24/7</div>
+    <div class="htag"><span class="dot"></span>SNIPER V12 · GRADUATION SNIPER · 24/7</div>
     <div class="htitle">MEME BOT <span style="color:var(--green)">LIVE</span></div>
-    <div class="hsub">SOLANA · PUMP.FUN · JUPITER · HELIUS · REAL PRICES</div>
+    <div class="hsub">SOLANA · PUMP.FUN · GRADUATION SNIPER · REAL PRICES</div>
   </div>
 
   <div class="topbar">
@@ -136,10 +151,22 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="tprow">
       <button class="tpbtn trail-active">TRAIL STOP</button>
     </div>
-    <div class="tpdesc" id="tpdesc">📈 Trail: exits when price pulls back 25% from peak — based on real Jupiter prices</div>
+    <div class="tpdesc" id="tpdesc">📈 Trail: activates at 4% gain — exits on 2% pullback from peak</div>
   </div>
 
   <button class="sbtn" id="startBtn" onclick="toggleBot()" style="background:linear-gradient(135deg,#062a12,#0a3d1a);color:var(--green);border-color:var(--gd)">▶ START BOT</button>
+
+
+  <!-- GRADUATION SNIPER SECTION -->
+  <div id="gradSec" style="display:none">
+    <div class="grad-section">
+      <div class="grad-header">
+        <div class="grad-title">🎓 GRADUATION SNIPER</div>
+        <div style="font-size:8px;color:var(--dim)">CANDIDATES: <span id="gradCandCount" style="color:var(--yellow)">0</span> | PLAYS: <span id="gradTotal" style="color:var(--yellow)">0</span></div>
+      </div>
+      <div id="gradList"></div>
+    </div>
+  </div>
 
   <!-- OPEN TRADES -->
   <div id="openSec" style="margin-bottom:10px;display:none">
@@ -196,7 +223,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     </div>
   </div>
 
-  <div class="foot">REAL DATA · SNIPER V12 · JUPITER + HELIUS + PUMP.FUN · 24/7</div>
+  <div class="foot">GRADUATION SNIPER V12 · REAL DATA · 24/7</div>
 </div>
 
 <script>
@@ -321,13 +348,53 @@ async function fetchState() {
       if (!frozen) renderLog();
     }
 
+    // ── GRADUATION SNIPER SECTION ──
+    var gradSec = document.getElementById('gradSec');
+    var gradList = document.getElementById('gradList');
+    var gradTrades = (data.openTrades || []).filter(function(t) { return t.isGrad; });
+    var regularTrades = (data.openTrades || []).filter(function(t) { return !t.isGrad; });
+    document.getElementById('gradCandCount').textContent = data.gradCandidates || 0;
+    document.getElementById('gradTotal').textContent = data.gradCount || 0;
+    if (gradTrades.length > 0) {
+      gradSec.style.display = 'block';
+      gradList.innerHTML = '';
+      gradTrades.forEach(function(t) {
+        var el = Math.floor((Date.now() - t.startTime) / 1000);
+        var pnlColor = !t.realPnl ? 'var(--dim)' : t.realPnl >= 0 ? 'var(--green)' : 'var(--red)';
+        var pnlDisplay = t.entryPrice ? (t.realPnl >= 0 ? '+' : '') + '$' + f2(Math.abs(t.realPnl || 0)) : 'FETCHING...';
+        var pctDisplay = t.entryPrice ? (t.realPnlPct >= 0 ? '+' : '') + ((t.realPnlPct || 0) * 100).toFixed(1) + '%' : '---';
+        var gradPct = t.gradSolAtEntry ? Math.floor((t.gradSolAtEntry / 500) * 100) : 0;
+        var d2 = document.createElement('div');
+        d2.className = 'gradcard';
+        d2.innerHTML =
+          '<div class="otop">' +
+            '<div class="oname" style="color:var(--yellow)">' + t.tok.n +
+              '<span class="grad-badge">🎓 GRAD</span>' +
+            '</div>' +
+            '<button class="sellbtn" onclick="sellTrade('' + t.id + '')">SELL</button>' +
+          '</div>' +
+          '<div class="ometa" style="color:var(--dim)">$' + f2(t.size) + ' · ' + el + 's · SL -' + ((t.sl||0.12)*100).toFixed(0) + '%</div>' +
+          '<div class="oreasons">' + (t.reasons || []).join(' · ') + '</div>' +
+          '<div class="grad-bar-wrap"><div class="grad-bar" style="width:' + Math.min(gradPct, 100) + '%"></div></div>' +
+          '<div style="font-size:7px;color:var(--yellow);text-align:center;margin-bottom:4px">' + gradPct + '% TO GRADUATION</div>' +
+          '<div class="grad-stats">' +
+            '<div class="grad-stat"><div class="gsslbl">REAL P&L</div><div class="gssval" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
+            '<div class="grad-stat"><div class="gsslbl">REAL %</div><div class="gssval" style="color:' + pnlColor + '">' + pctDisplay + '</div></div>' +
+          '</div>' +
+          '<div style="font-size:7px;color:var(--dim);margin-top:4px">ENTRY: $' + (t.entryPrice ? t.entryPrice.toFixed(8) : 'FETCHING...') + '</div>';
+        gradList.appendChild(d2);
+      });
+    } else {
+      gradSec.style.display = 'none';
+    }
+
     // ── OPEN TRADES — REAL DATA ONLY ──
     var openSec = document.getElementById('openSec'), openList = document.getElementById('openList');
-    if (data.openTrades && data.openTrades.length > 0) {
+    if (regularTrades.length > 0) {
       openSec.style.display = 'block';
-      document.getElementById('openCnt').textContent = '(' + data.openTrades.length + ')';
+      document.getElementById('openCnt').textContent = '(' + regularTrades.length + ')';
       openList.innerHTML = '';
-      data.openTrades.forEach(function(t) {
+      regularTrades.forEach(function(t) {
         var el = Math.floor((Date.now() - t.startTime) / 1000);
         var slPct = ((t.sl || 0.15) * 100).toFixed(0);
         var tag = t.tok.src === 'WS' ? '[LIVE] ' : t.tok.hot ? '[HOT] ' : t.tok.isNew ? '[NEW] ' : '';
