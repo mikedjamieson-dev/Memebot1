@@ -1,488 +1,1005 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>MEME BOT V12</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
-:root{--bg:#04080d;--panel:#080f18;--border:#0d2035;--bb:#1a4060;--green:#00ff88;--gd:#00cc6a;--red:#ff3d5a;--yellow:#ffc233;--blue:#33b5ff;--purple:#bb88ff;--text:#e8f4ff;--dim:#7a9ab0;}
-*{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monospace;min-height:100vh;padding-bottom:40px;}
-.wrap{max-width:520px;margin:0 auto;padding:16px;}
-.hdr{text-align:center;padding:14px 0 10px;}
-.hdr::after{content:'';display:block;height:1px;background:linear-gradient(90deg,transparent,var(--green),transparent);margin-top:10px;opacity:0.4;}
-.htag{font-size:9px;letter-spacing:4px;color:var(--green);margin-bottom:4px;}
-.htitle{font-family:'Orbitron',monospace;font-size:24px;font-weight:900;color:#fff;letter-spacing:3px;text-shadow:0 0 20px rgba(0,255,136,0.4);}
-.hsub{font-size:9px;color:var(--dim);margin-top:3px;letter-spacing:2px;}
-.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 1.5s infinite;vertical-align:middle;}
-@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 6px var(--green);}50%{opacity:0.4;}}
-.topbar{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px;}
-.sbar{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:9px;color:var(--dim);}
-.tbox{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 10px;text-align:center;min-width:78px;}
-.tval{font-family:'Orbitron',monospace;font-size:11px;color:var(--green);margin-top:1px;}
-.tlbl{font-size:7px;color:var(--dim);letter-spacing:1px;}
-.srow{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;}
-.spill{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 8px;text-align:center;}
-.sl2{font-size:7px;color:var(--dim);letter-spacing:1px;}
-.sv{font-family:'Orbitron',monospace;font-size:12px;font-weight:700;margin-top:1px;}
-.srcrow{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
-.bdg{padding:2px 6px;border-radius:4px;font-size:7px;letter-spacing:1px;}
-.live{background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.3);color:var(--green);}
-.dead{background:rgba(255,61,90,0.1);border:1px solid rgba(255,61,90,0.3);color:var(--red);}
-.wsbdg{background:rgba(0,255,136,0.15);border:1px solid rgba(0,255,136,0.5);color:var(--green);animation:wsp 2s infinite;}
-@keyframes wsp{0%,100%{opacity:1;}50%{opacity:0.6;}}
-.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;}
-.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;position:relative;overflow:hidden;margin-bottom:8px;}
-.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--bb),transparent);}
-.csm{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 5px;text-align:center;}
-.lbl{font-size:8px;letter-spacing:2px;color:var(--dim);margin-bottom:5px;text-transform:uppercase;}
-.lsm{font-size:7px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
-.vlg{font-family:'Orbitron',monospace;font-size:19px;font-weight:700;}
-.vmd{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;margin-top:2px;}
-.sub{font-size:9px;color:var(--dim);margin-top:3px;}
-.sbtn{width:100%;padding:14px;border-radius:10px;border:1px solid;cursor:pointer;font-size:12px;font-family:'Orbitron',monospace;font-weight:700;letter-spacing:4px;margin-bottom:10px;}
-.tpcard{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;position:relative;overflow:hidden;}
-.tpcard::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--bb),transparent);}
-.tprow{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px;}
-.tpbtn{padding:5px 9px;border-radius:5px;border:1px solid var(--bb);cursor:pointer;font-size:9px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);transition:all 0.15s;}
-.tpbtn.trail-active{background:rgba(187,136,255,0.15);border-color:var(--purple);color:var(--purple);}
-.tpdesc{font-size:8px;color:var(--dim);margin-top:6px;padding-top:5px;border-top:1px solid var(--border);}
-.sscard{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;position:relative;overflow:hidden;}
-.sscard::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--bb),transparent);}
-.ssgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:7px;}
-.ssitem{background:rgba(0,0,0,0.2);border-radius:6px;padding:6px 8px;}
-.sslbl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
-.ssval{font-family:'Orbitron',monospace;font-size:11px;font-weight:700;}
+const express = require('express');
+const WebSocket = require('ws');
+const fetch = require('node-fetch');
+const cors = require('cors');
 
-/* ── OPEN TRADE CARDS ── */
-.otrade{background:var(--panel);border:1px solid #0d2a45;border-left:3px solid var(--blue);border-radius:8px;padding:9px 11px;margin-bottom:7px;}
-.otop{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
-.oname{color:var(--blue);font-weight:bold;font-size:13px;font-family:'Orbitron',monospace;}
-.sellbtn{padding:5px 10px;border-radius:5px;border:1px solid var(--yellow);background:transparent;color:var(--yellow);cursor:pointer;font-size:9px;font-family:'Share Tech Mono',monospace;font-weight:bold;}
-.ometa{font-size:9px;color:var(--dim);margin-bottom:4px;}
-.oreasons{font-size:8px;color:var(--text);opacity:0.85;margin-bottom:5px;}
-.opnlrow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:5px;padding-top:5px;border-top:1px solid var(--border);}
-.opnlitem{text-align:center;background:rgba(0,0,0,0.2);border-radius:4px;padding:4px 3px;}
-.opnllbl{font-size:6px;color:var(--dim);letter-spacing:1px;margin-bottom:1px;}
-.opnlval{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;}
+const app = express();
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+const PORT = process.env.PORT || 3000;
 
-.logwrap{position:relative;margin-bottom:10px;}
-.fbar{position:absolute;top:0;left:0;right:0;background:rgba(255,194,51,0.15);border:1px solid rgba(255,194,51,0.4);border-radius:8px 8px 0 0;padding:5px 12px;font-size:9px;color:var(--yellow);display:none;z-index:10;text-align:center;}
-.logbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;max-height:300px;overflow-y:auto;}
-.logbox::-webkit-scrollbar{width:3px;}
-.logbox::-webkit-scrollbar-thumb{background:var(--bb);border-radius:3px;}
-.le{font-size:9px;padding:3px 0;border-bottom:1px solid rgba(13,32,53,0.4);line-height:1.6;}
-.reject{color:#c87070;}.win{color:var(--green);}.loss{color:#ff7a7a;}.rug{color:var(--yellow);}.info{color:#8ab4cc;}.warn{color:var(--yellow);}.entry{color:#66ccff;}.pump{color:#ffd700;}
-.lt{color:#4a7090;margin-right:5px;}
-.hrow{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(13,32,53,0.8);font-size:10px;}
-.lfrow{display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;}
-.lfb{padding:2px 7px;border-radius:4px;border:1px solid var(--bb);cursor:pointer;font-size:8px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);}
-.act{background:var(--bb);color:var(--text);}
-.slbl{font-size:8px;letter-spacing:3px;color:var(--dim);margin-bottom:7px;display:flex;align-items:center;gap:8px;}
-.slbl::after{content:'';flex:1;height:1px;background:var(--border);}
-.wsbar{background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:6px 12px;font-size:9px;color:#ffd700;margin-bottom:8px;}
-.foot{text-align:center;font-size:8px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
-.real-badge{font-size:7px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:1px 5px;color:var(--green);margin-left:6px;vertical-align:middle;}
-/* ── GRADUATION SNIPER ── */
-.gradcard{background:var(--panel);border:1px solid #2a1f00;border-left:3px solid var(--yellow);border-radius:8px;padding:9px 11px;margin-bottom:7px;position:relative;}
-.gradcard::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--yellow),transparent);opacity:0.4;}
-.grad-badge{font-size:7px;background:rgba(255,194,51,0.15);border:1px solid var(--yellow);border-radius:3px;padding:1px 5px;color:var(--yellow);margin-left:5px;vertical-align:middle;animation:gblink 1s infinite;}
-@keyframes gblink{0%,100%{opacity:1;}50%{opacity:0.6;}}
-.grad-bar-wrap{background:rgba(0,0,0,0.3);border-radius:4px;height:6px;margin:6px 0;overflow:hidden;}
-.grad-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--yellow),var(--green));transition:width 0.5s;}
-.grad-stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px;padding-top:5px;border-top:1px solid var(--border);}
-.grad-stat{background:rgba(255,194,51,0.05);border-radius:4px;padding:4px 6px;text-align:center;}
-.gsslbl{font-size:6px;color:var(--yellow);letter-spacing:1px;margin-bottom:1px;opacity:0.7;}
-.gssval{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;color:var(--yellow);}
-.grad-section{background:rgba(255,194,51,0.03);border:1px solid rgba(255,194,51,0.2);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
-.grad-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
-.grad-title{font-size:8px;letter-spacing:3px;color:var(--yellow);font-weight:bold;}
+// ── API KEYS ──────────────────────────────────────────────────
+const HELIUS_KEY = '04d7d86a-48da-45db-8364-1c57d40fc4b1';
+const HELIUS_URL = 'https://mainnet.helius-rpc.com/?api-key=' + HELIUS_KEY;
+const LUNAR_KEY = 'wzejf56fq9a5oamkc8qo6f7lpmot9qa4qoc8lpv';
+const LUNAR_URL = 'https://lunarcrush.com/api4/public';
 
-</style>
-</head>
-<body>
-<div class="wrap">
+// ── CONFIG ────────────────────────────────────────────────────
+const CFG = {
+  MIN_SCORE: 68,         // min score for established tokens (DSC/Gecko/CGK only)
+  SOL_GAS: 0.001,
+  MAX_POS: 0.08,
+  MAX_OPEN: 4,           // max simultaneous trades (all types)
+  MAX_GRAD: 2,           // max graduation sniper trades at once
+  TRAIL_ACT: 0.04,       // trail activates at 4% gain
+  TRAIL_PB: 0.02,        // exit if price pulls back 2% from peak
+  LOSS_LIM: 0.10,        // daily loss limit 10%
+  // No time-based exits — criteria based exits only (smarter trading)
+  STALE_TIME: 120000,    // close if no price movement for 2 minutes
+  NO_PRICE_TIMEOUT: 180000, // close if no price data after 3 minutes
+  POOL_MAX: 10000,
+  PRICE_INTERVAL: 500,
+  SCAN_INTERVAL: 500,
+  // Graduation sniper config
+  GRAD_ENTRY_SOL: 200,   // enter when bonding curve hits 200 SOL (~$30k)
+  GRAD_MAX_SOL: 480,     // dont enter above 480 SOL (very close to graduation)
+  GRAD_TARGET: 500,      // graduation at ~500 SOL ($69k-75k)
+  GRAD_POS: 0.10,        // slightly bigger position for grad plays (10%)
+};
 
-  <div class="hdr">
-    <div class="htag"><span class="dot"></span>SNIPER V12 · GRADUATION SNIPER · 24/7</div>
-    <div class="htitle">MEME BOT <span style="color:var(--green)">LIVE</span></div>
-    <div class="hsub">SOLANA · PUMP.FUN · GRADUATION SNIPER · REAL PRICES</div>
-  </div>
+// ── STATE ─────────────────────────────────────────────────────
+const S = {
+  tokens: new Map(),
+  open: [],
+  closed: [],
+  stats: { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 }, // gw/gl = grad wins/losses
+  fund: 100,
+  savings: 0,
+  running: false,
+  pumpLive: false,
+  pumpCount: 0,
+  scanCount: 0,
+  rejectCount: 0,
+  logs: [],
+  sources: {},
+  startTime: null,
+  dayStartFund: 100,
+  gradCandidates: new Map(), // mint -> { name, solInCurve, mcapSol, bsr, age, firstSeen }
+  gradCount: 0,              // total graduation plays entered
+};
 
-  <div class="topbar">
-    <div class="sbar" id="status">CONNECTING...</div>
-    <div class="tbox"><div class="tlbl">RUNTIME</div><div class="tval" id="tv">00:00:00</div></div>
-  </div>
+// ── LOGGING ───────────────────────────────────────────────────
+function log(msg, type) {
+  type = type || 'info';
+  S.logs.unshift({ msg, type, time: new Date().toLocaleTimeString() });
+  if (S.logs.length > 500) S.logs.pop();
+  console.log('[' + type.toUpperCase() + '] ' + msg);
+}
 
-  <div class="wsbar" id="wsbar">⚡ PUMP.FUN WEBSOCKET: CONNECTING...</div>
-
-  <div class="srow">
-    <div class="spill"><div class="sl2">POOL</div><div class="sv" id="pool" style="color:var(--blue)">0</div></div>
-    <div class="spill"><div class="sl2">SCANNED</div><div class="sv" id="scanned" style="color:var(--dim)">0</div></div>
-    <div class="spill"><div class="sl2">PUMP LIVE</div><div class="sv" id="pumpCnt" style="color:var(--yellow)">0</div></div>
-  </div>
-
-  <div class="srcrow" id="srcrow"></div>
-
-  <div class="g2">
-    <div class="card">
-      <div class="lbl">TRADING FUND</div>
-      <div class="vlg" id="fund" style="color:var(--green)">$100.00</div>
-      <div class="sub" id="alltime">+$0.00 all time</div>
-    </div>
-    <div class="card">
-      <div class="lbl">SAVINGS</div>
-      <div class="vlg" id="savings" style="color:var(--yellow)">$0.00</div>
-      <div class="sub">20% of profits</div>
-    </div>
-  </div>
-
-  <div class="g4">
-    <div class="csm"><div class="lsm">WIN RATE</div><div class="vmd" id="wr" style="color:var(--green)">0%</div></div>
-    <div class="csm"><div class="lsm">WINS</div><div class="vmd" id="wins" style="color:var(--green)">0</div></div>
-    <div class="csm"><div class="lsm">LOSSES</div><div class="vmd" id="losses" style="color:var(--red)">0</div></div>
-    <div class="csm"><div class="lsm">RUGS</div><div class="vmd" id="rugs" style="color:var(--yellow)">0</div></div>
-  </div>
-
-  <div class="tpcard">
-    <div class="lbl">TAKE PROFIT MODE</div>
-    <div class="tprow">
-      <button class="tpbtn trail-active">TRAIL STOP</button>
-    </div>
-    <div class="tpdesc" id="tpdesc">📈 Trail: activates at 4% gain — exits on 2% pullback from peak</div>
-  </div>
-
-  <button class="sbtn" id="startBtn" onclick="toggleBot()" style="background:linear-gradient(135deg,#062a12,#0a3d1a);color:var(--green);border-color:var(--gd)">▶ START BOT</button>
-
-
-  <!-- GRADUATION SNIPER SECTION -->
-  <div id="gradSec" style="display:none">
-    <div class="grad-section">
-      <div class="grad-header">
-        <div class="grad-title">🎓 GRADUATION SNIPER</div>
-        <div style="font-size:8px;color:var(--dim)">CANDIDATES: <span id="gradCandCount" style="color:var(--yellow)">0</span> | PLAYS: <span id="gradTotal" style="color:var(--yellow)">0</span></div>
-      </div>
-      <div id="gradList"></div>
-    </div>
-  </div>
-
-  <!-- OPEN TRADES -->
-  <div id="openSec" style="margin-bottom:10px;display:none">
-    <div class="slbl">OPEN TRADES <span id="openCnt" style="color:var(--blue)"></span></div>
-    <div id="openList"></div>
-  </div>
-
-  <!-- ACTIVITY LOG -->
-  <div class="logwrap">
-    <div class="fbar" id="frozbar">LOG PAUSED — scroll to top to resume</div>
-    <div class="logbox" id="logbox">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <div class="lbl" style="margin:0">ACTIVITY LOG</div>
-        <div style="font-size:8px;color:var(--dim)" id="lcnt">0 entries</div>
-      </div>
-      <div class="lfrow">
-        <button class="lfb act" onclick="setF('all')">ALL</button>
-        <button class="lfb" onclick="setF('entry')">ENTRIES</button>
-        <button class="lfb" onclick="setF('reject')">REJECTED</button>
-        <button class="lfb" onclick="setF('win')">WINS</button>
-        <button class="lfb" onclick="setF('loss')">LOSSES</button>
-        <button class="lfb" onclick="setF('pump')">🔥PUMP</button>
-      </div>
-      <div id="loglist"><div style="font-size:10px;color:var(--dim)">Connecting...</div></div>
-    </div>
-  </div>
-
-  <!-- CLOSED TRADES -->
-  <div id="histSec" class="card" style="display:none">
-    <div class="lbl" style="margin-bottom:7px">CLOSED TRADES</div>
-    <div id="histList"></div>
-  </div>
-
-  <!-- SESSION STATS -->
-  <div class="sscard">
-    <div class="lbl">SESSION STATS</div>
-    <div class="ssgrid">
-      <div class="ssitem">
-        <div class="sslbl">TOTAL FEES PAID</div>
-        <div class="ssval" id="ss-fees" style="color:var(--red)">$0.00</div>
-      </div>
-      <div class="ssitem">
-        <div class="sslbl">AVG SLIPPAGE</div>
-        <div class="ssval" id="ss-slip" style="color:var(--yellow)">0.00%</div>
-      </div>
-      <div class="ssitem">
-        <div class="sslbl">TRADES SKIPPED</div>
-        <div class="ssval" id="ss-skip" style="color:var(--dim)">0</div>
-      </div>
-      <div class="ssitem">
-        <div class="sslbl">BEST TRADE</div>
-        <div class="ssval" id="ss-best" style="color:var(--green)">$0.00</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="foot">GRADUATION SNIPER V12 · REAL DATA · 24/7</div>
-</div>
-
-<script>
-var BASE = window.location.hostname === 'memebot1.onrender.com' ? '' : 'https://memebot1.onrender.com';
-var botRunning = false, logFilter = 'all', allLogs = [], frozen = false, startTime = null, timI = null;
-var lb = null, fb = null;
-
-document.addEventListener('DOMContentLoaded', function() {
-  lb = document.getElementById('logbox');
-  fb = document.getElementById('frozbar');
-  if (lb) {
-    lb.addEventListener('scroll', function() {
-      if (lb.scrollTop < 30 && frozen) { frozen = false; fb.style.display = 'none'; renderLog(); }
-      else if (lb.scrollTop >= 30 && !frozen) { frozen = true; fb.style.display = 'block'; }
-    }, { passive: true });
+// ── TOKEN POOL ────────────────────────────────────────────────
+function addTok(t) {
+  if (!t || !t.n || !t.id) return;
+  // Don't overwrite a token that has a real price with one that doesn't
+  const existing = S.tokens.get(t.n + t.id);
+  if (existing && existing.price && !t.price) return;
+  S.tokens.set(t.n + t.id, t);
+  if (S.tokens.size > CFG.POOL_MAX) {
+    for (var k of S.tokens.keys()) { S.tokens.delete(k); break; }
   }
-  setInterval(fetchState, 2000);
-  fetchState();
+}
+
+// ── JUPITER PRICE API (free, no key needed) ───────────────────
+async function getJupiterPrice(mintAddress) {
+  try {
+    var res = await fetch('https://api.jup.ag/price/v2?ids=' + mintAddress, { timeout: 5000 });
+    if (!res.ok) return null;
+    var data = await res.json();
+    if (data && data.data && data.data[mintAddress]) {
+      return parseFloat(data.data[mintAddress].price) || null;
+    }
+    return null;
+  } catch(e) { return null; }
+}
+
+// ── JUPITER BATCH PRICES ──────────────────────────────────────
+async function getJupiterPrices(mintAddresses) {
+  try {
+    if (!mintAddresses || mintAddresses.length === 0) return {};
+    var ids = mintAddresses.slice(0, 100).join(',');
+    var res = await fetch('https://api.jup.ag/price/v2?ids=' + ids, { timeout: 8000 });
+    if (!res.ok) return {};
+    var data = await res.json();
+    return data.data || {};
+  } catch(e) { return {}; }
+}
+
+// ── HELIUS TOKEN DATA ─────────────────────────────────────────
+// Enriches Pump.fun tokens with real on-chain data via Helius
+async function enrichPumpToken(mint, name) {
+  try {
+    var price = await getJupiterPrice(mint);
+    var tok = S.tokens.get(name + mint);
+    if (tok && price) { tok.price = price; S.tokens.set(name + mint, tok); }
+  } catch(e) {}
+}
+
+async function getHeliusTokenData(mintAddress) {
+  try {
+    var res = await fetch(HELIUS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'memebot',
+        method: 'getAsset',
+        params: { id: mintAddress }
+      }),
+      timeout: 8000
+    });
+    if (!res.ok) return null;
+    var data = await res.json();
+    return data.result || null;
+  } catch(e) { return null; }
+}
+
+// ── LUNARCRUSH SOCIAL DATA ────────────────────────────────────
+// Cache social scores to avoid hammering the API
+var lunarCache = {}; // symbol -> { score, ts }
+var lunarTrending = []; // list of trending symbols from LunarCrush
+
+async function fetchLunarTrending() {
+  try {
+    var res = await fetch(LUNAR_URL + '/coins/list/v1?sort=galaxy_score&limit=50&key=' + LUNAR_KEY, { timeout: 8000 });
+    if (!res.ok) throw new Error();
+    var data = await res.json();
+    var coins = data.data || [];
+    lunarTrending = [];
+    coins.forEach(function(c) {
+      var sym = (c.symbol || '').toUpperCase();
+      var score = c.galaxy_score || 0;
+      var mentions = c.social_score || 0;
+      lunarCache[sym] = { score, mentions, ts: Date.now() };
+      lunarTrending.push(sym);
+    });
+    S.sources['LUNAR'] = 'live:' + lunarTrending.length;
+    log('LunarCrush: ' + lunarTrending.length + ' trending coins loaded', 'info');
+  } catch(e) { S.sources['LUNAR'] = 'dead'; }
+}
+
+function getLunarScore(symbol) {
+  var sym = (symbol || '').toUpperCase();
+  var cached = lunarCache[sym];
+  if (!cached) return 0;
+  // Galaxy score 0-100 — map to 0-15 bonus points
+  return Math.floor((cached.score / 100) * 15);
+}
+
+function isLunarTrending(symbol) {
+  return lunarTrending.indexOf((symbol || '').toUpperCase()) >= 0;
+}
+
+// ── GECKO TERMINAL (free, no key) ─────────────────────────────
+async function fetchGeckoTerminal() {
+  try {
+    var res = await fetch('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1', { timeout: 8000 });
+    if (!res.ok) throw new Error();
+    var data = await res.json();
+    var pools = (data.data || []).slice(0, 30);
+    var count = 0;
+    pools.forEach(function(p) {
+      var attr = p.attributes || {};
+      var baseToken = attr.base_token_price_usd;
+      var name = (attr.name || '').split('/')[0].trim().toUpperCase().slice(0, 12);
+      var addr = (p.relationships && p.relationships.base_token && p.relationships.base_token.data && p.relationships.base_token.data.id || '').replace('solana_', '');
+      if (!name || !addr) return;
+      var liq = parseFloat(attr.reserve_in_usd) || 0;
+      var vol24 = parseFloat(attr.volume_usd && attr.volume_usd.h24) || 0;
+      var vol1 = parseFloat(attr.volume_usd && attr.volume_usd.h1) || 0;
+      var c5 = parseFloat(attr.price_change_percentage && attr.price_change_percentage.m5) || 0;
+      var c1 = parseFloat(attr.price_change_percentage && attr.price_change_percentage.h1) || 0;
+      var c24 = parseFloat(attr.price_change_percentage && attr.price_change_percentage.h24) || 0;
+      var buys = parseInt(attr.transactions && attr.transactions.h1 && attr.transactions.h1.buys) || 0;
+      var sells = parseInt(attr.transactions && attr.transactions.h1 && attr.transactions.h1.sells) || 1;
+      var age = attr.pool_created_at ? (Date.now() - new Date(attr.pool_created_at).getTime()) / 3600000 : 24;
+      addTok({
+        id: addr, n: name, src: 'GECKO', pump: false,
+        liq, vol1, vol24, c5, c1, c24,
+        bsr: buys / Math.max(sells, 1),
+        txns: buys + sells, age,
+        isNew: age < 1, hot: age < 0.17,
+        price: parseFloat(baseToken) || null,
+        mint: addr,
+        rug: false, hp: false
+      });
+      count++;
+    });
+    S.sources['GECKO'] = 'live:' + count;
+    log('GeckoTerminal: ' + count + ' trending pools', 'info');
+  } catch(e) { S.sources['GECKO'] = 'dead'; }
+}
+
+// ── DEXSCREENER ───────────────────────────────────────────────
+var DS_QUERIES = [
+  { id: 'DSC-NEW',   url: 'https://api.dexscreener.com/latest/dex/search?q=solana+new+token' },
+  { id: 'DSC-TREND', url: 'https://api.dexscreener.com/latest/dex/search?q=solana+trending' },
+  { id: 'DSC-BOOST', url: 'https://api.dexscreener.com/latest/dex/search?q=solana+pump+fun' },
+  { id: 'DSC-MEME',  url: 'https://api.dexscreener.com/latest/dex/search?q=solana+meme+coin' },
+  { id: 'DSC-GEM',   url: 'https://api.dexscreener.com/latest/dex/search?q=solana+gem+moon' },
+  { id: 'DSC-MOON',  url: 'https://api.dexscreener.com/latest/dex/search?q=solana+dog+cat+pepe' },
+];
+
+function mapDS(p) {
+  var c1 = (p.priceChange && p.priceChange.h1) || 0;
+  var c24 = (p.priceChange && p.priceChange.h24) || 0;
+  var c5 = (p.priceChange && p.priceChange.m5) || 0;
+  var liq = (p.liquidity && p.liquidity.usd) || 0;
+  var v24 = (p.volume && p.volume.h24) || 0;
+  var buys = (p.txns && p.txns.h1 && p.txns.h1.buys) || 0;
+  var sells = (p.txns && p.txns.h1 && p.txns.h1.sells) || 1;
+  var age = (p.pairCreatedAt ? (Date.now() - p.pairCreatedAt) : 86400000 * 30) / 3600000;
+  var mint = (p.baseToken && p.baseToken.address) || null;
+  return {
+    id: p.pairAddress || Math.random().toString(36).substr(2, 8),
+    n: ((p.baseToken && p.baseToken.symbol) || '???').toUpperCase().slice(0, 12),
+    src: 'DSC', pump: false, liq, vol1: v24/24, vol24: v24,
+    c5, c1, c24,
+    bsr: buys / Math.max(sells, 1),
+    txns: buys + sells, age,
+    isNew: age < 1, hot: age < 0.17,
+    price: parseFloat(p.priceUsd) || null,
+    mint,
+    rug: false, hp: buys > 10 && sells === 0
+  };
+}
+
+function mapCG(c) {
+  var c1 = c.price_change_percentage_1h_in_currency || 0;
+  var mcap = c.market_cap || 1000000;
+  return {
+    id: c.id,
+    n: (c.symbol || '???').toUpperCase().slice(0, 12),
+    src: 'CGK', pump: false,
+    liq: mcap * 0.05,
+    vol1: (c.total_volume || 0) / 24,
+    vol24: c.total_volume || 0,
+    c5: c1 / 12, c1,
+    c24: c.price_change_percentage_24h || 0,
+    bsr: c1 > 5 ? 2.0 : c1 > 0 ? 1.3 : 0.8,
+    txns: 50, age: 720,
+    isNew: false, hot: false,
+    price: c.current_price || null,
+    mint: null,
+    rug: false, hp: false
+  };
+}
+
+async function fetchAll() {
+  // DexScreener
+  for (var q of DS_QUERIES) {
+    try {
+      var res = await fetch(q.url, { timeout: 8000 });
+      if (!res.ok) throw new Error();
+      var data = await res.json();
+      var pairs = (data.pairs || []).filter(function(p) { return p.chainId === 'solana' && p.priceUsd; });
+      pairs.forEach(function(p) { addTok(mapDS(p)); });
+      S.sources[q.id] = 'live:' + pairs.length;
+    } catch(e) { S.sources[q.id] = 'dead'; }
+  }
+
+  // CoinGecko
+  try {
+    var res2 = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=solana-meme-coins&order=volume_desc&per_page=20&sparkline=false&price_change_percentage=1h,24h', { timeout: 8000 });
+    if (res2.ok) {
+      var cg = await res2.json();
+      if (cg && cg.length) {
+        cg.forEach(function(c) { addTok(mapCG(c)); });
+        S.sources['COINGECKO'] = 'live:' + cg.length;
+      }
+    }
+  } catch(e) { S.sources['COINGECKO'] = 'dead'; }
+
+  // GeckoTerminal
+  await fetchGeckoTerminal();
+
+  log('Pool: ' + S.tokens.size + ' tokens | Pump.fun: ' + S.pumpCount + ' live', 'info');
+}
+
+// ── PUMP.FUN PRICE CALCULATOR ─────────────────────────────────
+// Calculates real token price directly from Pump.fun bonding curve data
+// This works instantly at launch — no need to wait for Jupiter listing
+// Formula: price = virtualSolReserves / (virtualTokenReserves * solPriceUsd)
+var SOL_PRICE_USD = 150; // updated periodically
+
+async function updateSolPrice() {
+  try {
+    var res = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112', { timeout: 5000 });
+    if (!res.ok) return;
+    var data = await res.json();
+    var sol = data.data && data.data['So11111111111111111111111111111111111111112'];
+    if (sol && sol.price) SOL_PRICE_USD = parseFloat(sol.price);
+  } catch(e) {}
+}
+
+function calcPumpPrice(d) {
+  // Pump.fun bonding curve price calculation
+  var vSol = parseFloat(d.vSolInBondingCurve) || 0;
+  var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
+  if (vSol > 0 && vTokens > 0) {
+    // Price in SOL per token, converted to USD
+    var priceInSol = vSol / vTokens;
+    return priceInSol * SOL_PRICE_USD;
+  }
+  // Fallback: use marketCapSol / total supply (1 billion tokens)
+  var mcapSol = parseFloat(d.marketCapSol) || 0;
+  if (mcapSol > 0) {
+    return (mcapSol / 1000000000) * SOL_PRICE_USD;
+  }
+  return null;
+}
+
+// Store pump prices keyed by mint for real time tracking
+var pumpPrices = {}; // mint -> { price, ts }
+
+function updatePumpPrice(mint, d) {
+  var price = calcPumpPrice(d);
+  if (price && price > 0) {
+    pumpPrices[mint] = { price: price, ts: Date.now() };
+    // Update any open trades on this token
+    S.open.forEach(function(trade) {
+      if (trade.mint === mint) {
+        var currentPrice = price;
+        trade.currentPrice = currentPrice;
+        // Set entry price if not set yet
+        if (!trade.entryPrice) {
+          trade.entryPrice = currentPrice;
+          trade.peakPrice = currentPrice;
+          log('PRICE SET ' + trade.tok.n + ' entry $' + currentPrice.toFixed(8) + ' [PUMP.FUN]', 'info');
+        }
+        // Calculate real P&L
+        if (trade.entryPrice > 0) {
+          var pricePct = (currentPrice - trade.entryPrice) / trade.entryPrice;
+          trade.realPnlPct = pricePct;
+          trade.realPnl = trade.size * pricePct;
+          // Update peak
+          if (currentPrice > trade.peakPrice) trade.peakPrice = currentPrice;
+          // Track last price movement for stale detection
+          if (!trade.lastPrice || Math.abs(currentPrice - trade.lastPrice) / trade.lastPrice > 0.001) {
+            trade.lastPriceChange = Date.now();
+            trade.lastPrice = currentPrice;
+          }
+          // Check trail stop
+          if (trade.tpl === 'TRAIL') {
+            var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+            if (peakGain >= CFG.TRAIL_ACT) {
+              var pullback = (trade.peakPrice - currentPrice) / trade.peakPrice;
+              if (pullback >= CFG.TRAIL_PB) {
+                log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+                closeTradeReal(trade.id, 'Trail exit');
+                return;
+              }
+            }
+          }
+          // Check stop loss
+          if (pricePct <= -trade.sl) {
+            log('SL HIT ' + trade.tok.n + ' | ' + (pricePct*100).toFixed(1) + '%', 'loss');
+            closeTradeReal(trade.id, 'Stop loss hit');
+            return;
+          }
+        }
+      }
+    });
+  }
+}
+
+// ── PUMP.FUN WEBSOCKET ────────────────────────────────────────
+var pumpWs = null;
+function connectPump() {
+  if (pumpWs && pumpWs.readyState === WebSocket.OPEN) return;
+  try {
+    pumpWs = new WebSocket('wss://pumpportal.fun/api/data');
+    pumpWs.on('open', function() {
+      S.pumpLive = true;
+      S.sources['PUMP.FUN'] = 'live:0';
+      pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
+      pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade' }));
+      log('Pump.fun WebSocket LIVE', 'pump');
+    });
+    pumpWs.on('message', function(raw) {
+      try {
+        var d = JSON.parse(raw.toString());
+        if (d.mint && (d.symbol || d.name)) {
+          // New token launch
+          var mint = d.mint;
+          var name = ((d.symbol || d.name || 'NEW') + '').toUpperCase().slice(0, 12);
+          var initialLiq = (d.vSolInBondingCurve || 0) * SOL_PRICE_USD;
+          // Calculate real price directly from bonding curve
+          var launchPrice = calcPumpPrice(d);
+          addTok({
+            id: mint, n: name, src: 'WS', pump: true,
+            liq: initialLiq || 5000,
+            vol1: (d.volume || 0),
+            vol24: (d.volume || 0),
+            c5: 0, c1: 0, c24: 0,
+            bsr: 2.0,
+            txns: 1,
+            age: 0, isNew: true, hot: true,
+            price: launchPrice, // real price from bonding curve
+            mint: mint,
+            rug: false, hp: false,
+            launchData: d
+          });
+          // Store pump price for real time tracking
+          if (launchPrice) pumpPrices[mint] = { price: launchPrice, ts: Date.now() };
+          S.pumpCount++;
+          S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
+          if (S.pumpCount % 20 === 0) {
+            log('Pump.fun: ' + S.pumpCount + ' launches - latest: ' + name, 'pump');
+          }
+        }
+        // Trade events — real time price updates + graduation tracking
+        if (d.txType === 'buy' || d.txType === 'sell') {
+          var mint2 = d.mint;
+          if (mint2) {
+            // Update price from trade event
+            updatePumpPrice(mint2, d);
+            // Update token data
+            S.tokens.forEach(function(existing, key) {
+              if (existing.mint === mint2 || existing.id === mint2) {
+                if (d.txType === 'buy') existing.bsr = Math.min((existing.bsr || 1) + 0.1, 5);
+                else existing.bsr = Math.max((existing.bsr || 1) - 0.1, 0.1);
+                if (d.marketCapSol) existing.liq = d.marketCapSol * SOL_PRICE_USD * 0.05;
+                S.tokens.set(key, existing);
+              }
+            });
+            // ── GRADUATION SNIPER TRACKING ──
+            var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
+            var mcapSol = parseFloat(d.marketCapSol) || 0;
+            var tokenName = ((d.symbol || d.name || '') + '').toUpperCase().slice(0, 12);
+            if (solInCurve > 0 || mcapSol > 0) {
+              var existing2 = S.gradCandidates.get(mint2) || {
+                name: tokenName, mint: mint2,
+                firstSeen: Date.now(), buys: 0, sells: 0
+              };
+              existing2.solInCurve = solInCurve;
+              existing2.mcapSol = mcapSol;
+              existing2.lastUpdate = Date.now();
+              if (d.txType === 'buy') existing2.buys = (existing2.buys || 0) + 1;
+              else existing2.sells = (existing2.sells || 0) + 1;
+              existing2.bsr = existing2.buys / Math.max(existing2.sells, 1);
+              existing2.price = calcPumpPrice(d);
+              // Check if approaching graduation threshold
+              if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
+                existing2.nearGrad = true;
+                // Log milestone
+                var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
+                if (!existing2.logged || existing2.loggedPct !== pct) {
+                  existing2.logged = true;
+                  existing2.loggedPct = pct;
+                  log('🎓 GRAD CANDIDATE ' + (existing2.name || mint2.slice(0,8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% to graduation | BSR ' + existing2.bsr.toFixed(1) + 'x', 'pump');
+                }
+              } else {
+                existing2.nearGrad = false;
+              }
+              S.gradCandidates.set(mint2, existing2);
+            }
+          }
+        }
+      } catch(e) {}
+    });
+    pumpWs.on('error', function() { S.pumpLive = false; S.sources['PUMP.FUN'] = 'dead'; });
+    pumpWs.on('close', function() {
+      S.pumpLive = false;
+      S.sources['PUMP.FUN'] = 'dead';
+      setTimeout(connectPump, 10000);
+    });
+  } catch(e) { setTimeout(connectPump, 15000); }
+}
+
+// ── REAL PRICE TRACKING FOR OPEN TRADES ──────────────────────
+async function updateOpenTradePrices() {
+  if (S.open.length === 0) return;
+
+  // Get all mint addresses for open trades
+  var mints = S.open.filter(function(t) { return t.mint; }).map(function(t) { return t.mint; });
+  if (mints.length === 0) return;
+
+  // Batch fetch from Jupiter
+  var prices = await getJupiterPrices(mints);
+
+  S.open.forEach(function(trade) {
+    if (!trade.mint) return;
+    var priceData = prices[trade.mint];
+    if (!priceData) return;
+    var currentPrice = parseFloat(priceData.price);
+    if (!currentPrice || currentPrice <= 0) return;
+
+    // Update current price
+    trade.currentPrice = currentPrice;
+
+    // Calculate real P&L
+    if (trade.entryPrice && trade.entryPrice > 0) {
+      var pricePct = (currentPrice - trade.entryPrice) / trade.entryPrice;
+      trade.realPnlPct = pricePct;
+      trade.realPnl = trade.size * pricePct;
+
+      // Update peak price for trail stop
+      if (!trade.peakPrice || currentPrice > trade.peakPrice) {
+        trade.peakPrice = currentPrice;
+      }
+
+      // Check trail stop — exit if pulled back from peak (TRAIL_PB: 2%)
+      if (trade.peakPrice && trade.tpl === 'TRAIL') {
+        var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+        if (peakGain >= CFG.TRAIL_ACT) {
+          // Trail is active — check for pullback
+          var pullback = (trade.peakPrice - currentPrice) / trade.peakPrice;
+          if (pullback >= CFG.TRAIL_PB) {
+            log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+            closeTradeReal(trade.id, 'Trail exit');
+            return;
+          }
+        }
+      }
+
+      // Check stop loss
+      if (pricePct <= -trade.sl) {
+        log('SL HIT ' + trade.tok.n + ' | ' + (pricePct*100).toFixed(1) + '%', 'loss');
+        closeTradeReal(trade.id, 'Stop loss hit');
+        return;
+      }
+    }
+  });
+}
+
+// ── REAL TRADE CLOSE ──────────────────────────────────────────
+function closeTradeReal(id, reason) {
+  var i = S.open.findIndex(function(t) { return t.id === id; });
+  if (i === -1) return;
+  var tr = S.open[i];
+
+  var pnl = 0;
+  var closeReason = reason || 'Manual sell';
+
+  if (tr.entryPrice && tr.currentPrice) {
+    // Real P&L from actual price movement
+    var pricePct = (tr.currentPrice - tr.entryPrice) / tr.entryPrice;
+    var slippage = tr.slip || 0.005;
+    pnl = tr.size * pricePct - tr.size * slippage - CFG.SOL_GAS;
+  } else {
+    // No price data available — use entry size as loss (conservative)
+    pnl = -(CFG.SOL_GAS);
+    closeReason = reason + ' (no price data)';
+  }
+
+  if (pnl > 0) {
+    S.fund = parseFloat((S.fund + pnl * 0.80).toFixed(4));
+    S.savings = parseFloat((S.savings + pnl * 0.20).toFixed(4));
+    var prefix = tr.isGrad ? '🎓 GRAD ' : '';
+    log(prefix + tr.tok.n + ' +$' + pnl.toFixed(2) + ' | saved $' + (pnl*0.20).toFixed(2) + ' | ' + closeReason, 'win');
+    S.stats.w++;
+    if (tr.isGrad) S.stats.gw++;
+  } else {
+    S.fund = parseFloat((S.fund + pnl).toFixed(4));
+    var prefix2 = tr.isGrad ? '🎓 GRAD ' : '';
+    log(prefix2 + tr.tok.n + ' -$' + Math.abs(pnl).toFixed(2) + ' | ' + closeReason, 'loss');
+    S.stats.l++;
+    if (tr.isGrad) S.stats.gl++;
+  }
+
+  S.stats.t++;
+  S.closed.unshift({
+    tok: tr.tok,
+    closeReason: closeReason,
+    pnl: parseFloat(pnl.toFixed(4)),
+    entryPrice: tr.entryPrice,
+    exitPrice: tr.currentPrice,
+    slip: tr.slip || 0
+  });
+  if (S.closed.length > 200) S.closed.pop();
+  S.open.splice(i, 1);
+
+  // Daily loss limit check
+  if (S.fund < S.dayStartFund * (1 - CFG.LOSS_LIM)) {
+    log('Daily loss limit hit — bot stopped', 'rug');
+    stopBot();
+  }
+}
+
+// ── SCORING ───────────────────────────────────────────────────
+function score(t) {
+  var s = 0, pos = [], neg = [], flags = [];
+  var freshLaunch = (t.src === 'WS' && t.age < 0.017); // under 1 min old
+
+  // ── FRESH PUMP.FUN LAUNCH SCORING ──
+  // New launches have no history — judge purely on launch signals
+  if (freshLaunch) {
+    // Buy pressure at launch (most important signal)
+    var bp2 = t.bsr > 4 ? 35 : t.bsr > 3 ? 30 : t.bsr > 2 ? 25 : t.bsr > 1.5 ? 20 : t.bsr > 1 ? 10 : 0;
+    s += bp2;
+    if (bp2 >= 30) pos.push('Strong launch buys ' + t.bsr.toFixed(1) + 'x');
+    else if (bp2 >= 20) pos.push('Good launch buys ' + t.bsr.toFixed(1) + 'x');
+    else if (bp2 === 0) neg.push('No buy pressure');
+
+    // Initial liquidity
+    var lp2 = t.liq > 50000 ? 20 : t.liq > 20000 ? 15 : t.liq > 10000 ? 10 : t.liq > 5000 ? 5 : 0;
+    s += lp2;
+    if (lp2 >= 15) pos.push('Good launch liq $' + (t.liq/1000).toFixed(0) + 'k');
+    else if (lp2 === 0) neg.push('Low launch liq');
+
+    // Live launch bonus
+    s += 25;
+    pos.push('LIVE LAUNCH ⚡');
+
+    // LunarCrush social bonus
+    var lscore = getLunarScore(t.n);
+    if (lscore > 0) { s += lscore; pos.push('Social buzz +' + lscore); }
+    if (isLunarTrending(t.n)) { s += 10; pos.push('🔥 TRENDING'); }
+
+    // Safety penalties
+    if (t.bsr < 0.5) { s = Math.floor(s * 0.30); flags.push('Heavy sell'); }
+    if (t.liq < 2000) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
+
+    return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
+  }
+
+  // ── STANDARD SCORING for established tokens ──
+
+  // Liquidity
+  var lp = t.liq > 2e6 ? 25 : t.liq > 5e5 ? 20 : t.liq > 1e5 ? 14 : t.liq > 3e4 ? 9 : t.liq > 1e4 ? 5 : t.liq > 2000 ? 2 : 0;
+  s += lp;
+  if (lp >= 20) pos.push('Deep liq $' + (t.liq/1000).toFixed(0) + 'k');
+  else if (lp >= 9) pos.push('Liq $' + (t.liq/1000).toFixed(0) + 'k');
+  else if (lp < 2) neg.push('Micro liq');
+
+  // Volume ratio
+  var vr = t.vol1 / Math.max(t.vol24/24, 1);
+  var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
+  s += vp;
+  if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
+  else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
+  else if (vp === 0) neg.push('Vol declining');
+
+  // Buy/sell ratio
+  var bp = t.bsr > 3 ? 20 : t.bsr > 2 ? 16 : t.bsr > 1.5 ? 11 : t.bsr > 1.2 ? 7 : t.bsr > 1 ? 3 : 0;
+  s += bp;
+  if (bp >= 16) pos.push('Buys ' + t.bsr.toFixed(1) + 'x');
+  else if (bp >= 11) pos.push('Buying ' + t.bsr.toFixed(1) + 'x');
+  else if (bp === 0) neg.push('Selling');
+
+  // Price momentum
+  var mp = t.c5 > 20 ? 15 : t.c5 > 10 ? 12 : t.c5 > 3 ? 8 : t.c5 > 0 ? 3 : t.c5 > -5 ? 0 : -2;
+  s += Math.max(mp, 0);
+  if (mp >= 12) pos.push('+' + t.c5.toFixed(1) + '% 5m');
+  else if (mp >= 8) pos.push('+' + t.c5.toFixed(1) + '% 5m');
+  else if (mp < 0) neg.push(t.c5.toFixed(1) + '% 5m');
+
+  // 1h momentum
+  var hp = t.c1 > 50 ? 10 : t.c1 > 20 ? 7 : t.c1 > 5 ? 4 : t.c1 > 0 ? 1 : 0;
+  s += hp;
+  if (hp >= 7) pos.push('+' + t.c1.toFixed(0) + '% 1h');
+
+  // Source bonus
+  if (t.hot) { s += 15; pos.push('HOT <10min'); }
+  else if (t.isNew) { s += 10; pos.push('NEW <1h'); }
+  else if (t.age < 6) { s += 5; pos.push(t.age.toFixed(1) + 'h old'); }
+  if (t.pump && t.isNew) { s += 5; pos.push('pump.fun'); }
+
+  // LunarCrush social bonus
+  var lscore2 = getLunarScore(t.n);
+  if (lscore2 > 0) { s += lscore2; pos.push('Social buzz +' + lscore2); }
+  if (isLunarTrending(t.n)) { s += 10; pos.push('🔥 TRENDING'); }
+
+  // Penalty flags
+  if (t.c1 > 300) { s = Math.floor(s * 0.20); flags.push('Mega pump'); }
+  else if (t.c1 > 150) { s = Math.floor(s * 0.35); flags.push('Big pump'); }
+  else if (t.c1 > 80) { s = Math.floor(s * 0.55); flags.push('Late entry'); }
+  if (t.bsr < 0.5) { s = Math.floor(s * 0.50); flags.push('Heavy sell'); }
+  if (t.liq < 1500) { s = Math.floor(s * 0.25); flags.push('Danger liq'); }
+
+  return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
+}
+
+
+// ── POSITION SIZING ───────────────────────────────────────────
+function cl(v, a, b) { return Math.min(Math.max(v, a), b); }
+
+function getSlip(liq, sz) {
+  // Real slippage estimate based on liquidity and position size
+  return parseFloat(cl(0.004 + (sz / Math.max(liq, 100)) * 2.5, 0.003, 0.15).toFixed(4));
+}
+
+function getSize(fund, sc, liq) {
+  var p = sc >= 85 ? 0.08 : sc >= 75 ? 0.065 : 0.05;
+  if (liq < 5e4) p *= 0.65;
+  if (liq < 1e4) p *= 0.50;
+  return parseFloat((fund * Math.min(p, CFG.MAX_POS)).toFixed(4));
+}
+
+function getSL(sc) {
+  return cl(sc >= 85 ? 0.12 : sc >= 75 ? 0.15 : 0.18, 0.10, 0.28);
+}
+
+
+// ── GRADUATION SNIPER ─────────────────────────────────────────
+// Scans graduation candidates and enters trades on qualifying tokens
+async function runGradSniper() {
+  if (!S.running) return;
+  if (S.fund < 1) return;
+
+  // Count open grad trades
+  var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
+  if (openGrads >= CFG.MAX_GRAD) return;
+
+  var now = Date.now();
+
+  // Debug: log how many candidates we have
+  if (S.gradCandidates.size > 0 && Math.random() < 0.01) {
+    log('GRAD POOL: ' + S.gradCandidates.size + ' candidates tracked', 'info');
+  }
+
+  for (var entry of S.gradCandidates.entries()) {
+    var mint = entry[0];
+    var cand = entry[1];
+
+    // Must be near graduation
+    if (!cand.nearGrad) continue;
+
+    // Must have been tracked for at least 30 seconds (not a flash pump)
+    var age = (now - cand.firstSeen) / 1000;
+    if (age < 30) continue;
+
+    // Must have good buy pressure
+    if (cand.bsr < 1.2) continue;
+
+    // Must not already have an open trade on this token
+    if (S.open.find(function(t) { return t.mint === mint; })) continue;
+
+    // Must have a valid price
+    if (!cand.price || cand.price <= 0) continue;
+
+    // Quality check — need more buys than sells
+    var totalTxns = (cand.buys || 0) + (cand.sells || 0);
+    if (totalTxns < 3) continue; // need at least 3 transactions
+
+    // Calculate position size — slightly larger for grad plays
+    var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, CFG.MAX_POS)).toFixed(4));
+    if (size < 0.50) continue;
+
+    var slip = 0.008; // slightly higher slippage for grad plays
+    S.fund = parseFloat((S.fund - size * slip).toFixed(4));
+
+    var solPct = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
+
+    var trade = {
+      id: Math.random().toString(36).substr(2, 9),
+      tok: {
+        n: cand.name || mint.slice(0, 8),
+        src: 'GRAD',
+        liq: cand.solInCurve * SOL_PRICE_USD,
+      },
+      sc: 85, // graduation plays get high score by default
+      reasons: [
+        'Near graduation ' + solPct + '%',
+        'BSR ' + cand.bsr.toFixed(1) + 'x',
+        cand.solInCurve.toFixed(0) + ' SOL in curve',
+        age.toFixed(0) + 's building'
+      ],
+      size: size,
+      tpl: 'TRAIL',
+      sl: 0.12, // tight 12% stop loss for grad plays
+      slip: slip,
+      mint: mint,
+      entryPrice: cand.price,
+      currentPrice: cand.price,
+      peakPrice: cand.price,
+      realPnl: 0,
+      realPnlPct: 0,
+      isGrad: true,
+      gradSolAtEntry: cand.solInCurve,
+      openedAt: new Date().toLocaleTimeString(),
+      startTime: now
+    };
+
+    S.open.push(trade);
+    S.gradCount++;
+
+    log('🎓 GRAD ENTER ' + trade.tok.n + ' | ' + solPct + '% to grad | SOL ' + cand.solInCurve.toFixed(0) + ' | BSR ' + cand.bsr.toFixed(1) + 'x | $' + size.toFixed(2) + ' | Entry $' + cand.price.toFixed(8), 'entry');
+
+    // Only enter one per scan cycle
+    break;
+  }
+}
+
+// ── MAIN SCAN ─────────────────────────────────────────────────
+var scanI = null, scanIdx = 0;
+async function runScan() {
+  if (!S.running || S.tokens.size === 0) return;
+  if (S.fund < 1) { stopBot(); return; }
+
+  var tokens = Array.from(S.tokens.values());
+  var tok = tokens[scanIdx % tokens.length];
+  scanIdx++; S.scanCount++;
+
+  var result = score(tok);
+  var sc = result.sc, pos = result.pos, neg = result.neg, flags = result.flags, all = result.all;
+  var src = '[' + tok.src + ']';
+
+  if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
+
+  // WS tokens (Pump.fun) are handled EXCLUSIVELY by graduation sniper
+  // Skip them here completely
+  if (tok.src === 'WS') { return; }
+
+  // Established tokens need MIN_SCORE
+  var minScore = CFG.MIN_SCORE;
+  if (sc < minScore) {
+    S.rejectCount++;
+    var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
+    log('SKIP ' + tok.n + ' ' + src + ' - Score ' + sc + '/' + minScore + ' | ' + why, 'reject');
+    return;
+  }
+
+  if (S.open.length >= CFG.MAX_OPEN) return;
+  if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
+
+  // Get real entry price — Pump.fun direct first, then Jupiter
+  var entryPrice = null;
+  // Use Pump.fun bonding curve price first (instant, no API needed)
+  if (tok.mint && pumpPrices[tok.mint]) {
+    entryPrice = pumpPrices[tok.mint].price;
+  } else if (tok.price) {
+    entryPrice = tok.price; // use known price from data source
+  } else if (tok.mint) {
+    entryPrice = await getJupiterPrice(tok.mint); // fallback to Jupiter
+  }
+
+  var slip = getSlip(tok.liq, S.fund * 0.08);
+  var size = getSize(S.fund, sc, tok.liq);
+  if (size < 0.50) { S.rejectCount++; return; }
+
+  // Deduct slippage cost from fund at entry
+  S.fund = parseFloat((S.fund - size * slip).toFixed(4));
+
+  var sl = getSL(sc);
+
+  var trade = {
+    id: Math.random().toString(36).substr(2, 9),
+    tok: Object.assign({}, tok),
+    sc, reasons: all,
+    size: parseFloat(size.toFixed(4)),
+    tpl: 'TRAIL',
+    sl, slip,
+    mint: tok.mint || null,
+    entryPrice: entryPrice,
+    currentPrice: entryPrice,
+    peakPrice: entryPrice,
+    realPnl: 0,
+    realPnlPct: 0,
+    openedAt: new Date().toLocaleTimeString(),
+    startTime: Date.now()
+  };
+
+  S.open.push(trade);
+
+  var tag = tok.src === 'WS' ? 'LIVE ' : tok.hot ? 'HOT ' : tok.isNew ? 'NEW ' : '';
+  var priceStr = entryPrice ? ' | Entry $' + entryPrice.toFixed(8) : ' | Price fetching...';
+  log('ENTER ' + tag + tok.n + ' ' + src + ' | Score ' + sc + ' | SL -' + (sl*100).toFixed(0) + '% | $' + size.toFixed(2) + ' | Slip ' + (slip*100).toFixed(2) + '%' + priceStr, 'entry');
+}
+
+// ── PRICE UPDATE LOOP ─────────────────────────────────────────
+var priceI = null;
+function startPriceUpdates() {
+  if (priceI) clearInterval(priceI);
+  priceI = setInterval(updateOpenTradePrices, CFG.PRICE_INTERVAL);
+}
+
+// ── BOT CONTROL ───────────────────────────────────────────────
+var fetchI = null;
+
+function startBot() {
+  if (S.running) return;
+  S.running = true;
+  S.startTime = Date.now();
+  S.dayStartFund = S.fund;
+  connectPump();
+  fetchAll();
+  scanI = setInterval(runScan, CFG.SCAN_INTERVAL);
+  var gradI = setInterval(runGradSniper, 1000); // check grad candidates every second
+  fetchI = setInterval(fetchAll, 30000);
+  startPriceUpdates();
+  setInterval(checkExitCriteria, 10000); // criteria-based exit check every 10s
+  updateSolPrice();
+  setInterval(updateSolPrice, 60000); // update SOL price every minute
+  fetchLunarTrending();
+  setInterval(fetchLunarTrending, 300000); // refresh every 5 mins
+  log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Pump.fun', 'info');
+}
+
+// ── CRITERIA BASED EXIT CHECKER ──────────────────────────────
+// Replaces time-based exits with intelligent market-condition exits
+// Runs every 10 seconds to check all open trades
+function checkExitCriteria() {
+  var now = Date.now();
+  S.open.slice().forEach(function(t) {
+    var age = now - t.startTime;
+
+    // 1. No price data after 3 minutes — close to free the slot
+    if (!t.entryPrice && age > CFG.NO_PRICE_TIMEOUT) {
+      log('TIMEOUT ' + t.tok.n + ' — no price after 3min', 'warn');
+      closeTradeReal(t.id, 'Timeout — no price data');
+      return;
+    }
+
+    if (!t.entryPrice || !t.currentPrice) return;
+
+    // 2. Token went stale — price unchanged for 2 minutes
+    var lastMove = t.lastPriceChange || t.startTime;
+    if ((now - lastMove) > CFG.STALE_TIME && age > 60000) {
+      log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
+      closeTradeReal(t.id, 'Token went stale');
+      return;
+    }
+
+    // 3. Buy pressure died — BSR below 0.8 (heavy selling)
+    var tokenData = null;
+    S.tokens.forEach(function(tok) {
+      if (tok.mint === t.mint || tok.id === t.mint) tokenData = tok;
+    });
+    if (tokenData && tokenData.bsr < 0.8 && age > 30000) {
+      log('SMART MONEY OUT ' + t.tok.n + ' | BSR ' + tokenData.bsr.toFixed(2), 'warn');
+      closeTradeReal(t.id, 'Smart money out');
+      return;
+    }
+
+    // 4. For graduation plays — check if token has graduated (SOL > 500)
+    if (t.isGrad) {
+      var gradCand = S.gradCandidates.get(t.mint);
+      if (gradCand && gradCand.solInCurve >= CFG.GRAD_TARGET) {
+        log('🎓 GRADUATED ' + t.tok.n + ' — listing on DEX, exiting', 'win');
+        closeTradeReal(t.id, 'Token graduated to DEX');
+        return;
+      }
+    }
+  });
+}
+
+function stopBot() {
+  S.running = false;
+  clearInterval(scanI);
+  clearInterval(priceI);
+  clearInterval(fetchI);
+  log('Bot stopped', 'info');
+}
+
+// ── API ROUTES ────────────────────────────────────────────────
+app.get('/api/state', function(req, res) {
+  // Strip heavy data from open trades before sending
+  var openTrades = S.open.map(function(t) {
+    return {
+      id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, sl: t.sl, slip: t.slip,
+      mint: t.mint, entryPrice: t.entryPrice, currentPrice: t.currentPrice,
+      peakPrice: t.peakPrice, realPnl: t.realPnl, realPnlPct: t.realPnlPct,
+      isGrad: t.isGrad, gradSolAtEntry: t.gradSolAtEntry,
+      openedAt: t.openedAt, startTime: t.startTime,
+      reasons: (t.reasons || []).slice(0, 4),
+      tok: { n: t.tok.n, src: t.tok.src, liq: t.tok.liq }
+    };
+  });
+  res.json({
+    fund: S.fund, savings: S.savings, stats: S.stats,
+    running: S.running, pumpLive: S.pumpLive, pumpCount: S.pumpCount,
+    poolSize: S.tokens.size, scanCount: S.scanCount, rejectCount: S.rejectCount,
+    openTrades: openTrades, closedTrades: S.closed.slice(0, 20),
+    gradCount: S.gradCount, gradCandidates: S.gradCandidates.size,
+    logs: S.logs.slice(0, 100), sources: S.sources, startTime: S.startTime
+  });
 });
 
-function f2(n) { return parseFloat(n || 0).toFixed(2); }
-function f8(n) { return parseFloat(n || 0).toFixed(8); }
+app.post('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
+app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
+app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
+app.post('/api/setTP', function(req, res) { res.json({ success: true }); });
+app.get('/health', function(req, res) { res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount }); });
 
-function setF(f) {
-  logFilter = f;
-  document.querySelectorAll('.lfb').forEach(function(b) {
-    b.classList.toggle('act', (f === 'all' && b.textContent === 'ALL') || (b.textContent.toLowerCase().indexOf(f) >= 0 && f !== 'all'));
-  });
-  if (!frozen) renderLog();
-}
+// ── DASHBOARD ─────────────────────────────────────────────────
+app.get('/', function(req, res) {
+  res.sendFile(__dirname + '/index.html');
+});
 
-function renderLog() {
-  var el = document.getElementById('loglist');
-  var fl = logFilter === 'all' ? allLogs : allLogs.filter(function(e) { return e.type === logFilter; });
-  el.innerHTML = '';
-  fl.slice(0, 150).forEach(function(e) {
-    var d = document.createElement('div');
-    d.className = 'le ' + e.type;
-    d.innerHTML = '<span class="lt">' + e.time + '</span>' + e.msg;
-    el.appendChild(d);
-  });
-  if (lb && lb.scrollTop < 30) lb.scrollTop = 0;
-}
-
-function startTimer(st) {
-  startTime = st || Date.now();
-  if (timI) clearInterval(timI);
-  timI = setInterval(function() {
-    var s = Math.floor((Date.now() - startTime) / 1000);
-    document.getElementById('tv').textContent =
-      Math.floor(s / 3600).toString().padStart(2, '0') + ':' +
-      Math.floor((s % 3600) / 60).toString().padStart(2, '0') + ':' +
-      (s % 60).toString().padStart(2, '0');
-  }, 1000);
-}
-
-async function toggleBot() {
-  try { await fetch(botRunning ? BASE + '/api/stop' : BASE + '/api/start', { method: 'POST' }); }
-  catch(e) { alert('Cannot reach server. Please refresh and try again.'); }
-}
-
-async function sellTrade(id) {
-  try { await fetch(BASE + '/api/sell/' + id, { method: 'POST' }); } catch(e) {}
-}
-
-async function fetchState() {
-  try {
-    var res = await fetch(BASE + '/api/state');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var data = await res.json();
-    botRunning = data.running;
-
-    var btn = document.getElementById('startBtn');
-    if (data.running) {
-      btn.style.background = 'linear-gradient(135deg,#3d0000,#5c0a0a)';
-      btn.style.color = 'var(--red)'; btn.style.borderColor = 'var(--red)';
-      btn.textContent = '⏹ STOP BOT';
-    } else {
-      btn.style.background = 'linear-gradient(135deg,#062a12,#0a3d1a)';
-      btn.style.color = 'var(--green)'; btn.style.borderColor = 'var(--gd)';
-      btn.textContent = '▶ START BOT';
-    }
-
-    var pnl = (data.fund + data.savings) - 100;
-    var fe = document.getElementById('fund');
-    fe.textContent = '$' + f2(data.fund);
-    fe.style.color = data.fund >= 100 ? 'var(--green)' : 'var(--red)';
-    document.getElementById('savings').textContent = '$' + f2(data.savings);
-    document.getElementById('alltime').textContent = (pnl >= 0 ? '+' : '') + '$' + f2(pnl) + ' all time';
-    document.getElementById('wr').textContent = data.stats.t > 0 ? ((data.stats.w / data.stats.t) * 100).toFixed(1) + '%' : '0%';
-    document.getElementById('wins').textContent = data.stats.w;
-    document.getElementById('losses').textContent = data.stats.l;
-    document.getElementById('rugs').textContent = data.stats.r;
-    document.getElementById('pool').textContent = data.poolSize;
-    document.getElementById('scanned').textContent = data.scanCount;
-    document.getElementById('pumpCnt').textContent = data.pumpCount;
-
-    if (data.startTime) startTimer(data.startTime);
-
-    var wsbar = document.getElementById('wsbar');
-    if (data.pumpLive) {
-      wsbar.textContent = '⚡ PUMP.FUN LIVE – ' + data.pumpCount + ' tokens streamed';
-      wsbar.style.color = 'var(--green)';
-    } else {
-      wsbar.textContent = '⚡ PUMP.FUN WEBSOCKET: CONNECTING...';
-      wsbar.style.color = 'var(--yellow)';
-    }
-
-    document.getElementById('status').textContent = data.running ?
-      'RUNNING · ' + data.poolSize + ' TOKENS · ' + data.scanCount + ' SCANNED' :
-      'STANDBY · READY';
-
-    // Sources
-    var srcrow = document.getElementById('srcrow');
-    srcrow.innerHTML = '';
-    Object.entries(data.sources || {}).forEach(function(entry) {
-      var name = entry[0], info = entry[1];
-      var d = document.createElement('div');
-      var live = info.indexOf('live') >= 0;
-      d.className = 'bdg ' + (live ? (name === 'PUMP.FUN' ? 'wsbdg' : 'live') : 'dead');
-      var cnt = live ? info.split(':')[1] : '';
-      d.textContent = (live ? '● ' : '✗ ') + name + (cnt ? ' ' + cnt : '');
-      srcrow.appendChild(d);
-    });
-
-    // Logs
-    if (data.logs && data.logs.length > 0) {
-      allLogs = data.logs;
-      document.getElementById('lcnt').textContent = allLogs.length + ' entries';
-      if (!frozen) renderLog();
-    }
-
-    // ── GRADUATION SNIPER SECTION ──
-    var gradSec = document.getElementById('gradSec');
-    var gradList = document.getElementById('gradList');
-    var gradTrades = (data.openTrades || []).filter(function(t) { return t.isGrad; });
-    var regularTrades = (data.openTrades || []).filter(function(t) { return !t.isGrad; });
-    document.getElementById('gradCandCount').textContent = data.gradCandidates || 0;
-    document.getElementById('gradTotal').textContent = data.gradCount || 0;
-    if (gradTrades.length > 0) {
-      gradSec.style.display = 'block';
-      gradList.innerHTML = '';
-      gradTrades.forEach(function(t) {
-        var el = Math.floor((Date.now() - t.startTime) / 1000);
-        var pnlColor = !t.realPnl ? 'var(--dim)' : t.realPnl >= 0 ? 'var(--green)' : 'var(--red)';
-        var pnlDisplay = t.entryPrice ? (t.realPnl >= 0 ? '+' : '') + '$' + f2(Math.abs(t.realPnl || 0)) : 'FETCHING...';
-        var pctDisplay = t.entryPrice ? (t.realPnlPct >= 0 ? '+' : '') + ((t.realPnlPct || 0) * 100).toFixed(1) + '%' : '---';
-        var gradPct = t.gradSolAtEntry ? Math.floor((t.gradSolAtEntry / 500) * 100) : 0;
-        var d2 = document.createElement('div');
-        d2.className = 'gradcard';
-        d2.innerHTML =
-          '<div class="otop">' +
-            '<div class="oname" style="color:var(--yellow)">' + t.tok.n +
-              '<span class="grad-badge">🎓 GRAD</span>' +
-            '</div>' +
-            '<button class="sellbtn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
-          '</div>' +
-          '<div class="ometa" style="color:var(--dim)">$' + f2(t.size) + ' · ' + el + 's · SL -' + ((t.sl||0.12)*100).toFixed(0) + '%</div>' +
-          '<div class="oreasons">' + (t.reasons || []).join(' · ') + '</div>' +
-          '<div class="grad-bar-wrap"><div class="grad-bar" style="width:' + Math.min(gradPct, 100) + '%"></div></div>' +
-          '<div style="font-size:7px;color:var(--yellow);text-align:center;margin-bottom:4px">' + gradPct + '% TO GRADUATION</div>' +
-          '<div class="grad-stats">' +
-            '<div class="grad-stat"><div class="gsslbl">REAL P&L</div><div class="gssval" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
-            '<div class="grad-stat"><div class="gsslbl">REAL %</div><div class="gssval" style="color:' + pnlColor + '">' + pctDisplay + '</div></div>' +
-          '</div>' +
-          '<div style="font-size:7px;color:var(--dim);margin-top:4px">ENTRY: $' + (t.entryPrice ? t.entryPrice.toFixed(8) : 'FETCHING...') + '</div>';
-        gradList.appendChild(d2);
-      });
-    } else {
-      gradSec.style.display = 'none';
-    }
-
-    // ── OPEN TRADES — REAL DATA ONLY ──
-    var openSec = document.getElementById('openSec'), openList = document.getElementById('openList');
-    if (regularTrades.length > 0) {
-      openSec.style.display = 'block';
-      document.getElementById('openCnt').textContent = '(' + regularTrades.length + ')';
-      openList.innerHTML = '';
-      regularTrades.forEach(function(t) {
-        var el = Math.floor((Date.now() - t.startTime) / 1000);
-        var slPct = ((t.sl || 0.15) * 100).toFixed(0);
-        var tag = t.tok.src === 'WS' ? '[LIVE] ' : t.tok.hot ? '[HOT] ' : t.tok.isNew ? '[NEW] ' : '';
-
-        // Real P&L from server price tracking
-        var hasRealPnl = t.realPnl !== undefined && t.entryPrice;
-        var pnlColor = !hasRealPnl ? 'var(--dim)' : t.realPnl >= 0 ? 'var(--green)' : 'var(--red)';
-        var pnlDisplay = hasRealPnl ? (t.realPnl >= 0 ? '+' : '') + '$' + f2(Math.abs(t.realPnl)) : 'FETCHING...';
-        var pctDisplay = hasRealPnl ? (t.realPnlPct >= 0 ? '+' : '') + (t.realPnlPct * 100).toFixed(1) + '%' : '---';
-        var entryDisplay = t.entryPrice ? '$' + f8(t.entryPrice) : 'FETCHING...';
-
-        var d = document.createElement('div');
-        d.className = 'otrade';
-        d.innerHTML =
-          '<div class="otop">' +
-            '<div class="oname">' + tag + t.tok.n +
-              (t.tok.src === 'WS' ? '<span style="font-size:8px;background:rgba(0,255,136,0.15);border:1px solid var(--green);border-radius:3px;padding:1px 4px;margin-left:5px;color:var(--green);font-family:Share Tech Mono,monospace">⚡LIVE</span>' : '') +
-              '<span class="real-badge">REAL</span>' +
-            '</div>' +
-            '<button class="sellbtn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
-          '</div>' +
-          '<div class="ometa">Score ' + t.sc + ' · $' + f2(t.size) + ' · ' + el + 's · [' + t.tok.src + ']</div>' +
-          '<div class="oreasons">' + (t.reasons || []).slice(0, 3).join(' · ') + '</div>' +
-          '<div class="opnlrow">' +
-            '<div class="opnlitem">' +
-              '<div class="opnllbl">STOP LOSS</div>' +
-              '<div class="opnlval" style="color:var(--red)">-' + slPct + '%</div>' +
-            '</div>' +
-            '<div class="opnlitem">' +
-              '<div class="opnllbl">REAL P&amp;L</div>' +
-              '<div class="opnlval" style="color:' + pnlColor + '">' + pnlDisplay + '</div>' +
-            '</div>' +
-            '<div class="opnlitem">' +
-              '<div class="opnllbl">REAL %</div>' +
-              '<div class="opnlval" style="color:' + pnlColor + '">' + pctDisplay + '</div>' +
-            '</div>' +
-          '</div>' +
-          '<div style="font-size:7px;color:var(--dim);margin-top:4px">ENTRY: ' + entryDisplay + '</div>';
-        openList.appendChild(d);
-      });
-    } else {
-      openSec.style.display = 'none';
-    }
-
-    // Closed trades
-    var histSec = document.getElementById('histSec'), histList = document.getElementById('histList');
-    if (data.closedTrades && data.closedTrades.length > 0) {
-      histSec.style.display = 'block';
-      histList.innerHTML = '';
-      data.closedTrades.slice(0, 15).forEach(function(t) {
-        var d = document.createElement('div');
-        d.className = 'hrow';
-        d.innerHTML =
-          '<span style="color:var(--blue);width:65px;overflow:hidden;white-space:nowrap;font-size:10px">' + (t.tok.src === 'WS' ? '⚡ ' : '') + t.tok.n + '</span>' +
-          '<span style="color:var(--dim);font-size:8px;flex:1;padding:0 4px;overflow:hidden;white-space:nowrap">' + t.closeReason + '</span>' +
-          '<span style="color:' + (t.pnl > 0 ? 'var(--green)' : 'var(--red)') + ';font-weight:bold;font-family:Orbitron,monospace;font-size:11px;white-space:nowrap">' + (t.pnl > 0 ? '+' : '') + '$' + f2(t.pnl) + '</span>';
-        histList.appendChild(d);
-      });
-    } else {
-      histSec.style.display = 'none';
-    }
-
-    // Session stats
-    var closed = data.closedTrades || [];
-    var totalFees = ((data.stats.t || 0) * 0.001).toFixed(3);
-    var slips = closed.map(function(t) { return t.slip || 0; }).filter(function(v) { return v > 0; });
-    var avgSlip = slips.length ? ((slips.reduce(function(a, b) { return a + b; }, 0) / slips.length) * 100).toFixed(2) : '0.00';
-    var bestTrade = closed.length ? Math.max.apply(null, closed.map(function(t) { return t.pnl || 0; })) : 0;
-    document.getElementById('ss-fees').textContent = '$' + totalFees;
-    document.getElementById('ss-slip').textContent = avgSlip + '%';
-    document.getElementById('ss-skip').textContent = data.rejectCount || 0;
-    var bestEl = document.getElementById('ss-best');
-    bestEl.textContent = (bestTrade >= 0 ? '+' : '') + '$' + f2(bestTrade);
-    bestEl.style.color = bestTrade > 0 ? 'var(--green)' : 'var(--dim)';
-
-  } catch(e) {
-    document.getElementById('status').textContent = 'ERROR: ' + e.message;
-  }
-}
-
-</script>
-</body>
-</html>
+// ── START SERVER ──────────────────────────────────────────────
+app.listen(PORT, function() {
+  console.log('MemeBot V12 REAL DATA running on port ' + PORT);
+  connectPump();
+  fetchAll();
+  // Bot does NOT auto-start — Mike controls this manually
+});
