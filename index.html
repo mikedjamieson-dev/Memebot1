@@ -227,7 +227,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 </div>
 
 <script>
-var BASE = 'https://memebot1.onrender.com';
+var BASE = window.location.hostname === 'memebot1.onrender.com' ? '' : 'https://memebot1.onrender.com';
 var botRunning = false, logFilter = 'all', allLogs = [], frozen = false, startTime = null, timI = null;
 
 var lb = document.getElementById('logbox'), fb = document.getElementById('frozbar');
