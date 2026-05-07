@@ -229,12 +229,20 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 <script>
 var BASE = window.location.hostname === 'memebot1.onrender.com' ? '' : 'https://memebot1.onrender.com';
 var botRunning = false, logFilter = 'all', allLogs = [], frozen = false, startTime = null, timI = null;
+var lb = null, fb = null;
 
-var lb = document.getElementById('logbox'), fb = document.getElementById('frozbar');
-lb.addEventListener('scroll', function() {
-  if (lb.scrollTop < 30 && frozen) { frozen = false; fb.style.display = 'none'; renderLog(); }
-  else if (lb.scrollTop >= 30 && !frozen) { frozen = true; fb.style.display = 'block'; }
-}, { passive: true });
+document.addEventListener('DOMContentLoaded', function() {
+  lb = document.getElementById('logbox');
+  fb = document.getElementById('frozbar');
+  if (lb) {
+    lb.addEventListener('scroll', function() {
+      if (lb.scrollTop < 30 && frozen) { frozen = false; fb.style.display = 'none'; renderLog(); }
+      else if (lb.scrollTop >= 30 && !frozen) { frozen = true; fb.style.display = 'block'; }
+    }, { passive: true });
+  }
+  setInterval(fetchState, 2000);
+  fetchState();
+});
 
 function f2(n) { return parseFloat(n || 0).toFixed(2); }
 function f8(n) { return parseFloat(n || 0).toFixed(8); }
@@ -257,7 +265,7 @@ function renderLog() {
     d.innerHTML = '<span class="lt">' + e.time + '</span>' + e.msg;
     el.appendChild(d);
   });
-  if (lb.scrollTop < 30) lb.scrollTop = 0;
+  if (lb && lb.scrollTop < 30) lb.scrollTop = 0;
 }
 
 function startTimer(st) {
@@ -371,7 +379,7 @@ async function fetchState() {
             '<div class="oname" style="color:var(--yellow)">' + t.tok.n +
               '<span class="grad-badge">🎓 GRAD</span>' +
             '</div>' +
-            '<button class="sellbtn" onclick="sellTrade('' + t.id + '')">SELL</button>' +
+            '<button class="sellbtn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
           '</div>' +
           '<div class="ometa" style="color:var(--dim)">$' + f2(t.size) + ' · ' + el + 's · SL -' + ((t.sl||0.12)*100).toFixed(0) + '%</div>' +
           '<div class="oreasons">' + (t.reasons || []).join(' · ') + '</div>' +
@@ -475,8 +483,6 @@ async function fetchState() {
   }
 }
 
-setInterval(fetchState, 2000);
-fetchState();
 </script>
 </body>
 </html>
