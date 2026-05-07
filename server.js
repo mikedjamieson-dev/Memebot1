@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const WebSocket = require('ws');
 const fetch = require('node-fetch');
 const cors = require('cors');
@@ -6,6 +7,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+app.use(express.static(__dirname));
 const PORT = process.env.PORT || 3000;
 
 // ── API KEYS ──────────────────────────────────────────────────
@@ -952,7 +954,6 @@ function stopBot() {
   log('Bot stopped', 'info');
 }
 
-
 // ── API ROUTES ────────────────────────────────────────────────
 app.get('/api/state', function(req, res) {
   // Strip heavy data from open trades before sending
@@ -982,9 +983,12 @@ app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
 app.post('/api/setTP', function(req, res) { res.json({ success: true }); });
 app.get('/health', function(req, res) { res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount }); });
+
+// ── DASHBOARD ─────────────────────────────────────────────────
 app.get('/', function(req, res) {
-  res.sendFile(__dirname + '/index.html');
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
+
 // ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, function() {
   console.log('MemeBot V12 REAL DATA running on port ' + PORT);
