@@ -954,11 +954,23 @@ function stopBot() {
 
 // ── API ROUTES ────────────────────────────────────────────────
 app.get('/api/state', function(req, res) {
+  // Strip heavy data from open trades before sending
+  var openTrades = S.open.map(function(t) {
+    return {
+      id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, sl: t.sl, slip: t.slip,
+      mint: t.mint, entryPrice: t.entryPrice, currentPrice: t.currentPrice,
+      peakPrice: t.peakPrice, realPnl: t.realPnl, realPnlPct: t.realPnlPct,
+      isGrad: t.isGrad, gradSolAtEntry: t.gradSolAtEntry,
+      openedAt: t.openedAt, startTime: t.startTime,
+      reasons: (t.reasons || []).slice(0, 4),
+      tok: { n: t.tok.n, src: t.tok.src, liq: t.tok.liq }
+    };
+  });
   res.json({
     fund: S.fund, savings: S.savings, stats: S.stats,
     running: S.running, pumpLive: S.pumpLive, pumpCount: S.pumpCount,
     poolSize: S.tokens.size, scanCount: S.scanCount, rejectCount: S.rejectCount,
-    openTrades: S.open, closedTrades: S.closed.slice(0, 20),
+    openTrades: openTrades, closedTrades: S.closed.slice(0, 20),
     gradCount: S.gradCount, gradCandidates: S.gradCandidates.size,
     logs: S.logs.slice(0, 100), sources: S.sources, startTime: S.startTime
   });
