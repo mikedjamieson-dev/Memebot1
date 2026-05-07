@@ -1,5 +1,4 @@
 const express = require('express');
-const path = require('path');
 const WebSocket = require('ws');
 const fetch = require('node-fetch');
 const cors = require('cors');
@@ -7,7 +6,6 @@ const cors = require('cors');
 const app = express();
 app.use(cors({ origin: '*' }));
 app.use(express.json());
-app.use(express.static(__dirname));
 const PORT = process.env.PORT || 3000;
 
 // ── API KEYS ──────────────────────────────────────────────────
@@ -18,7 +16,7 @@ const LUNAR_URL = 'https://lunarcrush.com/api4/public';
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CFG = {
-  MIN_SCORE: 80,         // min score for established tokens
+  MIN_SCORE: 68,         // min score for established tokens (DSC/Gecko/CGK only)
   SOL_GAS: 0.001,
   MAX_POS: 0.08,
   MAX_OPEN: 4,           // max simultaneous trades (all types)
@@ -33,8 +31,8 @@ const CFG = {
   PRICE_INTERVAL: 500,
   SCAN_INTERVAL: 500,
   // Graduation sniper config
-  GRAD_ENTRY_SOL: 400,   // enter when bonding curve hits 400 SOL (~$60k)
-  GRAD_MAX_SOL: 460,     // dont enter above 460 SOL (too close, price moved)
+  GRAD_ENTRY_SOL: 200,   // enter when bonding curve hits 200 SOL (~$30k)
+  GRAD_MAX_SOL: 480,     // dont enter above 480 SOL (very close to graduation)
   GRAD_TARGET: 500,      // graduation at ~500 SOL ($69k-75k)
   GRAD_POS: 0.10,        // slightly bigger position for grad plays (10%)
 };
@@ -724,6 +722,11 @@ async function runGradSniper() {
 
   var now = Date.now();
 
+  // Debug: log how many candidates we have
+  if (S.gradCandidates.size > 0 && Math.random() < 0.01) {
+    log('GRAD POOL: ' + S.gradCandidates.size + ' candidates tracked', 'info');
+  }
+
   for (var entry of S.gradCandidates.entries()) {
     var mint = entry[0];
     var cand = entry[1];
@@ -736,7 +739,7 @@ async function runGradSniper() {
     if (age < 30) continue;
 
     // Must have good buy pressure
-    if (cand.bsr < 1.5) continue;
+    if (cand.bsr < 1.2) continue;
 
     // Must not already have an open trade on this token
     if (S.open.find(function(t) { return t.mint === mint; })) continue;
@@ -746,7 +749,7 @@ async function runGradSniper() {
 
     // Quality check — need more buys than sells
     var totalTxns = (cand.buys || 0) + (cand.sells || 0);
-    if (totalTxns < 5) continue; // need at least 5 transactions
+    if (totalTxns < 3) continue; // need at least 3 transactions
 
     // Calculate position size — slightly larger for grad plays
     var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, CFG.MAX_POS)).toFixed(4));
@@ -813,7 +816,11 @@ async function runScan() {
 
   if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
 
-  // All regular trades need MIN_SCORE — graduation sniper handles Pump.fun
+  // WS tokens (Pump.fun) are handled EXCLUSIVELY by graduation sniper
+  // Skip them here completely
+  if (tok.src === 'WS') { return; }
+
+  // Established tokens need MIN_SCORE
   var minScore = CFG.MIN_SCORE;
   if (sc < minScore) {
     S.rejectCount++;
@@ -986,7 +993,7 @@ app.get('/health', function(req, res) { res.json({ status: 'ok', pool: S.tokens.
 
 // ── DASHBOARD ─────────────────────────────────────────────────
 app.get('/', function(req, res) {
-  res.sendFile(path.join(__dirname, 'index.html'));
+  res.sendFile(__dirname + '/index.html');
 });
 
 // ── START SERVER ──────────────────────────────────────────────
