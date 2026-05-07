@@ -952,6 +952,7 @@ function stopBot() {
   log('Bot stopped', 'info');
 }
 
+
 // ── API ROUTES ────────────────────────────────────────────────
 app.get('/api/state', function(req, res) {
   // Strip heavy data from open trades before sending
@@ -981,7 +982,9 @@ app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
 app.post('/api/setTP', function(req, res) { res.json({ success: true }); });
 app.get('/health', function(req, res) { res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount }); });
-
+app.get('/', function(req, res) {
+  res.sendFile(__dirname + '/index.html');
+});
 // ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, function() {
   console.log('MemeBot V12 REAL DATA running on port ' + PORT);
