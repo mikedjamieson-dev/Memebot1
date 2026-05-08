@@ -16,7 +16,7 @@ const LUNAR_URL = 'https://lunarcrush.com/api4/public';
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CFG = {
-  MIN_SCORE: 68,         // min score for established tokens (DSC/Gecko/CGK only)
+  MIN_SCORE: 50,         // TESTING: lowered from 68 to get trades firing
   SOL_GAS: 0.001,
   MAX_POS: 0.08,
   MAX_OPEN: 4,           // max simultaneous trades (all types)
@@ -31,7 +31,7 @@ const CFG = {
   PRICE_INTERVAL: 500,
   SCAN_INTERVAL: 500,
   // Graduation sniper config
-  GRAD_ENTRY_SOL: 200,   // enter when bonding curve hits 200 SOL (~$30k)
+  GRAD_ENTRY_SOL: 100,   // TESTING: lowered from 200 to catch more candidates
   GRAD_MAX_SOL: 480,     // dont enter above 480 SOL (very close to graduation)
   GRAD_TARGET: 500,      // graduation at ~500 SOL ($69k-75k)
   GRAD_POS: 0.10,        // slightly bigger position for grad plays (10%)
