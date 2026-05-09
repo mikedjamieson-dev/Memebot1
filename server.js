@@ -103,16 +103,23 @@ async function getJupiterPrices(mintAddresses) {
   } catch(e) { return {}; }
 }
 
-// ── STABLECOIN BLACKLIST ──────────────────────────────────────
+// ── TOKEN BLACKLIST ───────────────────────────────────────────
+// Stablecoins — never move, never trade
+// Large cap established coins — too big for meme coin gains
 var STABLECOIN_BLACKLIST = [
   'USDC', 'USDT', 'USD1', 'JUPUSD', 'DAI', 'BUSD', 'USDH',
   'USDR', 'USDV', 'USDY', 'PYUSD', 'TUSD', 'GUSD', 'FRAX',
-  'UXD', 'CASH', 'USDS', 'SOLUSD', 'CRCLX'
+  'UXD', 'CASH', 'USDS', 'SOLUSD',
+  'WSOL', 'SOL', 'XMR', 'WBTC', 'BTC', 'WETH', 'ETH',
+  'CRCLX', 'SPYX', 'MSOL', 'JITOSOL', 'BSOL', 'HSOL'
 ];
 
 function isStablecoin(symbol) {
   return STABLECOIN_BLACKLIST.indexOf((symbol || '').toUpperCase()) >= 0;
 }
+
+// Max market cap — we want small cap tokens that can actually move
+var MAX_MCAP = 75000000; // $75 million
 
 // ── DEXSCREENER MINT LOOKUP ───────────────────────────────────
 // Replaces broken Jupiter token list — uses DexScreener to find
@@ -224,6 +231,9 @@ async function fetchGeckoTerminal() {
       var buys = parseInt(attr.transactions && attr.transactions.h1 && attr.transactions.h1.buys) || 0;
       var sells = parseInt(attr.transactions && attr.transactions.h1 && attr.transactions.h1.sells) || 1;
       var age = attr.pool_created_at ? (Date.now() - new Date(attr.pool_created_at).getTime()) / 3600000 : 24;
+      // Estimate market cap from liquidity — skip if above $75M
+      var estMcap = liq * 20; // rough estimate: liq is ~5% of mcap
+      if (estMcap > MAX_MCAP) return;
       addTok({
         id: addr, n: name, src: 'GECKO', pump: false,
         liq, vol1, vol24, c5, c1, c24,
@@ -256,9 +266,13 @@ async function fetchRaydium() {
       try {
         // Only Solana native pools with real volume
         var vol24 = parseFloat(p.day && p.day.volume) || 0;
-        var vol1 = parseFloat(p.day && p.day.volumeQuote) || vol24 / 24;
+        var vol1 = parseFloat(p.day && p.day.volumeQuote) || 0;
         var liq = parseFloat(p.tvl) || 0;
-        if (liq < 5000 || vol24 < 1000) return; // skip micro pools
+        // Must have liquidity, volume, AND activity in current hour
+        if (liq < 100000 || vol24 < 50000 || vol1 <= 0) return;
+        // Estimate market cap — skip if above $75M
+        var estMcap = liq * 20;
+        if (estMcap > MAX_MCAP) return;
         var mintA = p.mintA && p.mintA.address;
         var mintB = p.mintB && p.mintB.address;
         var symA = (p.mintA && p.mintA.symbol || '').toUpperCase().slice(0, 12);
@@ -330,6 +344,8 @@ function mapDS(p) {
 function mapCG(c) {
   var c1 = c.price_change_percentage_1h_in_currency || 0;
   var mcap = c.market_cap || 1000000;
+  // Skip large cap tokens — too big for meme coin gains
+  if (mcap > MAX_MCAP) return null;
   return {
     id: c.id,
     n: (c.symbol || '???').toUpperCase().slice(0, 12),
@@ -367,7 +383,10 @@ async function fetchAll() {
     if (res2.ok) {
       var cg = await res2.json();
       if (cg && cg.length) {
-        cg.forEach(function(c) { addTok(mapCG(c)); });
+        cg.forEach(function(c) {
+          var tok = mapCG(c);
+          if (tok) addTok(tok);
+        });
         S.sources['COINGECKO'] = 'live:' + cg.length;
       }
     }
