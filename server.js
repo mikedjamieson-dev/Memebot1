@@ -103,6 +103,36 @@ async function getJupiterPrices(mintAddresses) {
   } catch(e) { return {}; }
 }
 
+// ── JUPITER TOKEN LIST — MINT ADDRESS LOOKUP ─────────────────
+// Solves the price tracking bug — gives us verified mint addresses
+// for every tradeable token on Solana, completely free
+var jupiterTokenMap = {}; // symbol -> mint address
+var jupiterTokenMapLoaded = false;
+
+async function loadJupiterTokenList() {
+  try {
+    var res = await fetch('https://token.jup.ag/strict', { timeout: 15000 });
+    if (!res.ok) throw new Error();
+    var tokens = await res.json();
+    jupiterTokenMap = {};
+    tokens.forEach(function(t) {
+      if (t.symbol && t.address) {
+        jupiterTokenMap[t.symbol.toUpperCase()] = t.address;
+      }
+    });
+    jupiterTokenMapLoaded = true;
+    log('Jupiter token list loaded: ' + tokens.length + ' verified tokens', 'info');
+  } catch(e) {
+    log('Jupiter token list failed — will retry', 'warn');
+    setTimeout(loadJupiterTokenList, 60000);
+  }
+}
+
+function getMintFromSymbol(symbol) {
+  if (!symbol) return null;
+  return jupiterTokenMap[(symbol + '').toUpperCase()] || null;
+}
+
 // ── HELIUS TOKEN DATA ─────────────────────────────────────────
 // Enriches Pump.fun tokens with real on-chain data via Helius
 async function enrichPumpToken(mint, name) {
@@ -208,7 +238,59 @@ async function fetchGeckoTerminal() {
   } catch(e) { S.sources['GECKO'] = 'dead'; }
 }
 
-// ── DEXSCREENER ───────────────────────────────────────────────
+// ── RAYDIUM (free, no key) ────────────────────────────────────
+// Solana's biggest DEX — real pool data, real volume, real prices
+// Much better quality than DSC queries for Solana native tokens
+async function fetchRaydium() {
+  try {
+    // Fetch top pools by volume from Raydium
+    var res = await fetch('https://api-v3.raydium.io/pools/info/list?poolType=all&poolSortField=volume24h&sortType=desc&pageSize=50&page=1', { timeout: 8000 });
+    if (!res.ok) throw new Error();
+    var data = await res.json();
+    var pools = (data.data && data.data.data) || [];
+    var count = 0;
+    pools.forEach(function(p) {
+      try {
+        // Only Solana native pools with real volume
+        var vol24 = parseFloat(p.day && p.day.volume) || 0;
+        var vol1 = parseFloat(p.day && p.day.volumeQuote) || vol24 / 24;
+        var liq = parseFloat(p.tvl) || 0;
+        if (liq < 5000 || vol24 < 1000) return; // skip micro pools
+        var mintA = p.mintA && p.mintA.address;
+        var mintB = p.mintB && p.mintB.address;
+        var symA = (p.mintA && p.mintA.symbol || '').toUpperCase().slice(0, 12);
+        var symB = (p.mintB && p.mintB.symbol || '').toUpperCase();
+        // Only trade the non-SOL/USDC side
+        var isSolPair = symB === 'SOL' || symB === 'WSOL' || symB === 'USDC' || symB === 'USDT';
+        if (!isSolPair) return;
+        if (!symA || !mintA) return;
+        var price = parseFloat(p.price) || null;
+        var c24 = parseFloat(p.day && p.day.priceMax && p.day.priceMin ?
+          ((p.day.priceMax - p.day.priceMin) / Math.max(p.day.priceMin, 0.000001) * 100) : 0) || 0;
+        var buys = parseInt(p.day && p.day.volumeFee) || 0;
+        var bsr = vol24 > 0 ? 1.5 : 1.0; // estimate — Raydium doesn't give buy/sell split
+        addTok({
+          id: mintA,
+          n: symA,
+          src: 'RAY',
+          pump: false,
+          liq, vol1, vol24,
+          c5: 0, c1: 0, c24,
+          bsr,
+          txns: 50,
+          age: 24,
+          isNew: false, hot: false,
+          price,
+          mint: mintA,
+          rug: false, hp: false
+        });
+        count++;
+      } catch(e) {}
+    });
+    S.sources['RAYDIUM'] = 'live:' + count;
+    log('Raydium: ' + count + ' pools loaded', 'info');
+  } catch(e) { S.sources['RAYDIUM'] = 'dead'; }
+}
 var DS_QUERIES = [
   { id: 'DSC-NEW',   url: 'https://api.dexscreener.com/latest/dex/search?q=solana+new+token' },
   { id: 'DSC-TREND', url: 'https://api.dexscreener.com/latest/dex/search?q=solana+trending' },
@@ -290,6 +372,9 @@ async function fetchAll() {
 
   // GeckoTerminal
   await fetchGeckoTerminal();
+
+  // Raydium — Solana's biggest DEX, real time pool data
+  await fetchRaydium();
 
   log('Pool: ' + S.tokens.size + ' tokens | Pump.fun: ' + S.pumpCount + ' live', 'info');
 }
@@ -641,13 +726,33 @@ function score(t) {
   else if (lp >= 9) pos.push('Liq $' + (t.liq/1000).toFixed(0) + 'k');
   else if (lp < 2) neg.push('Micro liq');
 
-  // Volume ratio
-  var vr = t.vol1 / Math.max(t.vol24/24, 1);
-  var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
-  s += vp;
-  if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
-  else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
-  else if (vp === 0) neg.push('Vol declining');
+  // Volume scoring — source aware
+  // CGK: CoinGecko only provides 24h total volume divided by 24 as "h1" — not real time
+  // So volume ratio is meaningless for CGK — skip it and judge on other signals
+  // GECKO: GeckoTerminal provides real h1 volume — use it but soften the penalty
+  // DSC: DexScreener provides h1/h24 — use full volume scoring
+  if (t.src === 'CGK') {
+    // Skip volume ratio for CGK — data is not real time
+    // Award neutral 5 points so good CGK tokens aren't penalised
+    s += 5;
+    pos.push('Established token');
+  } else if (t.src === 'GECKO' || t.src === 'RAY') {
+    // GeckoTerminal and Raydium have real volume data — use it but soften penalty
+    var vrg = t.vol1 / Math.max(t.vol24/24, 1);
+    var vpg = vrg > 5 ? 20 : vrg > 3 ? 16 : vrg > 2 ? 12 : vrg > 1.5 ? 7 : vrg > 1 ? 3 : vrg > 0.5 ? 1 : 0;
+    s += vpg;
+    if (vpg >= 16) pos.push('Vol surge ' + vrg.toFixed(1) + 'x');
+    else if (vpg >= 7) pos.push('Vol ' + vrg.toFixed(1) + 'x');
+    // No negative flag for declining vol on GECKO/RAY — softer treatment
+  } else {
+    // DSC and others — full volume ratio scoring
+    var vr = t.vol1 / Math.max(t.vol24/24, 1);
+    var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
+    s += vp;
+    if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
+    else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
+    else if (vp === 0) neg.push('Vol declining');
+  }
 
   // Buy/sell ratio
   var bp = t.bsr > 3 ? 20 : t.bsr > 2 ? 16 : t.bsr > 1.5 ? 11 : t.bsr > 1.2 ? 7 : t.bsr > 1 ? 3 : 0;
@@ -832,15 +937,32 @@ async function runScan() {
   if (S.open.length >= CFG.MAX_OPEN) return;
   if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
 
-  // Get real entry price — Pump.fun direct first, then Jupiter
+  // Get real entry price — with Jupiter token list mint lookup as fallback
   var entryPrice = null;
+  var tradeMint = tok.mint || null;
+
+  // If no mint address, try Jupiter token list lookup by symbol
+  if (!tradeMint && jupiterTokenMapLoaded) {
+    tradeMint = getMintFromSymbol(tok.n);
+    if (tradeMint) {
+      log('Mint resolved via Jupiter list: ' + tok.n + ' -> ' + tradeMint.slice(0,8) + '...', 'info');
+    }
+  }
+
   // Use Pump.fun bonding curve price first (instant, no API needed)
-  if (tok.mint && pumpPrices[tok.mint]) {
-    entryPrice = pumpPrices[tok.mint].price;
+  if (tradeMint && pumpPrices[tradeMint]) {
+    entryPrice = pumpPrices[tradeMint].price;
   } else if (tok.price) {
     entryPrice = tok.price; // use known price from data source
-  } else if (tok.mint) {
-    entryPrice = await getJupiterPrice(tok.mint); // fallback to Jupiter
+  } else if (tradeMint) {
+    entryPrice = await getJupiterPrice(tradeMint); // fallback to Jupiter
+  }
+
+  // If still no price and no mint — skip this trade, can't track it
+  if (!tradeMint && !entryPrice) {
+    S.rejectCount++;
+    log('SKIP ' + tok.n + ' [' + tok.src + '] — no mint address, cannot track price', 'reject');
+    return;
   }
 
   var slip = getSlip(tok.liq, S.fund * 0.08);
@@ -859,7 +981,7 @@ async function runScan() {
     size: parseFloat(size.toFixed(4)),
     tpl: 'TRAIL',
     sl, slip,
-    mint: tok.mint || null,
+    mint: tradeMint,
     entryPrice: entryPrice,
     currentPrice: entryPrice,
     peakPrice: entryPrice,
@@ -902,7 +1024,9 @@ function startBot() {
   setInterval(updateSolPrice, 60000); // update SOL price every minute
   fetchLunarTrending();
   setInterval(fetchLunarTrending, 300000); // refresh every 5 mins
-  log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Pump.fun', 'info');
+  // Refresh Jupiter token list every 6 hours
+  setInterval(loadJupiterTokenList, 21600000);
+  log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Raydium + Pump.fun', 'info');
 }
 
 // ── CRITERIA BASED EXIT CHECKER ──────────────────────────────
@@ -1001,5 +1125,6 @@ app.listen(PORT, function() {
   console.log('MemeBot V12 REAL DATA running on port ' + PORT);
   connectPump();
   fetchAll();
+  loadJupiterTokenList(); // load verified mint addresses on startup
   // Bot does NOT auto-start — Mike controls this manually
 });
