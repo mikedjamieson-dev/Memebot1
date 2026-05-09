@@ -255,7 +255,7 @@ async function fetchRaydium() {
         var vol24 = parseFloat(p.day && p.day.volume) || 0;
         var vol1 = parseFloat(p.day && p.day.volumeQuote) || vol24 / 24;
         var liq = parseFloat(p.tvl) || 0;
-        if (liq < 5000 || vol24 < 1000) return; // skip micro pools
+        if (liq < 100000 || vol24 < 50000) return; // skip micro pools
         var mintA = p.mintA && p.mintA.address;
         var mintB = p.mintB && p.mintB.address;
         var symA = (p.mintA && p.mintA.symbol || '').toUpperCase().slice(0, 12);
