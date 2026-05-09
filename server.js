@@ -641,33 +641,13 @@ function score(t) {
   else if (lp >= 9) pos.push('Liq $' + (t.liq/1000).toFixed(0) + 'k');
   else if (lp < 2) neg.push('Micro liq');
 
-  // Volume scoring — source aware
-  // CGK: CoinGecko only provides 24h total volume divided by 24 as "h1" — not real time
-  // So volume ratio is meaningless for CGK — skip it and judge on other signals
-  // GECKO: GeckoTerminal provides real h1 volume — use it but soften the penalty
-  // DSC: DexScreener provides h1/h24 — use full volume scoring
-  if (t.src === 'CGK') {
-    // Skip volume ratio for CGK — data is not real time
-    // Award neutral 5 points so good CGK tokens aren't penalised
-    s += 5;
-    pos.push('Established token');
-  } else if (t.src === 'GECKO') {
-    // GeckoTerminal has real h1 volume — use it but halve the penalty weight
-    var vrg = t.vol1 / Math.max(t.vol24/24, 1);
-    var vpg = vrg > 5 ? 20 : vrg > 3 ? 16 : vrg > 2 ? 12 : vrg > 1.5 ? 7 : vrg > 1 ? 3 : vrg > 0.5 ? 1 : 0;
-    s += vpg;
-    if (vpg >= 16) pos.push('Vol surge ' + vrg.toFixed(1) + 'x');
-    else if (vpg >= 7) pos.push('Vol ' + vrg.toFixed(1) + 'x');
-    // No negative flag for declining vol on GECKO — softer treatment
-  } else {
-    // DSC and others — full volume ratio scoring
-    var vr = t.vol1 / Math.max(t.vol24/24, 1);
-    var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
-    s += vp;
-    if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
-    else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
-    else if (vp === 0) neg.push('Vol declining');
-  }
+  // Volume ratio
+  var vr = t.vol1 / Math.max(t.vol24/24, 1);
+  var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
+  s += vp;
+  if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
+  else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
+  else if (vp === 0) neg.push('Vol declining');
 
   // Buy/sell ratio
   var bp = t.bsr > 3 ? 20 : t.bsr > 2 ? 16 : t.bsr > 1.5 ? 11 : t.bsr > 1.2 ? 7 : t.bsr > 1 ? 3 : 0;
