@@ -111,7 +111,7 @@ var jupiterTokenMapLoaded = false;
 
 async function loadJupiterTokenList() {
   try {
-    var res = await fetch('https://token.jup.ag/strict', { timeout: 15000 });
+    var res = await fetch('https://tokens.jup.ag/tokens?tags=verified', { timeout: 15000 });
     if (!res.ok) throw new Error();
     var tokens = await res.json();
     jupiterTokenMap = {};
