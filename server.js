@@ -103,34 +103,37 @@ async function getJupiterPrices(mintAddresses) {
   } catch(e) { return {}; }
 }
 
-// ── JUPITER TOKEN LIST — MINT ADDRESS LOOKUP ─────────────────
-// Solves the price tracking bug — gives us verified mint addresses
-// for every tradeable token on Solana, completely free
-var jupiterTokenMap = {}; // symbol -> mint address
-var jupiterTokenMapLoaded = false;
+// ── STABLECOIN BLACKLIST ──────────────────────────────────────
+var STABLECOIN_BLACKLIST = [
+  'USDC', 'USDT', 'USD1', 'JUPUSD', 'DAI', 'BUSD', 'USDH',
+  'USDR', 'USDV', 'USDY', 'PYUSD', 'TUSD', 'GUSD', 'FRAX',
+  'UXD', 'CASH', 'USDS', 'SOLUSD', 'CRCLX'
+];
 
-async function loadJupiterTokenList() {
-  try {
-    var res = await fetch('https://tokens.jup.ag/tokens?tags=verified', { timeout: 15000 });
-    if (!res.ok) throw new Error();
-    var tokens = await res.json();
-    jupiterTokenMap = {};
-    tokens.forEach(function(t) {
-      if (t.symbol && t.address) {
-        jupiterTokenMap[t.symbol.toUpperCase()] = t.address;
-      }
-    });
-    jupiterTokenMapLoaded = true;
-    log('Jupiter token list loaded: ' + tokens.length + ' verified tokens', 'info');
-  } catch(e) {
-    log('Jupiter token list failed — will retry', 'warn');
-    setTimeout(loadJupiterTokenList, 60000);
-  }
+function isStablecoin(symbol) {
+  return STABLECOIN_BLACKLIST.indexOf((symbol || '').toUpperCase()) >= 0;
 }
 
-function getMintFromSymbol(symbol) {
-  if (!symbol) return null;
-  return jupiterTokenMap[(symbol + '').toUpperCase()] || null;
+// ── DEXSCREENER MINT LOOKUP ───────────────────────────────────
+// Replaces broken Jupiter token list — uses DexScreener to find
+// the correct mint address for any token by symbol
+async function getMintFromDexScreener(symbol) {
+  try {
+    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(symbol), { timeout: 5000 });
+    if (!res.ok) return null;
+    var data = await res.json();
+    var pairs = (data.pairs || []).filter(function(p) {
+      return p.chainId === 'solana' &&
+             p.baseToken &&
+             (p.baseToken.symbol || '').toUpperCase() === symbol.toUpperCase() &&
+             p.baseToken.address;
+    });
+    if (pairs.length === 0) return null;
+    pairs.sort(function(a, b) {
+      return ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0);
+    });
+    return pairs[0].baseToken.address;
+  } catch(e) { return null; }
 }
 
 // ── HELIUS TOKEN DATA ─────────────────────────────────────────
@@ -255,7 +258,7 @@ async function fetchRaydium() {
         var vol24 = parseFloat(p.day && p.day.volume) || 0;
         var vol1 = parseFloat(p.day && p.day.volumeQuote) || vol24 / 24;
         var liq = parseFloat(p.tvl) || 0;
-        if (liq < 100000 || vol24 < 50000) return; // skip micro pools
+        if (liq < 5000 || vol24 < 1000) return; // skip micro pools
         var mintA = p.mintA && p.mintA.address;
         var mintB = p.mintB && p.mintB.address;
         var symA = (p.mintA && p.mintA.symbol || '').toUpperCase().slice(0, 12);
@@ -570,26 +573,71 @@ function connectPump() {
   } catch(e) { setTimeout(connectPump, 15000); }
 }
 
+// ── RAYDIUM PRICE API ─────────────────────────────────────────
+// Used for RAY sourced tokens — prices them directly from Raydium
+async function getRaydiumPrices(mintAddresses) {
+  try {
+    if (!mintAddresses || mintAddresses.length === 0) return {};
+    var ids = mintAddresses.slice(0, 50).join(',');
+    var res = await fetch('https://api-v3.raydium.io/mint/price?mints=' + ids, { timeout: 8000 });
+    if (!res.ok) return {};
+    var data = await res.json();
+    return data.data || {};
+  } catch(e) { return {}; }
+}
+
 // ── REAL PRICE TRACKING FOR OPEN TRADES ──────────────────────
 async function updateOpenTradePrices() {
   if (S.open.length === 0) return;
 
-  // Get all mint addresses for open trades
-  var mints = S.open.filter(function(t) { return t.mint; }).map(function(t) { return t.mint; });
-  if (mints.length === 0) return;
+  // Split trades by source for optimal pricing
+  var rayTrades = S.open.filter(function(t) { return t.mint && t.tok.src === 'RAY'; });
+  var otherTrades = S.open.filter(function(t) { return t.mint && t.tok.src !== 'RAY'; });
 
-  // Batch fetch from Jupiter
-  var prices = await getJupiterPrices(mints);
+  // Fetch Raydium prices for RAY tokens
+  var rayPrices = {};
+  if (rayTrades.length > 0) {
+    var rayMints = rayTrades.map(function(t) { return t.mint; });
+    rayPrices = await getRaydiumPrices(rayMints);
+  }
 
+  // Fetch Jupiter prices for all other tokens
+  var jupPrices = {};
+  if (otherTrades.length > 0) {
+    var otherMints = otherTrades.map(function(t) { return t.mint; });
+    jupPrices = await getJupiterPrices(otherMints);
+  }
+
+  // Process all open trades
   S.open.forEach(function(trade) {
     if (!trade.mint) return;
-    var priceData = prices[trade.mint];
-    if (!priceData) return;
-    var currentPrice = parseFloat(priceData.price);
+
+    // Get price from best source
+    var currentPrice = null;
+    if (trade.tok.src === 'RAY') {
+      // Try Raydium first
+      var rayPrice = rayPrices[trade.mint];
+      if (rayPrice) currentPrice = parseFloat(rayPrice);
+      // Fallback to Jupiter if Raydium fails
+      if (!currentPrice && jupPrices[trade.mint]) {
+        currentPrice = parseFloat(jupPrices[trade.mint].price);
+      }
+    } else {
+      // Jupiter for everything else
+      var priceData = jupPrices[trade.mint];
+      if (priceData) currentPrice = parseFloat(priceData.price);
+    }
+
     if (!currentPrice || currentPrice <= 0) return;
 
     // Update current price
     trade.currentPrice = currentPrice;
+
+    // Track last price movement for stale detection
+    if (!trade.lastPrice || Math.abs(currentPrice - trade.lastPrice) / trade.lastPrice > 0.001) {
+      trade.lastPriceChange = Date.now();
+      trade.lastPrice = currentPrice;
+    }
 
     // Calculate real P&L
     if (trade.entryPrice && trade.entryPrice > 0) {
@@ -602,11 +650,10 @@ async function updateOpenTradePrices() {
         trade.peakPrice = currentPrice;
       }
 
-      // Check trail stop — exit if pulled back from peak (TRAIL_PB: 2%)
+      // Check trail stop
       if (trade.peakPrice && trade.tpl === 'TRAIL') {
         var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
         if (peakGain >= CFG.TRAIL_ACT) {
-          // Trail is active — check for pullback
           var pullback = (trade.peakPrice - currentPrice) / trade.peakPrice;
           if (pullback >= CFG.TRAIL_PB) {
             log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
@@ -921,9 +968,14 @@ async function runScan() {
 
   if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
 
-  // WS tokens (Pump.fun) are handled EXCLUSIVELY by graduation sniper
-  // Skip them here completely
+  // WS tokens handled exclusively by graduation sniper
   if (tok.src === 'WS') { return; }
+
+  // Stablecoin blacklist — never trade these
+  if (isStablecoin(tok.n)) {
+    S.tokens.delete(tok.n + tok.id);
+    return;
+  }
 
   // Established tokens need MIN_SCORE
   var minScore = CFG.MIN_SCORE;
@@ -931,34 +983,41 @@ async function runScan() {
     S.rejectCount++;
     var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
     log('SKIP ' + tok.n + ' ' + src + ' - Score ' + sc + '/' + minScore + ' | ' + why, 'reject');
+    // Score 10 or below — kick from pool permanently, free slot for better tokens
+    if (sc <= 10) {
+      S.tokens.delete(tok.n + tok.id);
+    }
     return;
   }
 
   if (S.open.length >= CFG.MAX_OPEN) return;
   if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
 
-  // Get real entry price — with Jupiter token list mint lookup as fallback
+  // Get real entry price — with DexScreener mint lookup as fallback
   var entryPrice = null;
   var tradeMint = tok.mint || null;
 
-  // If no mint address, try Jupiter token list lookup by symbol
-  if (!tradeMint && jupiterTokenMapLoaded) {
-    tradeMint = getMintFromSymbol(tok.n);
+  // If no mint address, look it up via DexScreener
+  if (!tradeMint) {
+    tradeMint = await getMintFromDexScreener(tok.n);
     if (tradeMint) {
-      log('Mint resolved via Jupiter list: ' + tok.n + ' -> ' + tradeMint.slice(0,8) + '...', 'info');
+      log('Mint resolved via DexScreener: ' + tok.n + ' -> ' + tradeMint.slice(0,8) + '...', 'info');
+      // Cache it back on the token so we don't look it up again
+      tok.mint = tradeMint;
+      S.tokens.set(tok.n + tok.id, tok);
     }
   }
 
-  // Use Pump.fun bonding curve price first (instant, no API needed)
+  // Use Pump.fun bonding curve price first
   if (tradeMint && pumpPrices[tradeMint]) {
     entryPrice = pumpPrices[tradeMint].price;
   } else if (tok.price) {
-    entryPrice = tok.price; // use known price from data source
+    entryPrice = tok.price;
   } else if (tradeMint) {
-    entryPrice = await getJupiterPrice(tradeMint); // fallback to Jupiter
+    entryPrice = await getJupiterPrice(tradeMint);
   }
 
-  // If still no price and no mint — skip this trade, can't track it
+  // If still no mint or price — skip, can't track it
   if (!tradeMint && !entryPrice) {
     S.rejectCount++;
     log('SKIP ' + tok.n + ' [' + tok.src + '] — no mint address, cannot track price', 'reject');
@@ -1024,8 +1083,6 @@ function startBot() {
   setInterval(updateSolPrice, 60000); // update SOL price every minute
   fetchLunarTrending();
   setInterval(fetchLunarTrending, 300000); // refresh every 5 mins
-  // Refresh Jupiter token list every 6 hours
-  setInterval(loadJupiterTokenList, 21600000);
   log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Raydium + Pump.fun', 'info');
 }
 
@@ -1125,6 +1182,5 @@ app.listen(PORT, function() {
   console.log('MemeBot V12 REAL DATA running on port ' + PORT);
   connectPump();
   fetchAll();
-  loadJupiterTokenList(); // load verified mint addresses on startup
   // Bot does NOT auto-start — Mike controls this manually
 });
