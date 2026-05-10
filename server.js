@@ -120,7 +120,7 @@ function isStablecoin(symbol) {
 }
 
 // Max market cap — we want small cap tokens that can actually move
-var MAX_MCAP = 10000000; // $10 million — small cap meme coins only
+var MAX_MCAP = 25000000; // $25 million — small cap meme coins only
 
 // ── DEXSCREENER MINT LOOKUP ───────────────────────────────────
 // Replaces broken Jupiter token list — uses DexScreener to find
