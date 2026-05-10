@@ -56,6 +56,7 @@ const S = {
   dayStartFund: 100,
   gradCandidates: new Map(), // mint -> { name, solInCurve, mcapSol, bsr, age, firstSeen }
   gradCount: 0,              // total graduation plays entered
+  staleCooldown: new Map(),  // tokenKey -> timestamp — blocks re-entry for 30min after stale
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -119,7 +120,7 @@ function isStablecoin(symbol) {
 }
 
 // Max market cap — we want small cap tokens that can actually move
-var MAX_MCAP = 75000000; // $75 million
+var MAX_MCAP = 10000000; // $10 million — small cap meme coins only
 
 // ── DEXSCREENER MINT LOOKUP ───────────────────────────────────
 // Replaces broken Jupiter token list — uses DexScreener to find
@@ -739,6 +740,13 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
+  // If token went stale — put it on 30 minute cooldown
+  if (reason && reason.indexOf('stale') >= 0) {
+    var cooldownKey = tr.tok.n + (tr.mint || '');
+    S.staleCooldown.set(cooldownKey, Date.now());
+    log('COOLDOWN ' + tr.tok.n + ' — blocked for 30min after stale', 'warn');
+  }
+
   // Daily loss limit check
   if (S.fund < S.dayStartFund * (1 - CFG.LOSS_LIM)) {
     log('Daily loss limit hit — bot stopped', 'rug');
@@ -1011,6 +1019,20 @@ async function runScan() {
 
   if (S.open.length >= CFG.MAX_OPEN) return;
   if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
+
+  // Check stale cooldown — skip tokens that recently went stale
+  var cooldownKey = tok.n + (tok.mint || '');
+  var lastStale = S.staleCooldown.get(cooldownKey);
+  if (lastStale && (Date.now() - lastStale) < 1800000) { // 30 minutes
+    return;
+  }
+  // Clean up expired cooldowns periodically
+  if (Math.random() < 0.01) {
+    var now2 = Date.now();
+    S.staleCooldown.forEach(function(ts, key) {
+      if (now2 - ts > 1800000) S.staleCooldown.delete(key);
+    });
+  }
 
   // Get real entry price — with DexScreener mint lookup as fallback
   var entryPrice = null;
