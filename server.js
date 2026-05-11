@@ -9,40 +9,56 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // ── API KEYS ──────────────────────────────────────────────────
-const HELIUS_KEY = '04d7d86a-48da-45db-8364-1c57d40fc4b1';
-const HELIUS_URL = 'https://mainnet.helius-rpc.com/?api-key=' + HELIUS_KEY;
-const LUNAR_KEY = 'wzejf56fq9a5oamkc8qo6f7lpmot9qa4qoc8lpv';
-const LUNAR_URL = 'https://lunarcrush.com/api4/public';
+const ST_KEY = '75035862-d3fe-40a5-9a47-7d6338685930'; // Solana Tracker
+const ST_URL = 'https://data.solanatracker.io';
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CFG = {
-  MIN_SCORE: 50,         // TESTING: lowered from 68 to get trades firing
-  SOL_GAS: 0.001,
-  MAX_POS: 0.08,
+  // Position & risk
   MAX_OPEN: 4,           // max simultaneous trades (all types)
   MAX_GRAD: 2,           // max graduation sniper trades at once
+  MAX_POS: 0.08,         // max position size as % of fund
+  SOL_GAS: 0.001,        // estimated gas cost per trade
+
+  // Trail stop — NEVER CHANGE THESE
   TRAIL_ACT: 0.04,       // trail activates at 4% gain
-  TRAIL_PB: 0.02,        // exit if price pulls back 2% from peak
+  TRAIL_PB: 0.02,        // exit on 2% pullback from peak
+
+  // Exit criteria
   LOSS_LIM: 0.10,        // daily loss limit 10%
-  // No time-based exits — criteria based exits only (smarter trading)
-  STALE_TIME: 120000,    // close if no price movement for 2 minutes
-  NO_PRICE_TIMEOUT: 180000, // close if no price data after 3 minutes
-  POOL_MAX: 10000,
-  PRICE_INTERVAL: 500,
-  SCAN_INTERVAL: 500,
+  STALE_TIME: 120000,    // exit if no price movement for 2 minutes
+  NO_PRICE_TIMEOUT: 180000, // exit if no price data after 3 minutes
+  STOP_LOSS: 0.18,       // stop loss at -18%
+
+  // Solana Tracker token filters — BONKbot style safety checklist
+  MIN_MCAP: 500000,      // minimum market cap $500k
+  MAX_MCAP: 25000000,    // maximum market cap $25M
+  MIN_LIQ: 10000,        // minimum liquidity $10k
+  MIN_VOL_1H: 50000,     // minimum 1h volume $50k
+  MAX_RISK: 3,           // maximum risk score (1-10 scale)
+  MAX_DEV: 5,            // maximum dev holding % 
+  MAX_TOP10: 30,         // maximum top 10 holders %
+  MIN_BUYS: 10,          // minimum buy transactions
+  MIN_HOLDERS: 50,       // minimum token holders
+
   // Graduation sniper config
-  GRAD_ENTRY_SOL: 100,   // TESTING: lowered from 200 to catch more candidates
-  GRAD_MAX_SOL: 480,     // dont enter above 480 SOL (very close to graduation)
-  GRAD_TARGET: 500,      // graduation at ~500 SOL ($69k-75k)
-  GRAD_POS: 0.10,        // slightly bigger position for grad plays (10%)
+  GRAD_ENTRY_SOL: 100,   // enter when bonding curve hits 100 SOL
+  GRAD_MAX_SOL: 480,     // don't enter above 480 SOL
+  GRAD_TARGET: 500,      // graduation at ~500 SOL
+  GRAD_POS: 0.10,        // 10% position size for grad plays
+
+  // Solana Tracker credit management
+  ST_SEARCH_INTERVAL: 1800000,  // search every 30 minutes
+  ST_TREND_INTERVAL: 1800000,   // trending every 30 minutes
+  ST_PRICE_INTERVAL: 120000,    // price check every 2 minutes per open trade
 };
 
 // ── STATE ─────────────────────────────────────────────────────
 const S = {
-  tokens: new Map(),
-  open: [],
-  closed: [],
-  stats: { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 }, // gw/gl = grad wins/losses
+  tokens: new Map(),     // discovered tokens ready to trade
+  open: [],              // open trades
+  closed: [],            // closed trades history
+  stats: { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 },
   fund: 100,
   savings: 0,
   running: false,
@@ -50,13 +66,14 @@ const S = {
   pumpCount: 0,
   scanCount: 0,
   rejectCount: 0,
+  stCredits: 0,          // Solana Tracker credit usage counter
   logs: [],
   sources: {},
   startTime: null,
   dayStartFund: 100,
-  gradCandidates: new Map(), // mint -> { name, solInCurve, mcapSol, bsr, age, firstSeen }
-  gradCount: 0,              // total graduation plays entered
-  staleCooldown: new Map(),  // tokenKey -> timestamp — blocks re-entry for 30min after stale
+  gradCandidates: new Map(),
+  gradCount: 0,
+  staleCooldown: new Map(), // blocks re-entry after stale
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -67,367 +84,235 @@ function log(msg, type) {
   console.log('[' + type.toUpperCase() + '] ' + msg);
 }
 
-// ── TOKEN POOL ────────────────────────────────────────────────
-function addTok(t) {
-  if (!t || !t.n || !t.id) return;
-  // Don't overwrite a token that has a real price with one that doesn't
-  const existing = S.tokens.get(t.n + t.id);
-  if (existing && existing.price && !t.price) return;
-  S.tokens.set(t.n + t.id, t);
-  if (S.tokens.size > CFG.POOL_MAX) {
-    for (var k of S.tokens.keys()) { S.tokens.delete(k); break; }
-  }
-}
-
-// ── JUPITER PRICE API (free, no key needed) ───────────────────
-async function getJupiterPrice(mintAddress) {
-  try {
-    var res = await fetch('https://api.jup.ag/price/v2?ids=' + mintAddress, { timeout: 5000 });
-    if (!res.ok) return null;
-    var data = await res.json();
-    if (data && data.data && data.data[mintAddress]) {
-      return parseFloat(data.data[mintAddress].price) || null;
-    }
-    return null;
-  } catch(e) { return null; }
-}
-
-// ── JUPITER BATCH PRICES ──────────────────────────────────────
-async function getJupiterPrices(mintAddresses) {
-  try {
-    if (!mintAddresses || mintAddresses.length === 0) return {};
-    var ids = mintAddresses.slice(0, 100).join(',');
-    var res = await fetch('https://api.jup.ag/price/v2?ids=' + ids, { timeout: 8000 });
-    if (!res.ok) return {};
-    var data = await res.json();
-    return data.data || {};
-  } catch(e) { return {}; }
-}
-
-// ── TOKEN BLACKLIST ───────────────────────────────────────────
-// Stablecoins — never move, never trade
-// Large cap established coins — too big for meme coin gains
-var STABLECOIN_BLACKLIST = [
-  'USDC', 'USDT', 'USD1', 'JUPUSD', 'DAI', 'BUSD', 'USDH',
-  'USDR', 'USDV', 'USDY', 'PYUSD', 'TUSD', 'GUSD', 'FRAX',
-  'UXD', 'CASH', 'USDS', 'SOLUSD',
-  'WSOL', 'SOL', 'XMR', 'WBTC', 'BTC', 'WETH', 'ETH',
-  'CRCLX', 'SPYX', 'MSOL', 'JITOSOL', 'BSOL', 'HSOL'
-];
-
-function isStablecoin(symbol) {
-  return STABLECOIN_BLACKLIST.indexOf((symbol || '').toUpperCase()) >= 0;
-}
-
-// Max market cap — we want small cap tokens that can actually move
-var MAX_MCAP = 25000000; // $25 million — small cap meme coins only
-
-// ── DEXSCREENER MINT LOOKUP ───────────────────────────────────
-// Replaces broken Jupiter token list — uses DexScreener to find
-// the correct mint address for any token by symbol
-async function getMintFromDexScreener(symbol) {
-  try {
-    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(symbol), { timeout: 5000 });
-    if (!res.ok) return null;
-    var data = await res.json();
-    var pairs = (data.pairs || []).filter(function(p) {
-      return p.chainId === 'solana' &&
-             p.baseToken &&
-             (p.baseToken.symbol || '').toUpperCase() === symbol.toUpperCase() &&
-             p.baseToken.address;
-    });
-    if (pairs.length === 0) return null;
-    pairs.sort(function(a, b) {
-      return ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0);
-    });
-    return pairs[0].baseToken.address;
-  } catch(e) { return null; }
-}
-
-// ── HELIUS TOKEN DATA ─────────────────────────────────────────
-// Enriches Pump.fun tokens with real on-chain data via Helius
-async function enrichPumpToken(mint, name) {
-  try {
-    var price = await getJupiterPrice(mint);
-    var tok = S.tokens.get(name + mint);
-    if (tok && price) { tok.price = price; S.tokens.set(name + mint, tok); }
-  } catch(e) {}
-}
-
-async function getHeliusTokenData(mintAddress) {
-  try {
-    var res = await fetch(HELIUS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 'memebot',
-        method: 'getAsset',
-        params: { id: mintAddress }
-      }),
-      timeout: 8000
-    });
-    if (!res.ok) return null;
-    var data = await res.json();
-    return data.result || null;
-  } catch(e) { return null; }
-}
-
-// ── LUNARCRUSH SOCIAL DATA ────────────────────────────────────
-// Cache social scores to avoid hammering the API
-var lunarCache = {}; // symbol -> { score, ts }
-var lunarTrending = []; // list of trending symbols from LunarCrush
-
-async function fetchLunarTrending() {
-  try {
-    var res = await fetch(LUNAR_URL + '/coins/list/v1?sort=galaxy_score&limit=50&key=' + LUNAR_KEY, { timeout: 8000 });
-    if (!res.ok) throw new Error();
-    var data = await res.json();
-    var coins = data.data || [];
-    lunarTrending = [];
-    coins.forEach(function(c) {
-      var sym = (c.symbol || '').toUpperCase();
-      var score = c.galaxy_score || 0;
-      var mentions = c.social_score || 0;
-      lunarCache[sym] = { score, mentions, ts: Date.now() };
-      lunarTrending.push(sym);
-    });
-    S.sources['LUNAR'] = 'live:' + lunarTrending.length;
-    log('LunarCrush: ' + lunarTrending.length + ' trending coins loaded', 'info');
-  } catch(e) { S.sources['LUNAR'] = 'dead'; }
-}
-
-function getLunarScore(symbol) {
-  var sym = (symbol || '').toUpperCase();
-  var cached = lunarCache[sym];
-  if (!cached) return 0;
-  // Galaxy score 0-100 — map to 0-15 bonus points
-  return Math.floor((cached.score / 100) * 15);
-}
-
-function isLunarTrending(symbol) {
-  return lunarTrending.indexOf((symbol || '').toUpperCase()) >= 0;
-}
-
-// ── GECKO TERMINAL (free, no key) ─────────────────────────────
-async function fetchGeckoTerminal() {
-  try {
-    var res = await fetch('https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1', { timeout: 8000 });
-    if (!res.ok) throw new Error();
-    var data = await res.json();
-    var pools = (data.data || []).slice(0, 30);
-    var count = 0;
-    pools.forEach(function(p) {
-      var attr = p.attributes || {};
-      var baseToken = attr.base_token_price_usd;
-      var name = (attr.name || '').split('/')[0].trim().toUpperCase().slice(0, 12);
-      var addr = (p.relationships && p.relationships.base_token && p.relationships.base_token.data && p.relationships.base_token.data.id || '').replace('solana_', '');
-      if (!name || !addr) return;
-      var liq = parseFloat(attr.reserve_in_usd) || 0;
-      var vol24 = parseFloat(attr.volume_usd && attr.volume_usd.h24) || 0;
-      var vol1 = parseFloat(attr.volume_usd && attr.volume_usd.h1) || 0;
-      var c5 = parseFloat(attr.price_change_percentage && attr.price_change_percentage.m5) || 0;
-      var c1 = parseFloat(attr.price_change_percentage && attr.price_change_percentage.h1) || 0;
-      var c24 = parseFloat(attr.price_change_percentage && attr.price_change_percentage.h24) || 0;
-      var buys = parseInt(attr.transactions && attr.transactions.h1 && attr.transactions.h1.buys) || 0;
-      var sells = parseInt(attr.transactions && attr.transactions.h1 && attr.transactions.h1.sells) || 1;
-      var age = attr.pool_created_at ? (Date.now() - new Date(attr.pool_created_at).getTime()) / 3600000 : 24;
-      // Estimate market cap from liquidity — skip if above $75M
-      var estMcap = liq * 20; // rough estimate: liq is ~5% of mcap
-      if (estMcap > MAX_MCAP) return;
-      addTok({
-        id: addr, n: name, src: 'GECKO', pump: false,
-        liq, vol1, vol24, c5, c1, c24,
-        bsr: buys / Math.max(sells, 1),
-        txns: buys + sells, age,
-        isNew: age < 1, hot: age < 0.17,
-        price: parseFloat(baseToken) || null,
-        mint: addr,
-        rug: false, hp: false
-      });
-      count++;
-    });
-    S.sources['GECKO'] = 'live:' + count;
-    log('GeckoTerminal: ' + count + ' trending pools', 'info');
-  } catch(e) { S.sources['GECKO'] = 'dead'; }
-}
-
-// ── RAYDIUM (free, no key) ────────────────────────────────────
-// Solana's biggest DEX — real pool data, real volume, real prices
-// Much better quality than DSC queries for Solana native tokens
-async function fetchRaydium() {
-  try {
-    // Fetch top pools by volume from Raydium
-    var res = await fetch('https://api-v3.raydium.io/pools/info/list?poolType=all&poolSortField=volume24h&sortType=desc&pageSize=50&page=1', { timeout: 8000 });
-    if (!res.ok) throw new Error();
-    var data = await res.json();
-    var pools = (data.data && data.data.data) || [];
-    var count = 0;
-    pools.forEach(function(p) {
-      try {
-        // Only Solana native pools with real volume
-        var vol24 = parseFloat(p.day && p.day.volume) || 0;
-        var vol1 = parseFloat(p.day && p.day.volumeQuote) || 0;
-        var liq = parseFloat(p.tvl) || 0;
-        // Must have liquidity, volume, AND activity in current hour
-        if (liq < 100000 || vol24 < 50000 || vol1 <= 0) return;
-        // Estimate market cap — skip if above $75M
-        var estMcap = liq * 20;
-        if (estMcap > MAX_MCAP) return;
-        var mintA = p.mintA && p.mintA.address;
-        var mintB = p.mintB && p.mintB.address;
-        var symA = (p.mintA && p.mintA.symbol || '').toUpperCase().slice(0, 12);
-        var symB = (p.mintB && p.mintB.symbol || '').toUpperCase();
-        // Only trade the non-SOL/USDC side
-        var isSolPair = symB === 'SOL' || symB === 'WSOL' || symB === 'USDC' || symB === 'USDT';
-        if (!isSolPair) return;
-        if (!symA || !mintA) return;
-        var price = parseFloat(p.price) || null;
-        var c24 = parseFloat(p.day && p.day.priceMax && p.day.priceMin ?
-          ((p.day.priceMax - p.day.priceMin) / Math.max(p.day.priceMin, 0.000001) * 100) : 0) || 0;
-        var buys = parseInt(p.day && p.day.volumeFee) || 0;
-        var bsr = vol24 > 0 ? 1.5 : 1.0; // estimate — Raydium doesn't give buy/sell split
-        addTok({
-          id: mintA,
-          n: symA,
-          src: 'RAY',
-          pump: false,
-          liq, vol1, vol24,
-          c5: 0, c1: 0, c24,
-          bsr,
-          txns: 50,
-          age: 24,
-          isNew: false, hot: false,
-          price,
-          mint: mintA,
-          rug: false, hp: false
-        });
-        count++;
-      } catch(e) {}
-    });
-    S.sources['RAYDIUM'] = 'live:' + count;
-    log('Raydium: ' + count + ' pools loaded', 'info');
-  } catch(e) { S.sources['RAYDIUM'] = 'dead'; }
-}
-var DS_QUERIES = [
-  { id: 'DSC-NEW',   url: 'https://api.dexscreener.com/latest/dex/search?q=solana+new+token' },
-  { id: 'DSC-TREND', url: 'https://api.dexscreener.com/latest/dex/search?q=solana+trending' },
-  { id: 'DSC-BOOST', url: 'https://api.dexscreener.com/latest/dex/search?q=solana+pump+fun' },
-  { id: 'DSC-MEME',  url: 'https://api.dexscreener.com/latest/dex/search?q=solana+meme+coin' },
-  { id: 'DSC-GEM',   url: 'https://api.dexscreener.com/latest/dex/search?q=solana+gem+moon' },
-  { id: 'DSC-MOON',  url: 'https://api.dexscreener.com/latest/dex/search?q=solana+dog+cat+pepe' },
-];
-
-function mapDS(p) {
-  var c1 = (p.priceChange && p.priceChange.h1) || 0;
-  var c24 = (p.priceChange && p.priceChange.h24) || 0;
-  var c5 = (p.priceChange && p.priceChange.m5) || 0;
-  var liq = (p.liquidity && p.liquidity.usd) || 0;
-  var v24 = (p.volume && p.volume.h24) || 0;
-  var buys = (p.txns && p.txns.h1 && p.txns.h1.buys) || 0;
-  var sells = (p.txns && p.txns.h1 && p.txns.h1.sells) || 1;
-  var age = (p.pairCreatedAt ? (Date.now() - p.pairCreatedAt) : 86400000 * 30) / 3600000;
-  var mint = (p.baseToken && p.baseToken.address) || null;
-  return {
-    id: p.pairAddress || Math.random().toString(36).substr(2, 8),
-    n: ((p.baseToken && p.baseToken.symbol) || '???').toUpperCase().slice(0, 12),
-    src: 'DSC', pump: false, liq, vol1: v24/24, vol24: v24,
-    c5, c1, c24,
-    bsr: buys / Math.max(sells, 1),
-    txns: buys + sells, age,
-    isNew: age < 1, hot: age < 0.17,
-    price: parseFloat(p.priceUsd) || null,
-    mint,
-    rug: false, hp: buys > 10 && sells === 0
-  };
-}
-
-function mapCG(c) {
-  var c1 = c.price_change_percentage_1h_in_currency || 0;
-  var mcap = c.market_cap || 1000000;
-  // Skip large cap tokens — too big for meme coin gains
-  if (mcap > MAX_MCAP) return null;
-  return {
-    id: c.id,
-    n: (c.symbol || '???').toUpperCase().slice(0, 12),
-    src: 'CGK', pump: false,
-    liq: mcap * 0.05,
-    vol1: (c.total_volume || 0) / 24,
-    vol24: c.total_volume || 0,
-    c5: c1 / 12, c1,
-    c24: c.price_change_percentage_24h || 0,
-    bsr: c1 > 5 ? 2.0 : c1 > 0 ? 1.3 : 0.8,
-    txns: 50, age: 720,
-    isNew: false, hot: false,
-    price: c.current_price || null,
-    mint: null,
-    rug: false, hp: false
-  };
-}
-
-async function fetchAll() {
-  // DexScreener
-  for (var q of DS_QUERIES) {
-    try {
-      var res = await fetch(q.url, { timeout: 8000 });
-      if (!res.ok) throw new Error();
-      var data = await res.json();
-      var pairs = (data.pairs || []).filter(function(p) { return p.chainId === 'solana' && p.priceUsd; });
-      pairs.forEach(function(p) { addTok(mapDS(p)); });
-      S.sources[q.id] = 'live:' + pairs.length;
-    } catch(e) { S.sources[q.id] = 'dead'; }
-  }
-
-  // CoinGecko
-  try {
-    var res2 = await fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&category=solana-meme-coins&order=volume_desc&per_page=20&sparkline=false&price_change_percentage=1h,24h', { timeout: 8000 });
-    if (res2.ok) {
-      var cg = await res2.json();
-      if (cg && cg.length) {
-        cg.forEach(function(c) {
-          var tok = mapCG(c);
-          if (tok) addTok(tok);
-        });
-        S.sources['COINGECKO'] = 'live:' + cg.length;
-      }
-    }
-  } catch(e) { S.sources['COINGECKO'] = 'dead'; }
-
-  // GeckoTerminal
-  await fetchGeckoTerminal();
-
-  // Raydium — Solana's biggest DEX, real time pool data
-  await fetchRaydium();
-
-  log('Pool: ' + S.tokens.size + ' tokens | Pump.fun: ' + S.pumpCount + ' live', 'info');
-}
-
-// ── PUMP.FUN PRICE CALCULATOR ─────────────────────────────────
-// Calculates real token price directly from Pump.fun bonding curve data
-// This works instantly at launch — no need to wait for Jupiter listing
-// Formula: price = virtualSolReserves / (virtualTokenReserves * solPriceUsd)
-var SOL_PRICE_USD = 150; // updated periodically
+// ── SOL PRICE ─────────────────────────────────────────────────
+var SOL_PRICE_USD = 150;
 
 async function updateSolPrice() {
   try {
-    var res = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112', { timeout: 5000 });
+    var res = await fetch(ST_URL + '/price?token=So11111111111111111111111111111111111111112', {
+      headers: { 'x-api-key': ST_KEY },
+      timeout: 5000
+    });
     if (!res.ok) return;
     var data = await res.json();
-    var sol = data.data && data.data['So11111111111111111111111111111111111111112'];
-    if (sol && sol.price) SOL_PRICE_USD = parseFloat(sol.price);
+    if (data && data.price) {
+      SOL_PRICE_USD = parseFloat(data.price);
+      S.stCredits++;
+    }
   } catch(e) {}
 }
 
+// ── SOLANA TRACKER — PRICE ────────────────────────────────────
+// Gets real time price for a single token by mint address
+async function getSTPrice(mint) {
+  try {
+    var res = await fetch(ST_URL + '/price?token=' + mint, {
+      headers: { 'x-api-key': ST_KEY },
+      timeout: 5000
+    });
+    if (!res.ok) return null;
+    var data = await res.json();
+    S.stCredits++;
+    return data && data.price ? parseFloat(data.price) : null;
+  } catch(e) { return null; }
+}
+
+// ── SOLANA TRACKER — TOKEN DISCOVERY ─────────────────────────
+// Searches for tokens matching our safety checklist
+// Modeled on BONKbot approach — simple checklist, let market do the rest
+async function fetchSTTokens() {
+  try {
+    var params = new URLSearchParams({
+      // Market cap range — small caps that can actually move
+      minMarketCap: CFG.MIN_MCAP,
+      maxMarketCap: CFG.MAX_MCAP,
+      // Must have real liquidity
+      minLiquidity: CFG.MIN_LIQ,
+      // Must have 1h volume — active right now
+      minVolume_1h: CFG.MIN_VOL_1H,
+      // Safety checks — BONKbot essentials
+      freezeAuthority: 'null',   // not freezable
+      mintAuthority: 'null',     // not mintable
+      // Must have socials — legitimate project
+      hasSocials: 'true',
+      // Sort by current hour volume — most active first
+      sortBy: 'volume_1h',
+      sortOrder: 'desc',
+      // Limit results to control credit usage
+      limit: 20,
+    });
+
+    var res = await fetch(ST_URL + '/search?' + params.toString(), {
+      headers: { 'x-api-key': ST_KEY },
+      timeout: 10000
+    });
+    if (!res.ok) throw new Error('ST search failed: ' + res.status);
+    var data = await res.json();
+    S.stCredits++;
+
+    var tokens = data.data || [];
+    var added = 0;
+
+    tokens.forEach(function(t) {
+      // Apply additional safety filters not available in search params
+      if (!passesChecklist(t)) return;
+
+      var tok = mapSTToken(t, 'ST-SEARCH');
+      if (tok) {
+        S.tokens.set(tok.n + tok.id, tok);
+        added++;
+      }
+    });
+
+    S.sources['ST-SEARCH'] = 'live:' + added;
+    log('ST Search: ' + added + ' tokens passed safety checklist', 'info');
+  } catch(e) {
+    S.sources['ST-SEARCH'] = 'dead';
+    log('ST Search failed: ' + e.message, 'warn');
+  }
+}
+
+// ── SOLANA TRACKER — TRENDING ─────────────────────────────────
+// Gets trending tokens by 1h volume — momentum tokens
+async function fetchSTTrending() {
+  try {
+    var res = await fetch(ST_URL + '/tokens/trending/1h', {
+      headers: { 'x-api-key': ST_KEY },
+      timeout: 10000
+    });
+    if (!res.ok) throw new Error('ST trending failed: ' + res.status);
+    var data = await res.json();
+    S.stCredits++;
+
+    var tokens = Array.isArray(data) ? data : (data.tokens || data.data || []);
+    var added = 0;
+
+    tokens.forEach(function(t) {
+      // Apply safety checklist
+      if (!passesChecklist(t)) return;
+
+      var tok = mapSTToken(t, 'ST-TREND');
+      if (tok) {
+        S.tokens.set(tok.n + tok.id, tok);
+        added++;
+      }
+    });
+
+    S.sources['ST-TREND'] = 'live:' + added;
+    log('ST Trending: ' + added + ' tokens passed safety checklist', 'info');
+  } catch(e) {
+    S.sources['ST-TREND'] = 'dead';
+    log('ST Trending failed: ' + e.message, 'warn');
+  }
+}
+
+// ── SAFETY CHECKLIST ─────────────────────────────────────────
+// BONKbot style — simple hard rules, no complex scoring
+// If any check fails — skip the token entirely
+function passesChecklist(t) {
+  // Must not be mintable
+  if (t.mintAuthority !== null && t.mintAuthority !== undefined &&
+      t.mintAuthority !== 'null' && t.mintAuthority !== '') return false;
+
+  // Must not be freezable
+  if (t.freezeAuthority !== null && t.freezeAuthority !== undefined &&
+      t.freezeAuthority !== 'null' && t.freezeAuthority !== '') return false;
+
+  // LP must be burned (100%)
+  if (t.lpBurn !== undefined && t.lpBurn !== null && t.lpBurn < 100) return false;
+
+  // Risk score must be low
+  if (t.riskScore !== undefined && t.riskScore !== null && t.riskScore > CFG.MAX_RISK) return false;
+
+  // Dev holding must be low
+  if (t.dev !== undefined && t.dev !== null && t.dev > CFG.MAX_DEV) return false;
+
+  // Top 10 holders must not be too concentrated
+  if (t.top10 !== undefined && t.top10 !== null && t.top10 > CFG.MAX_TOP10) return false;
+
+  // Must have market cap in range
+  var mcap = t.marketCapUsd || 0;
+  if (mcap < CFG.MIN_MCAP || mcap > CFG.MAX_MCAP) return false;
+
+  // Must have real liquidity
+  var liq = t.liquidityUsd || 0;
+  if (liq < CFG.MIN_LIQ) return false;
+
+  // Must have minimum buys
+  if (t.buys !== undefined && t.buys < CFG.MIN_BUYS) return false;
+
+  // Must have more buys than sells
+  if (t.buys !== undefined && t.sells !== undefined && t.sells > 0) {
+    var bsr = t.buys / t.sells;
+    if (bsr < 1.0) return false; // selling pressure dominant
+  }
+
+  // Must have socials
+  if (!t.hasSocials) return false;
+
+  // Must have a valid mint address
+  if (!t.mint) return false;
+
+  return true;
+}
+
+// ── MAP SOLANA TRACKER TOKEN ──────────────────────────────────
+// Converts Solana Tracker API response to our internal token format
+function mapSTToken(t, src) {
+  try {
+    var symbol = (t.symbol || t.name || '???').toUpperCase().slice(0, 12);
+    var mint = t.mint;
+    var liq = t.liquidityUsd || 0;
+    var mcap = t.marketCapUsd || 0;
+    var price = t.priceUsd ? parseFloat(t.priceUsd) : null;
+    var vol1h = t.volume_1h || 0;
+    var vol24h = t.volume_24h || t.volume || 0;
+    var buys = t.buys || 0;
+    var sells = t.sells || 1;
+    var bsr = buys / Math.max(sells, 1);
+    var holders = t.holders || 0;
+    var riskScore = t.riskScore || 0;
+    var dev = t.dev || 0;
+    var lpBurn = t.lpBurn || 0;
+
+    // Age from createdAt timestamp
+    var age = t.createdAt ?
+      (Date.now() - t.createdAt) / 3600000 : 24;
+
+    return {
+      id: mint,
+      n: symbol,
+      src: src,
+      mint: mint,
+      liq, mcap, price,
+      vol1: vol1h,
+      vol24: vol24h,
+      bsr,
+      buys, sells,
+      holders,
+      riskScore,
+      dev,
+      lpBurn,
+      age,
+      isNew: age < 1,
+      hot: age < 0.17,
+      hasSocials: t.hasSocials || false,
+      mintAuthority: t.mintAuthority,
+      freezeAuthority: t.freezeAuthority,
+      // Safety flags
+      rug: false,
+      hp: false,
+    };
+  } catch(e) { return null; }
+}
+
+// ── PUMP.FUN BONDING CURVE PRICE ──────────────────────────────
 function calcPumpPrice(d) {
-  // Pump.fun bonding curve price calculation
   var vSol = parseFloat(d.vSolInBondingCurve) || 0;
   var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
   if (vSol > 0 && vTokens > 0) {
-    // Price in SOL per token, converted to USD
-    var priceInSol = vSol / vTokens;
-    return priceInSol * SOL_PRICE_USD;
+    return (vSol / vTokens) * SOL_PRICE_USD;
   }
-  // Fallback: use marketCapSol / total supply (1 billion tokens)
   var mcapSol = parseFloat(d.marketCapSol) || 0;
   if (mcapSol > 0) {
     return (mcapSol / 1000000000) * SOL_PRICE_USD;
@@ -435,41 +320,35 @@ function calcPumpPrice(d) {
   return null;
 }
 
-// Store pump prices keyed by mint for real time tracking
 var pumpPrices = {}; // mint -> { price, ts }
 
 function updatePumpPrice(mint, d) {
   var price = calcPumpPrice(d);
   if (price && price > 0) {
-    pumpPrices[mint] = { price: price, ts: Date.now() };
-    // Update any open trades on this token
+    pumpPrices[mint] = { price, ts: Date.now() };
+    // Update any open grad trades on this token
     S.open.forEach(function(trade) {
-      if (trade.mint === mint) {
-        var currentPrice = price;
-        trade.currentPrice = currentPrice;
-        // Set entry price if not set yet
+      if (trade.mint === mint && trade.isGrad) {
+        trade.currentPrice = price;
         if (!trade.entryPrice) {
-          trade.entryPrice = currentPrice;
-          trade.peakPrice = currentPrice;
-          log('PRICE SET ' + trade.tok.n + ' entry $' + currentPrice.toFixed(8) + ' [PUMP.FUN]', 'info');
+          trade.entryPrice = price;
+          trade.peakPrice = price;
+          log('GRAD PRICE SET ' + trade.tok.n + ' $' + price.toFixed(8), 'info');
         }
-        // Calculate real P&L
         if (trade.entryPrice > 0) {
-          var pricePct = (currentPrice - trade.entryPrice) / trade.entryPrice;
-          trade.realPnlPct = pricePct;
-          trade.realPnl = trade.size * pricePct;
-          // Update peak
-          if (currentPrice > trade.peakPrice) trade.peakPrice = currentPrice;
-          // Track last price movement for stale detection
-          if (!trade.lastPrice || Math.abs(currentPrice - trade.lastPrice) / trade.lastPrice > 0.001) {
+          var pct = (price - trade.entryPrice) / trade.entryPrice;
+          trade.realPnlPct = pct;
+          trade.realPnl = trade.size * pct;
+          if (price > trade.peakPrice) trade.peakPrice = price;
+          if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
             trade.lastPriceChange = Date.now();
-            trade.lastPrice = currentPrice;
+            trade.lastPrice = price;
           }
-          // Check trail stop
+          // Trail stop check for grad trades
           if (trade.tpl === 'TRAIL') {
             var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
             if (peakGain >= CFG.TRAIL_ACT) {
-              var pullback = (trade.peakPrice - currentPrice) / trade.peakPrice;
+              var pullback = (trade.peakPrice - price) / trade.peakPrice;
               if (pullback >= CFG.TRAIL_PB) {
                 log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
                 closeTradeReal(trade.id, 'Trail exit');
@@ -477,11 +356,10 @@ function updatePumpPrice(mint, d) {
               }
             }
           }
-          // Check stop loss
-          if (pricePct <= -trade.sl) {
-            log('SL HIT ' + trade.tok.n + ' | ' + (pricePct*100).toFixed(1) + '%', 'loss');
+          // Stop loss check
+          if (pct <= -CFG.STOP_LOSS) {
+            log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
             closeTradeReal(trade.id, 'Stop loss hit');
-            return;
           }
         }
       }
@@ -500,33 +378,16 @@ function connectPump() {
       S.sources['PUMP.FUN'] = 'live:0';
       pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
       pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade' }));
-      log('Pump.fun WebSocket LIVE', 'pump');
+      log('Pump.fun WebSocket LIVE — Graduation Sniper active', 'pump');
     });
     pumpWs.on('message', function(raw) {
       try {
         var d = JSON.parse(raw.toString());
+        // New token launch
         if (d.mint && (d.symbol || d.name)) {
-          // New token launch
           var mint = d.mint;
           var name = ((d.symbol || d.name || 'NEW') + '').toUpperCase().slice(0, 12);
-          var initialLiq = (d.vSolInBondingCurve || 0) * SOL_PRICE_USD;
-          // Calculate real price directly from bonding curve
           var launchPrice = calcPumpPrice(d);
-          addTok({
-            id: mint, n: name, src: 'WS', pump: true,
-            liq: initialLiq || 5000,
-            vol1: (d.volume || 0),
-            vol24: (d.volume || 0),
-            c5: 0, c1: 0, c24: 0,
-            bsr: 2.0,
-            txns: 1,
-            age: 0, isNew: true, hot: true,
-            price: launchPrice, // real price from bonding curve
-            mint: mint,
-            rug: false, hp: false,
-            launchData: d
-          });
-          // Store pump price for real time tracking
           if (launchPrice) pumpPrices[mint] = { price: launchPrice, ts: Date.now() };
           S.pumpCount++;
           S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
@@ -534,57 +395,48 @@ function connectPump() {
             log('Pump.fun: ' + S.pumpCount + ' launches - latest: ' + name, 'pump');
           }
         }
-        // Trade events — real time price updates + graduation tracking
+        // Trade events — graduation tracking + price updates
         if (d.txType === 'buy' || d.txType === 'sell') {
           var mint2 = d.mint;
           if (mint2) {
-            // Update price from trade event
             updatePumpPrice(mint2, d);
-            // Update token data
-            S.tokens.forEach(function(existing, key) {
-              if (existing.mint === mint2 || existing.id === mint2) {
-                if (d.txType === 'buy') existing.bsr = Math.min((existing.bsr || 1) + 0.1, 5);
-                else existing.bsr = Math.max((existing.bsr || 1) - 0.1, 0.1);
-                if (d.marketCapSol) existing.liq = d.marketCapSol * SOL_PRICE_USD * 0.05;
-                S.tokens.set(key, existing);
-              }
-            });
-            // ── GRADUATION SNIPER TRACKING ──
+            // Graduation sniper tracking
             var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
             var mcapSol = parseFloat(d.marketCapSol) || 0;
             var tokenName = ((d.symbol || d.name || '') + '').toUpperCase().slice(0, 12);
             if (solInCurve > 0 || mcapSol > 0) {
-              var existing2 = S.gradCandidates.get(mint2) || {
+              var existing = S.gradCandidates.get(mint2) || {
                 name: tokenName, mint: mint2,
                 firstSeen: Date.now(), buys: 0, sells: 0
               };
-              existing2.solInCurve = solInCurve;
-              existing2.mcapSol = mcapSol;
-              existing2.lastUpdate = Date.now();
-              if (d.txType === 'buy') existing2.buys = (existing2.buys || 0) + 1;
-              else existing2.sells = (existing2.sells || 0) + 1;
-              existing2.bsr = existing2.buys / Math.max(existing2.sells, 1);
-              existing2.price = calcPumpPrice(d);
-              // Check if approaching graduation threshold
+              existing.solInCurve = solInCurve;
+              existing.mcapSol = mcapSol;
+              existing.lastUpdate = Date.now();
+              if (d.txType === 'buy') existing.buys = (existing.buys || 0) + 1;
+              else existing.sells = (existing.sells || 0) + 1;
+              existing.bsr = existing.buys / Math.max(existing.sells, 1);
+              existing.price = calcPumpPrice(d);
               if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
-                existing2.nearGrad = true;
-                // Log milestone
+                existing.nearGrad = true;
                 var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
-                if (!existing2.logged || existing2.loggedPct !== pct) {
-                  existing2.logged = true;
-                  existing2.loggedPct = pct;
-                  log('🎓 GRAD CANDIDATE ' + (existing2.name || mint2.slice(0,8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% to graduation | BSR ' + existing2.bsr.toFixed(1) + 'x', 'pump');
+                if (!existing.logged || existing.loggedPct !== pct) {
+                  existing.logged = true;
+                  existing.loggedPct = pct;
+                  log('🎓 GRAD CANDIDATE ' + (existing.name || mint2.slice(0,8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% to graduation | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
                 }
               } else {
-                existing2.nearGrad = false;
+                existing.nearGrad = false;
               }
-              S.gradCandidates.set(mint2, existing2);
+              S.gradCandidates.set(mint2, existing);
             }
           }
         }
       } catch(e) {}
     });
-    pumpWs.on('error', function() { S.pumpLive = false; S.sources['PUMP.FUN'] = 'dead'; });
+    pumpWs.on('error', function() {
+      S.pumpLive = false;
+      S.sources['PUMP.FUN'] = 'dead';
+    });
     pumpWs.on('close', function() {
       S.pumpLive = false;
       S.sources['PUMP.FUN'] = 'dead';
@@ -593,122 +445,91 @@ function connectPump() {
   } catch(e) { setTimeout(connectPump, 15000); }
 }
 
-// ── RAYDIUM PRICE API ─────────────────────────────────────────
-// Used for RAY sourced tokens — prices them directly from Raydium
-async function getRaydiumPrices(mintAddresses) {
-  try {
-    if (!mintAddresses || mintAddresses.length === 0) return {};
-    var ids = mintAddresses.slice(0, 50).join(',');
-    var res = await fetch('https://api-v3.raydium.io/mint/price?mints=' + ids, { timeout: 8000 });
-    if (!res.ok) return {};
-    var data = await res.json();
-    return data.data || {};
-  } catch(e) { return {}; }
-}
+// ── PRICE TRACKING FOR OPEN TRADES ───────────────────────────
+// Uses Solana Tracker price endpoint — real and reliable
+// Runs every 2 minutes per trade to conserve credits
+var priceTimers = {}; // tradeId -> interval
 
-// ── REAL PRICE TRACKING FOR OPEN TRADES ──────────────────────
-async function updateOpenTradePrices() {
-  if (S.open.length === 0) return;
-
-  // Split trades by source for optimal pricing
-  var rayTrades = S.open.filter(function(t) { return t.mint && t.tok.src === 'RAY'; });
-  var otherTrades = S.open.filter(function(t) { return t.mint && t.tok.src !== 'RAY'; });
-
-  // Fetch Raydium prices for RAY tokens
-  var rayPrices = {};
-  if (rayTrades.length > 0) {
-    var rayMints = rayTrades.map(function(t) { return t.mint; });
-    rayPrices = await getRaydiumPrices(rayMints);
-  }
-
-  // Fetch Jupiter prices for all other tokens
-  var jupPrices = {};
-  if (otherTrades.length > 0) {
-    var otherMints = otherTrades.map(function(t) { return t.mint; });
-    jupPrices = await getJupiterPrices(otherMints);
-  }
-
-  // Process all open trades
-  S.open.forEach(function(trade) {
+function startTradePrice(trade) {
+  if (priceTimers[trade.id]) return;
+  priceTimers[trade.id] = setInterval(async function() {
+    if (!S.open.find(function(t) { return t.id === trade.id; })) {
+      clearInterval(priceTimers[trade.id]);
+      delete priceTimers[trade.id];
+      return;
+    }
     if (!trade.mint) return;
 
-    // Get price from best source
-    var currentPrice = null;
-    if (trade.tok.src === 'RAY') {
-      // Try Raydium first
-      var rayPrice = rayPrices[trade.mint];
-      if (rayPrice) currentPrice = parseFloat(rayPrice);
-      // Fallback to Jupiter if Raydium fails
-      if (!currentPrice && jupPrices[trade.mint]) {
-        currentPrice = parseFloat(jupPrices[trade.mint].price);
-      }
-    } else {
-      // Jupiter for everything else
-      var priceData = jupPrices[trade.mint];
-      if (priceData) currentPrice = parseFloat(priceData.price);
-    }
+    // Grad trades priced via Pump.fun WebSocket — skip here
+    if (trade.isGrad) return;
 
-    if (!currentPrice || currentPrice <= 0) return;
+    var price = await getSTPrice(trade.mint);
+    if (!price || price <= 0) return;
 
-    // Update current price
-    trade.currentPrice = currentPrice;
+    trade.currentPrice = price;
 
-    // Track last price movement for stale detection
-    if (!trade.lastPrice || Math.abs(currentPrice - trade.lastPrice) / trade.lastPrice > 0.001) {
+    // Track price movement for stale detection
+    if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
       trade.lastPriceChange = Date.now();
-      trade.lastPrice = currentPrice;
+      trade.lastPrice = price;
     }
 
-    // Calculate real P&L
-    if (trade.entryPrice && trade.entryPrice > 0) {
-      var pricePct = (currentPrice - trade.entryPrice) / trade.entryPrice;
-      trade.realPnlPct = pricePct;
-      trade.realPnl = trade.size * pricePct;
+    if (!trade.entryPrice || trade.entryPrice <= 0) {
+      trade.entryPrice = price;
+      trade.peakPrice = price;
+      log('PRICE SET ' + trade.tok.n + ' entry $' + price.toFixed(8) + ' [ST]', 'info');
+      return;
+    }
 
-      // Update peak price for trail stop
-      if (!trade.peakPrice || currentPrice > trade.peakPrice) {
-        trade.peakPrice = currentPrice;
-      }
+    // Calculate P&L
+    var pct = (price - trade.entryPrice) / trade.entryPrice;
+    trade.realPnlPct = pct;
+    trade.realPnl = trade.size * pct;
 
-      // Check trail stop
-      if (trade.peakPrice && trade.tpl === 'TRAIL') {
-        var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
-        if (peakGain >= CFG.TRAIL_ACT) {
-          var pullback = (trade.peakPrice - currentPrice) / trade.peakPrice;
-          if (pullback >= CFG.TRAIL_PB) {
-            log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
-            closeTradeReal(trade.id, 'Trail exit');
-            return;
-          }
+    // Update peak
+    if (price > trade.peakPrice) trade.peakPrice = price;
+
+    // Trail stop check
+    if (trade.tpl === 'TRAIL') {
+      var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+      if (peakGain >= CFG.TRAIL_ACT) {
+        var pullback = (trade.peakPrice - price) / trade.peakPrice;
+        if (pullback >= CFG.TRAIL_PB) {
+          log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+          closeTradeReal(trade.id, 'Trail exit');
+          return;
         }
       }
-
-      // Check stop loss
-      if (pricePct <= -trade.sl) {
-        log('SL HIT ' + trade.tok.n + ' | ' + (pricePct*100).toFixed(1) + '%', 'loss');
-        closeTradeReal(trade.id, 'Stop loss hit');
-        return;
-      }
     }
-  });
+
+    // Stop loss check
+    if (pct <= -CFG.STOP_LOSS) {
+      log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
+      closeTradeReal(trade.id, 'Stop loss hit');
+    }
+  }, CFG.ST_PRICE_INTERVAL);
 }
 
-// ── REAL TRADE CLOSE ──────────────────────────────────────────
+// ── CLOSE TRADE ───────────────────────────────────────────────
 function closeTradeReal(id, reason) {
   var i = S.open.findIndex(function(t) { return t.id === id; });
   if (i === -1) return;
   var tr = S.open[i];
 
+  // Stop price tracking
+  if (priceTimers[id]) {
+    clearInterval(priceTimers[id]);
+    delete priceTimers[id];
+  }
+
   var pnl = 0;
   var closeReason = reason || 'Manual sell';
 
   if (tr.entryPrice && tr.currentPrice) {
-    // Real P&L from actual price movement
     var pricePct = (tr.currentPrice - tr.entryPrice) / tr.entryPrice;
     var slippage = tr.slip || 0.005;
     pnl = tr.size * pricePct - tr.size * slippage - CFG.SOL_GAS;
   } else {
-    // No price data available — use entry size as loss (conservative)
     pnl = -(CFG.SOL_GAS);
     closeReason = reason + ' (no price data)';
   }
@@ -740,402 +561,27 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
-  // If token went stale — put it on 30 minute cooldown
-  if (reason && reason.indexOf('stale') >= 0) {
+  // Stale cooldown — block re-entry for 30 minutes
+  if (reason && reason.toLowerCase().indexOf('stale') >= 0) {
     var cooldownKey = tr.tok.n + (tr.mint || '');
     S.staleCooldown.set(cooldownKey, Date.now());
-    log('COOLDOWN ' + tr.tok.n + ' — blocked for 30min after stale', 'warn');
+    log('COOLDOWN ' + tr.tok.n + ' — blocked 30min after stale', 'warn');
   }
 
-  // Daily loss limit check
+  // Daily loss limit
   if (S.fund < S.dayStartFund * (1 - CFG.LOSS_LIM)) {
     log('Daily loss limit hit — bot stopped', 'rug');
     stopBot();
   }
 }
 
-// ── SCORING ───────────────────────────────────────────────────
-function score(t) {
-  var s = 0, pos = [], neg = [], flags = [];
-  var freshLaunch = (t.src === 'WS' && t.age < 0.017); // under 1 min old
-
-  // ── FRESH PUMP.FUN LAUNCH SCORING ──
-  // New launches have no history — judge purely on launch signals
-  if (freshLaunch) {
-    // Buy pressure at launch (most important signal)
-    var bp2 = t.bsr > 4 ? 35 : t.bsr > 3 ? 30 : t.bsr > 2 ? 25 : t.bsr > 1.5 ? 20 : t.bsr > 1 ? 10 : 0;
-    s += bp2;
-    if (bp2 >= 30) pos.push('Strong launch buys ' + t.bsr.toFixed(1) + 'x');
-    else if (bp2 >= 20) pos.push('Good launch buys ' + t.bsr.toFixed(1) + 'x');
-    else if (bp2 === 0) neg.push('No buy pressure');
-
-    // Initial liquidity
-    var lp2 = t.liq > 50000 ? 20 : t.liq > 20000 ? 15 : t.liq > 10000 ? 10 : t.liq > 5000 ? 5 : 0;
-    s += lp2;
-    if (lp2 >= 15) pos.push('Good launch liq $' + (t.liq/1000).toFixed(0) + 'k');
-    else if (lp2 === 0) neg.push('Low launch liq');
-
-    // Live launch bonus
-    s += 25;
-    pos.push('LIVE LAUNCH ⚡');
-
-    // LunarCrush social bonus
-    var lscore = getLunarScore(t.n);
-    if (lscore > 0) { s += lscore; pos.push('Social buzz +' + lscore); }
-    if (isLunarTrending(t.n)) { s += 10; pos.push('🔥 TRENDING'); }
-
-    // Safety penalties
-    if (t.bsr < 0.5) { s = Math.floor(s * 0.30); flags.push('Heavy sell'); }
-    if (t.liq < 2000) { s = Math.floor(s * 0.20); flags.push('Danger liq'); }
-
-    return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
-  }
-
-  // ── STANDARD SCORING for established tokens ──
-
-  // Liquidity
-  var lp = t.liq > 2e6 ? 25 : t.liq > 5e5 ? 20 : t.liq > 1e5 ? 14 : t.liq > 3e4 ? 9 : t.liq > 1e4 ? 5 : t.liq > 2000 ? 2 : 0;
-  s += lp;
-  if (lp >= 20) pos.push('Deep liq $' + (t.liq/1000).toFixed(0) + 'k');
-  else if (lp >= 9) pos.push('Liq $' + (t.liq/1000).toFixed(0) + 'k');
-  else if (lp < 2) neg.push('Micro liq');
-
-  // Volume scoring — source aware
-  // CGK: CoinGecko only provides 24h total volume divided by 24 as "h1" — not real time
-  // So volume ratio is meaningless for CGK — skip it and judge on other signals
-  // GECKO: GeckoTerminal provides real h1 volume — use it but soften the penalty
-  // DSC: DexScreener provides h1/h24 — use full volume scoring
-  if (t.src === 'CGK') {
-    // Skip volume ratio for CGK — data is not real time
-    // Award neutral 5 points so good CGK tokens aren't penalised
-    s += 5;
-    pos.push('Established token');
-  } else if (t.src === 'GECKO' || t.src === 'RAY') {
-    // GeckoTerminal and Raydium have real volume data — use it but soften penalty
-    var vrg = t.vol1 / Math.max(t.vol24/24, 1);
-    var vpg = vrg > 5 ? 20 : vrg > 3 ? 16 : vrg > 2 ? 12 : vrg > 1.5 ? 7 : vrg > 1 ? 3 : vrg > 0.5 ? 1 : 0;
-    s += vpg;
-    if (vpg >= 16) pos.push('Vol surge ' + vrg.toFixed(1) + 'x');
-    else if (vpg >= 7) pos.push('Vol ' + vrg.toFixed(1) + 'x');
-    // No negative flag for declining vol on GECKO/RAY — softer treatment
-  } else {
-    // DSC and others — full volume ratio scoring
-    var vr = t.vol1 / Math.max(t.vol24/24, 1);
-    var vp = vr > 5 ? 20 : vr > 3 ? 16 : vr > 2 ? 12 : vr > 1.5 ? 7 : vr > 1 ? 3 : 0;
-    s += vp;
-    if (vp >= 16) pos.push('Vol surge ' + vr.toFixed(1) + 'x');
-    else if (vp >= 12) pos.push('Vol ' + vr.toFixed(1) + 'x');
-    else if (vp === 0) neg.push('Vol declining');
-  }
-
-  // Buy/sell ratio
-  var bp = t.bsr > 3 ? 20 : t.bsr > 2 ? 16 : t.bsr > 1.5 ? 11 : t.bsr > 1.2 ? 7 : t.bsr > 1 ? 3 : 0;
-  s += bp;
-  if (bp >= 16) pos.push('Buys ' + t.bsr.toFixed(1) + 'x');
-  else if (bp >= 11) pos.push('Buying ' + t.bsr.toFixed(1) + 'x');
-  else if (bp === 0) neg.push('Selling');
-
-  // Price momentum
-  var mp = t.c5 > 20 ? 15 : t.c5 > 10 ? 12 : t.c5 > 3 ? 8 : t.c5 > 0 ? 3 : t.c5 > -5 ? 0 : -2;
-  s += Math.max(mp, 0);
-  if (mp >= 12) pos.push('+' + t.c5.toFixed(1) + '% 5m');
-  else if (mp >= 8) pos.push('+' + t.c5.toFixed(1) + '% 5m');
-  else if (mp < 0) neg.push(t.c5.toFixed(1) + '% 5m');
-
-  // 1h momentum
-  var hp = t.c1 > 50 ? 10 : t.c1 > 20 ? 7 : t.c1 > 5 ? 4 : t.c1 > 0 ? 1 : 0;
-  s += hp;
-  if (hp >= 7) pos.push('+' + t.c1.toFixed(0) + '% 1h');
-
-  // Source bonus
-  if (t.hot) { s += 15; pos.push('HOT <10min'); }
-  else if (t.isNew) { s += 10; pos.push('NEW <1h'); }
-  else if (t.age < 6) { s += 5; pos.push(t.age.toFixed(1) + 'h old'); }
-  if (t.pump && t.isNew) { s += 5; pos.push('pump.fun'); }
-
-  // LunarCrush social bonus
-  var lscore2 = getLunarScore(t.n);
-  if (lscore2 > 0) { s += lscore2; pos.push('Social buzz +' + lscore2); }
-  if (isLunarTrending(t.n)) { s += 10; pos.push('🔥 TRENDING'); }
-
-  // Penalty flags
-  if (t.c1 > 300) { s = Math.floor(s * 0.20); flags.push('Mega pump'); }
-  else if (t.c1 > 150) { s = Math.floor(s * 0.35); flags.push('Big pump'); }
-  else if (t.c1 > 80) { s = Math.floor(s * 0.55); flags.push('Late entry'); }
-  if (t.bsr < 0.5) { s = Math.floor(s * 0.50); flags.push('Heavy sell'); }
-  if (t.liq < 1500) { s = Math.floor(s * 0.25); flags.push('Danger liq'); }
-
-  return { sc: Math.min(Math.round(s), 100), pos, neg, flags, all: pos.concat(neg).concat(flags) };
-}
-
-
-// ── POSITION SIZING ───────────────────────────────────────────
-function cl(v, a, b) { return Math.min(Math.max(v, a), b); }
-
-function getSlip(liq, sz) {
-  // Real slippage estimate based on liquidity and position size
-  return parseFloat(cl(0.004 + (sz / Math.max(liq, 100)) * 2.5, 0.003, 0.15).toFixed(4));
-}
-
-function getSize(fund, sc, liq) {
-  var p = sc >= 85 ? 0.08 : sc >= 75 ? 0.065 : 0.05;
-  if (liq < 5e4) p *= 0.65;
-  if (liq < 1e4) p *= 0.50;
-  return parseFloat((fund * Math.min(p, CFG.MAX_POS)).toFixed(4));
-}
-
-function getSL(sc) {
-  return cl(sc >= 85 ? 0.12 : sc >= 75 ? 0.15 : 0.18, 0.10, 0.28);
-}
-
-
-// ── GRADUATION SNIPER ─────────────────────────────────────────
-// Scans graduation candidates and enters trades on qualifying tokens
-async function runGradSniper() {
-  if (!S.running) return;
-  if (S.fund < 1) return;
-
-  // Count open grad trades
-  var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
-  if (openGrads >= CFG.MAX_GRAD) return;
-
-  var now = Date.now();
-
-  // Debug: log how many candidates we have
-  if (S.gradCandidates.size > 0 && Math.random() < 0.01) {
-    log('GRAD POOL: ' + S.gradCandidates.size + ' candidates tracked', 'info');
-  }
-
-  for (var entry of S.gradCandidates.entries()) {
-    var mint = entry[0];
-    var cand = entry[1];
-
-    // Must be near graduation
-    if (!cand.nearGrad) continue;
-
-    // Must have been tracked for at least 30 seconds (not a flash pump)
-    var age = (now - cand.firstSeen) / 1000;
-    if (age < 30) continue;
-
-    // Must have good buy pressure
-    if (cand.bsr < 1.2) continue;
-
-    // Must not already have an open trade on this token
-    if (S.open.find(function(t) { return t.mint === mint; })) continue;
-
-    // Must have a valid price
-    if (!cand.price || cand.price <= 0) continue;
-
-    // Quality check — need more buys than sells
-    var totalTxns = (cand.buys || 0) + (cand.sells || 0);
-    if (totalTxns < 3) continue; // need at least 3 transactions
-
-    // Calculate position size — slightly larger for grad plays
-    var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, CFG.MAX_POS)).toFixed(4));
-    if (size < 0.50) continue;
-
-    var slip = 0.008; // slightly higher slippage for grad plays
-    S.fund = parseFloat((S.fund - size * slip).toFixed(4));
-
-    var solPct = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
-
-    var trade = {
-      id: Math.random().toString(36).substr(2, 9),
-      tok: {
-        n: cand.name || mint.slice(0, 8),
-        src: 'GRAD',
-        liq: cand.solInCurve * SOL_PRICE_USD,
-      },
-      sc: 85, // graduation plays get high score by default
-      reasons: [
-        'Near graduation ' + solPct + '%',
-        'BSR ' + cand.bsr.toFixed(1) + 'x',
-        cand.solInCurve.toFixed(0) + ' SOL in curve',
-        age.toFixed(0) + 's building'
-      ],
-      size: size,
-      tpl: 'TRAIL',
-      sl: 0.12, // tight 12% stop loss for grad plays
-      slip: slip,
-      mint: mint,
-      entryPrice: cand.price,
-      currentPrice: cand.price,
-      peakPrice: cand.price,
-      realPnl: 0,
-      realPnlPct: 0,
-      isGrad: true,
-      gradSolAtEntry: cand.solInCurve,
-      openedAt: new Date().toLocaleTimeString(),
-      startTime: now
-    };
-
-    S.open.push(trade);
-    S.gradCount++;
-
-    log('🎓 GRAD ENTER ' + trade.tok.n + ' | ' + solPct + '% to grad | SOL ' + cand.solInCurve.toFixed(0) + ' | BSR ' + cand.bsr.toFixed(1) + 'x | $' + size.toFixed(2) + ' | Entry $' + cand.price.toFixed(8), 'entry');
-
-    // Only enter one per scan cycle
-    break;
-  }
-}
-
-// ── MAIN SCAN ─────────────────────────────────────────────────
-var scanI = null, scanIdx = 0;
-async function runScan() {
-  if (!S.running || S.tokens.size === 0) return;
-  if (S.fund < 1) { stopBot(); return; }
-
-  var tokens = Array.from(S.tokens.values());
-  var tok = tokens[scanIdx % tokens.length];
-  scanIdx++; S.scanCount++;
-
-  var result = score(tok);
-  var sc = result.sc, pos = result.pos, neg = result.neg, flags = result.flags, all = result.all;
-  var src = '[' + tok.src + ']';
-
-  if (tok.hp) { S.rejectCount++; log('SKIP ' + tok.n + ' ' + src + ' - HONEYPOT', 'reject'); return; }
-
-  // WS tokens handled exclusively by graduation sniper
-  if (tok.src === 'WS') { return; }
-
-  // Stablecoin blacklist — never trade these
-  if (isStablecoin(tok.n)) {
-    S.tokens.delete(tok.n + tok.id);
-    return;
-  }
-
-  // Established tokens need MIN_SCORE
-  var minScore = CFG.MIN_SCORE;
-  if (sc < minScore) {
-    S.rejectCount++;
-    var why = neg.slice(0, 2).concat(flags.slice(0, 1)).join(' | ') || 'weak signals';
-    log('SKIP ' + tok.n + ' ' + src + ' - Score ' + sc + '/' + minScore + ' | ' + why, 'reject');
-    // Score 10 or below — kick from pool permanently, free slot for better tokens
-    if (sc <= 10) {
-      S.tokens.delete(tok.n + tok.id);
-    }
-    return;
-  }
-
-  if (S.open.length >= CFG.MAX_OPEN) return;
-  if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
-
-  // Check stale cooldown — skip tokens that recently went stale
-  var cooldownKey = tok.n + (tok.mint || '');
-  var lastStale = S.staleCooldown.get(cooldownKey);
-  if (lastStale && (Date.now() - lastStale) < 1800000) { // 30 minutes
-    return;
-  }
-  // Clean up expired cooldowns periodically
-  if (Math.random() < 0.01) {
-    var now2 = Date.now();
-    S.staleCooldown.forEach(function(ts, key) {
-      if (now2 - ts > 1800000) S.staleCooldown.delete(key);
-    });
-  }
-
-  // Get real entry price — with DexScreener mint lookup as fallback
-  var entryPrice = null;
-  var tradeMint = tok.mint || null;
-
-  // If no mint address, look it up via DexScreener
-  if (!tradeMint) {
-    tradeMint = await getMintFromDexScreener(tok.n);
-    if (tradeMint) {
-      log('Mint resolved via DexScreener: ' + tok.n + ' -> ' + tradeMint.slice(0,8) + '...', 'info');
-      // Cache it back on the token so we don't look it up again
-      tok.mint = tradeMint;
-      S.tokens.set(tok.n + tok.id, tok);
-    }
-  }
-
-  // Use Pump.fun bonding curve price first
-  if (tradeMint && pumpPrices[tradeMint]) {
-    entryPrice = pumpPrices[tradeMint].price;
-  } else if (tok.price) {
-    entryPrice = tok.price;
-  } else if (tradeMint) {
-    entryPrice = await getJupiterPrice(tradeMint);
-  }
-
-  // If still no mint or price — skip, can't track it
-  if (!tradeMint && !entryPrice) {
-    S.rejectCount++;
-    log('SKIP ' + tok.n + ' [' + tok.src + '] — no mint address, cannot track price', 'reject');
-    return;
-  }
-
-  var slip = getSlip(tok.liq, S.fund * 0.08);
-  var size = getSize(S.fund, sc, tok.liq);
-  if (size < 0.50) { S.rejectCount++; return; }
-
-  // Deduct slippage cost from fund at entry
-  S.fund = parseFloat((S.fund - size * slip).toFixed(4));
-
-  var sl = getSL(sc);
-
-  var trade = {
-    id: Math.random().toString(36).substr(2, 9),
-    tok: Object.assign({}, tok),
-    sc, reasons: all,
-    size: parseFloat(size.toFixed(4)),
-    tpl: 'TRAIL',
-    sl, slip,
-    mint: tradeMint,
-    entryPrice: entryPrice,
-    currentPrice: entryPrice,
-    peakPrice: entryPrice,
-    realPnl: 0,
-    realPnlPct: 0,
-    openedAt: new Date().toLocaleTimeString(),
-    startTime: Date.now()
-  };
-
-  S.open.push(trade);
-
-  var tag = tok.src === 'WS' ? 'LIVE ' : tok.hot ? 'HOT ' : tok.isNew ? 'NEW ' : '';
-  var priceStr = entryPrice ? ' | Entry $' + entryPrice.toFixed(8) : ' | Price fetching...';
-  log('ENTER ' + tag + tok.n + ' ' + src + ' | Score ' + sc + ' | SL -' + (sl*100).toFixed(0) + '% | $' + size.toFixed(2) + ' | Slip ' + (slip*100).toFixed(2) + '%' + priceStr, 'entry');
-}
-
-// ── PRICE UPDATE LOOP ─────────────────────────────────────────
-var priceI = null;
-function startPriceUpdates() {
-  if (priceI) clearInterval(priceI);
-  priceI = setInterval(updateOpenTradePrices, CFG.PRICE_INTERVAL);
-}
-
-// ── BOT CONTROL ───────────────────────────────────────────────
-var fetchI = null;
-
-function startBot() {
-  if (S.running) return;
-  S.running = true;
-  S.startTime = Date.now();
-  S.dayStartFund = S.fund;
-  connectPump();
-  fetchAll();
-  scanI = setInterval(runScan, CFG.SCAN_INTERVAL);
-  var gradI = setInterval(runGradSniper, 1000); // check grad candidates every second
-  fetchI = setInterval(fetchAll, 30000);
-  startPriceUpdates();
-  setInterval(checkExitCriteria, 10000); // criteria-based exit check every 10s
-  updateSolPrice();
-  setInterval(updateSolPrice, 60000); // update SOL price every minute
-  fetchLunarTrending();
-  setInterval(fetchLunarTrending, 300000); // refresh every 5 mins
-  log('MemeBot V12 REAL DATA started | Score ' + CFG.MIN_SCORE + '+ | Jupiter + Helius + DexScreener + GeckoTerminal + Raydium + Pump.fun', 'info');
-}
-
-// ── CRITERIA BASED EXIT CHECKER ──────────────────────────────
-// Replaces time-based exits with intelligent market-condition exits
-// Runs every 10 seconds to check all open trades
+// ── CRITERIA-BASED EXIT CHECKER ───────────────────────────────
 function checkExitCriteria() {
   var now = Date.now();
   S.open.slice().forEach(function(t) {
     var age = now - t.startTime;
 
-    // 1. No price data after 3 minutes — close to free the slot
+    // No price data after 3 minutes — close
     if (!t.entryPrice && age > CFG.NO_PRICE_TIMEOUT) {
       log('TIMEOUT ' + t.tok.n + ' — no price after 3min', 'warn');
       closeTradeReal(t.id, 'Timeout — no price data');
@@ -1144,7 +590,7 @@ function checkExitCriteria() {
 
     if (!t.entryPrice || !t.currentPrice) return;
 
-    // 2. Token went stale — price unchanged for 2 minutes
+    // Token went stale — no price movement for 2 minutes
     var lastMove = t.lastPriceChange || t.startTime;
     if ((now - lastMove) > CFG.STALE_TIME && age > 60000) {
       log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
@@ -1152,18 +598,7 @@ function checkExitCriteria() {
       return;
     }
 
-    // 3. Buy pressure died — BSR below 0.8 (heavy selling)
-    var tokenData = null;
-    S.tokens.forEach(function(tok) {
-      if (tok.mint === t.mint || tok.id === t.mint) tokenData = tok;
-    });
-    if (tokenData && tokenData.bsr < 0.8 && age > 30000) {
-      log('SMART MONEY OUT ' + t.tok.n + ' | BSR ' + tokenData.bsr.toFixed(2), 'warn');
-      closeTradeReal(t.id, 'Smart money out');
-      return;
-    }
-
-    // 4. For graduation plays — check if token has graduated (SOL > 500)
+    // Graduation trade — auto exit when graduated
     if (t.isGrad) {
       var gradCand = S.gradCandidates.get(t.mint);
       if (gradCand && gradCand.solInCurve >= CFG.GRAD_TARGET) {
@@ -1175,17 +610,236 @@ function checkExitCriteria() {
   });
 }
 
+// ── GRADUATION SNIPER ─────────────────────────────────────────
+async function runGradSniper() {
+  if (!S.running) return;
+  if (S.fund < 1) return;
+
+  var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
+  if (openGrads >= CFG.MAX_GRAD) return;
+
+  var now = Date.now();
+
+  if (S.gradCandidates.size > 0 && Math.random() < 0.01) {
+    log('GRAD POOL: ' + S.gradCandidates.size + ' candidates tracked', 'info');
+  }
+
+  for (var entry of S.gradCandidates.entries()) {
+    var mint = entry[0];
+    var cand = entry[1];
+
+    if (!cand.nearGrad) continue;
+    var age = (now - cand.firstSeen) / 1000;
+    if (age < 30) continue;
+    if (cand.bsr < 1.2) continue;
+    if (S.open.find(function(t) { return t.mint === mint; })) continue;
+    if (!cand.price || cand.price <= 0) continue;
+    var totalTxns = (cand.buys || 0) + (cand.sells || 0);
+    if (totalTxns < 3) continue;
+
+    var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, CFG.MAX_POS)).toFixed(4));
+    if (size < 0.50) continue;
+
+    var slip = 0.008;
+    S.fund = parseFloat((S.fund - size * slip).toFixed(4));
+    var solPct = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
+
+    var trade = {
+      id: Math.random().toString(36).substr(2, 9),
+      tok: { n: cand.name || mint.slice(0, 8), src: 'GRAD', liq: cand.solInCurve * SOL_PRICE_USD },
+      sc: 85,
+      reasons: [
+        'Near graduation ' + solPct + '%',
+        'BSR ' + cand.bsr.toFixed(1) + 'x',
+        cand.solInCurve.toFixed(0) + ' SOL in curve',
+        age.toFixed(0) + 's building'
+      ],
+      size, tpl: 'TRAIL',
+      sl: 0.12, slip, mint,
+      entryPrice: cand.price,
+      currentPrice: cand.price,
+      peakPrice: cand.price,
+      realPnl: 0, realPnlPct: 0,
+      isGrad: true,
+      gradSolAtEntry: cand.solInCurve,
+      openedAt: new Date().toLocaleTimeString(),
+      startTime: now
+    };
+
+    S.open.push(trade);
+    S.gradCount++;
+    log('🎓 GRAD ENTER ' + trade.tok.n + ' | ' + solPct + '% to grad | SOL ' + cand.solInCurve.toFixed(0) + ' | BSR ' + cand.bsr.toFixed(1) + 'x | $' + size.toFixed(2) + ' | Entry $' + cand.price.toFixed(8), 'entry');
+    break;
+  }
+}
+
+// ── MAIN SCAN ─────────────────────────────────────────────────
+// Scans the token pool — tokens already passed safety checklist at discovery
+var scanI = null, scanIdx = 0;
+async function runScan() {
+  if (!S.running || S.tokens.size === 0) return;
+  if (S.fund < 1) { stopBot(); return; }
+
+  var tokens = Array.from(S.tokens.values());
+  if (tokens.length === 0) return;
+
+  var tok = tokens[scanIdx % tokens.length];
+  scanIdx++;
+  S.scanCount++;
+
+  // Skip WS tokens — graduation sniper only
+  if (tok.src === 'WS') return;
+
+  // Check stale cooldown
+  var cooldownKey = tok.n + (tok.mint || '');
+  var lastStale = S.staleCooldown.get(cooldownKey);
+  if (lastStale && (Date.now() - lastStale) < 1800000) return;
+
+  // Already in an open trade
+  if (S.open.find(function(t) { return t.tok.n === tok.n; })) return;
+
+  // Max open trades reached
+  if (S.open.length >= CFG.MAX_OPEN) return;
+
+  // Token must pass the checklist — should already have passed at discovery
+  // but double check key fields
+  if (!tok.mint) {
+    S.rejectCount++;
+    return;
+  }
+
+  // Must have real buy pressure
+  if (tok.bsr < 1.0) {
+    S.rejectCount++;
+    log('SKIP ' + tok.n + ' [' + tok.src + '] — selling pressure (BSR ' + tok.bsr.toFixed(2) + ')', 'reject');
+    // Remove from pool — conditions changed
+    S.tokens.delete(tok.n + tok.id);
+    return;
+  }
+
+  // Position sizing
+  var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
+  if (size < 0.50) { S.rejectCount++; return; }
+
+  var slip = parseFloat(Math.min(0.004 + (size / Math.max(tok.liq, 100)) * 2.5, 0.15).toFixed(4));
+  S.fund = parseFloat((S.fund - size * slip).toFixed(4));
+
+  var trade = {
+    id: Math.random().toString(36).substr(2, 9),
+    tok: Object.assign({}, tok),
+    sc: 85, // passed checklist — high confidence
+    reasons: buildReasons(tok),
+    size: parseFloat(size.toFixed(4)),
+    tpl: 'TRAIL',
+    sl: CFG.STOP_LOSS,
+    slip, mint: tok.mint,
+    entryPrice: tok.price || null,
+    currentPrice: tok.price || null,
+    peakPrice: tok.price || null,
+    realPnl: 0, realPnlPct: 0,
+    openedAt: new Date().toLocaleTimeString(),
+    startTime: Date.now()
+  };
+
+  S.open.push(trade);
+
+  // Start price tracking via Solana Tracker
+  startTradePrice(trade);
+
+  var priceStr = tok.price ? ' | Entry $' + tok.price.toFixed(8) : ' | Price tracking...';
+  log('ENTER ' + tok.n + ' [' + tok.src + '] | MCap $' + (tok.mcap/1000).toFixed(0) + 'k | Liq $' + (tok.liq/1000).toFixed(0) + 'k | BSR ' + tok.bsr.toFixed(1) + 'x | $' + size.toFixed(2) + priceStr, 'entry');
+}
+
+// ── BUILD ENTRY REASONS ───────────────────────────────────────
+function buildReasons(tok) {
+  var reasons = [];
+  if (tok.mintAuthority === null || tok.mintAuthority === 'null') reasons.push('✅ Not mintable');
+  if (tok.freezeAuthority === null || tok.freezeAuthority === 'null') reasons.push('✅ Not freezable');
+  if (tok.lpBurn >= 100) reasons.push('✅ LP burned');
+  if (tok.hasSocials) reasons.push('✅ Has socials');
+  if (tok.riskScore !== undefined) reasons.push('Risk score ' + tok.riskScore + '/10');
+  if (tok.bsr > 0) reasons.push('BSR ' + tok.bsr.toFixed(1) + 'x');
+  reasons.push('MCap $' + (tok.mcap/1000).toFixed(0) + 'k');
+  return reasons;
+}
+
+// ── TOKEN POOL MANAGEMENT ─────────────────────────────────────
+// Removes old tokens to keep pool fresh
+function cleanPool() {
+  var now = Date.now();
+  var removed = 0;
+  S.tokens.forEach(function(tok, key) {
+    // Remove tokens older than 2 hours — stale data
+    if (tok.age && tok.age > 2) {
+      S.tokens.delete(key);
+      removed++;
+    }
+  });
+  // Clean expired cooldowns
+  S.staleCooldown.forEach(function(ts, key) {
+    if (now - ts > 1800000) S.staleCooldown.delete(key);
+  });
+  if (removed > 0) log('Pool cleaned: ' + removed + ' old tokens removed', 'info');
+}
+
+// ── BOT CONTROL ───────────────────────────────────────────────
+var fetchSearchI = null, fetchTrendI = null, gradI = null, exitI = null, cleanI = null;
+
+function startBot() {
+  if (S.running) return;
+  S.running = true;
+  S.startTime = Date.now();
+  S.dayStartFund = S.fund;
+
+  // Connect Pump.fun WebSocket for graduation sniper
+  connectPump();
+
+  // Initial data fetch
+  fetchSTTokens();
+  fetchSTTrending();
+  updateSolPrice();
+
+  // Scheduled fetches — credit aware intervals
+  fetchSearchI = setInterval(fetchSTTokens, CFG.ST_SEARCH_INTERVAL);
+  fetchTrendI = setInterval(fetchSTTrending, CFG.ST_TREND_INTERVAL);
+
+  // Main scan loop
+  scanI = setInterval(runScan, 500);
+
+  // Graduation sniper
+  gradI = setInterval(runGradSniper, 1000);
+
+  // Exit criteria checker
+  exitI = setInterval(checkExitCriteria, 10000);
+
+  // Pool cleanup
+  cleanI = setInterval(cleanPool, 3600000);
+
+  // SOL price update every 10 minutes
+  setInterval(updateSolPrice, 600000);
+
+  log('MemeBot V14 started | Solana Tracker powered | Safety checklist active | Graduation Sniper live', 'info');
+  log('ST Credits available: 10,000/month | Budget: ~333/day', 'info');
+}
+
 function stopBot() {
   S.running = false;
   clearInterval(scanI);
-  clearInterval(priceI);
-  clearInterval(fetchI);
-  log('Bot stopped', 'info');
+  clearInterval(fetchSearchI);
+  clearInterval(fetchTrendI);
+  clearInterval(gradI);
+  clearInterval(exitI);
+  clearInterval(cleanI);
+  // Stop all price tracking intervals
+  Object.keys(priceTimers).forEach(function(id) {
+    clearInterval(priceTimers[id]);
+    delete priceTimers[id];
+  });
+  log('Bot stopped | ST Credits used this session: ' + S.stCredits, 'info');
 }
 
 // ── API ROUTES ────────────────────────────────────────────────
 app.get('/api/state', function(req, res) {
-  // Strip heavy data from open trades before sending
   var openTrades = S.open.map(function(t) {
     return {
       id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, sl: t.sl, slip: t.slip,
@@ -1201,7 +855,8 @@ app.get('/api/state', function(req, res) {
     fund: S.fund, savings: S.savings, stats: S.stats,
     running: S.running, pumpLive: S.pumpLive, pumpCount: S.pumpCount,
     poolSize: S.tokens.size, scanCount: S.scanCount, rejectCount: S.rejectCount,
-    openTrades: openTrades, closedTrades: S.closed.slice(0, 20),
+    stCredits: S.stCredits,
+    openTrades, closedTrades: S.closed.slice(0, 20),
     gradCount: S.gradCount, gradCandidates: S.gradCandidates.size,
     logs: S.logs.slice(0, 100), sources: S.sources, startTime: S.startTime
   });
@@ -1210,18 +865,18 @@ app.get('/api/state', function(req, res) {
 app.post('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
 app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
-app.post('/api/setTP', function(req, res) { res.json({ success: true }); });
-app.get('/health', function(req, res) { res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount }); });
+app.get('/health', function(req, res) { res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount, credits: S.stCredits }); });
 
-// ── DASHBOARD ─────────────────────────────────────────────────
 app.get('/', function(req, res) {
   res.sendFile(__dirname + '/index.html');
 });
 
 // ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, function() {
-  console.log('MemeBot V12 REAL DATA running on port ' + PORT);
+  console.log('MemeBot V14 — Solana Tracker powered — running on port ' + PORT);
   connectPump();
-  fetchAll();
-  // Bot does NOT auto-start — Mike controls this manually
+  fetchSTTokens();
+  fetchSTTrending();
+  updateSolPrice();
+  // Bot does NOT auto-start — Mike controls manually
 });
