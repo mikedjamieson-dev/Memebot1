@@ -48,9 +48,9 @@ const CFG = {
   GRAD_POS: 0.10,        // 10% position size for grad plays
 
   // Solana Tracker credit management
-  ST_SEARCH_INTERVAL: 1800000,  // search every 30 minutes
-  ST_TREND_INTERVAL: 1800000,   // trending every 30 minutes
-  ST_PRICE_INTERVAL: 300000,    // price check every 5 minutes per open trade
+  ST_SEARCH_INTERVAL: 600000,  // search every 10 minutes
+  ST_TREND_INTERVAL: 600000,   // trending every 10 minutes
+  ST_PRICE_INTERVAL: 30000,    // price check every 30 seconds per open trade
 };
 
 // ── STATE ─────────────────────────────────────────────────────
@@ -138,8 +138,8 @@ async function fetchSTTokens() {
       // Sort by current hour volume — most active first
       sortBy: 'volume_1h',
       sortOrder: 'desc',
-      // Limit results to control credit usage
-      limit: 20,
+      // Limit results — 100 max for full format
+      limit: 100,
     });
 
     var res = await fetch(ST_URL + '/search?' + params.toString(), {
