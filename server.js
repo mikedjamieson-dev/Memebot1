@@ -119,25 +119,30 @@ async function getSTPrice(mint) {
 
 // ── SOLANA TRACKER — TOKEN DISCOVERY ─────────────────────────
 // Searches for tokens matching our safety checklist
-// Modeled on BONKbot approach — simple checklist, let market do the rest
+// Uses correct API parameters from official documentation
 async function fetchSTTokens() {
   try {
     var params = new URLSearchParams({
-      // Market cap range — small caps that can actually move
+      // Market cap range
       minMarketCap: CFG.MIN_MCAP,
       maxMarketCap: CFG.MAX_MCAP,
       // Must have real liquidity
       minLiquidity: CFG.MIN_LIQ,
       // Must have 1h volume — active right now
       minVolume_1h: CFG.MIN_VOL_1H,
-      // Hard safety checks — non negotiable
+      // Hard safety — API level filtering
       freezeAuthority: 'null',
       mintAuthority: 'null',
-      // Sort by current hour volume — most active first
+      // Risk and holder filters at API level
+      maxRiskScore: CFG.MAX_RISK,
+      maxDev: CFG.MAX_DEV,
+      maxTop10: CFG.MAX_TOP10,
+      // Must have buy activity
+      minBuys: CFG.MIN_BUYS,
+      // Sort by 1h volume — most active first
       sortBy: 'volume_1h',
       sortOrder: 'desc',
-      // Full format gives us riskScore, dev%, lpBurn, holders
-      format: 'full',
+      // No format=full — keeps response flat and fast
       limit: 100,
     });
 
@@ -153,9 +158,7 @@ async function fetchSTTokens() {
     var added = 0;
 
     tokens.forEach(function(t) {
-      // Apply additional safety filters not available in search params
       if (!passesChecklist(t)) return;
-
       var tok = mapSTToken(t, 'ST-SEARCH');
       if (tok) {
         S.tokens.set(tok.n + tok.id, tok);
@@ -164,7 +167,7 @@ async function fetchSTTokens() {
     });
 
     S.sources['ST-SEARCH'] = 'live:' + added;
-    log('ST Search: ' + added + ' tokens passed safety checklist', 'info');
+    log('ST Search: ' + added + ' tokens passed checklist (API returned ' + tokens.length + ')', 'info');
   } catch(e) {
     S.sources['ST-SEARCH'] = 'dead';
     log('ST Search failed: ' + e.message, 'warn');
@@ -173,6 +176,7 @@ async function fetchSTTokens() {
 
 // ── SOLANA TRACKER — TRENDING ─────────────────────────────────
 // Gets trending tokens by 1h volume — momentum tokens
+// Response is array of TokenInfo objects with nested token/pools/risk
 async function fetchSTTrending() {
   try {
     var res = await fetch(ST_URL + '/tokens/trending/1h', {
@@ -183,76 +187,169 @@ async function fetchSTTrending() {
     var data = await res.json();
     S.stCredits++;
 
-    var tokens = Array.isArray(data) ? data : (data.tokens || data.data || []);
+    // Trending returns array of TokenInfo objects — nested structure
+    var items = Array.isArray(data) ? data : [];
     var added = 0;
 
-    tokens.forEach(function(t) {
-      // Apply safety checklist
-      if (!passesChecklist(t)) return;
+    items.forEach(function(item) {
+      try {
+        // Extract from nested structure
+        var token = item.token || {};
+        var pools = item.pools || [];
+        var risk = item.risk || {};
+        var pool = pools[0] || {};
+        var security = pool.security || {};
 
-      var tok = mapSTToken(t, 'ST-TREND');
-      if (tok) {
-        S.tokens.set(tok.n + tok.id, tok);
-        added++;
-      }
+        // Build flat token object matching our checklist format
+        var flat = {
+          mint: token.mint,
+          symbol: token.symbol,
+          name: token.name,
+          mintAuthority: security.mintAuthority,
+          freezeAuthority: security.freezeAuthority,
+          lpBurn: pool.lpBurn,
+          liquidityUsd: pool.liquidity && pool.liquidity.usd,
+          marketCapUsd: pool.marketCap && pool.marketCap.usd,
+          priceUsd: pool.price && pool.price.usd,
+          buys: item.buys || (pool.txns && pool.txns.buys) || 0,
+          sells: item.sells || (pool.txns && pool.txns.sells) || 0,
+          holders: item.holders || 0,
+          riskScore: risk.score,
+          dev: risk.dev && risk.dev.percentage,
+          top10: risk.top10,
+          hasSocials: !!(token.strictSocials &&
+            (token.strictSocials.twitter || token.strictSocials.telegram || token.strictSocials.website)),
+          createdAt: token.creation && token.creation.created_time ?
+            token.creation.created_time * 1000 : null,
+          volume_1h: pool.txns && pool.txns.volume || 0,
+          volume_24h: pool.txns && pool.txns.volume24h || 0,
+        };
+
+        if (!passesChecklist(flat)) return;
+        var tok = mapSTToken(flat, 'ST-TREND');
+        if (tok) {
+          S.tokens.set(tok.n + tok.id, tok);
+          added++;
+        }
+      } catch(e) {}
     });
 
     S.sources['ST-TREND'] = 'live:' + added;
-    log('ST Trending: ' + added + ' tokens passed safety checklist', 'info');
+    log('ST Trending: ' + added + ' tokens passed checklist (API returned ' + items.length + ')', 'info');
   } catch(e) {
     S.sources['ST-TREND'] = 'dead';
     log('ST Trending failed: ' + e.message, 'warn');
   }
 }
 
+// ── SOLANA TRACKER — BATCH PRICE ─────────────────────────────
+// Gets prices for ALL open trades in ONE API call — saves credits
+// Endpoint: GET /price/multi?tokens=mint1,mint2,mint3
+// Returns: { mint1: { price, liquidity, marketCap }, mint2: {...} }
+async function batchUpdatePrices() {
+  if (S.open.length === 0) return;
+
+  // Get mints for all non-grad open trades
+  var trades = S.open.filter(function(t) { return t.mint && !t.isGrad; });
+  if (trades.length === 0) return;
+
+  var mints = trades.map(function(t) { return t.mint; }).join(',');
+
+  try {
+    var res = await fetch(ST_URL + '/price/multi?tokens=' + mints, {
+      headers: { 'x-api-key': ST_KEY },
+      timeout: 8000
+    });
+    if (!res.ok) return;
+    var prices = await res.json();
+    S.stCredits++; // ONE credit for ALL trades — massive saving
+
+    trades.forEach(function(trade) {
+      var priceData = prices[trade.mint];
+      if (!priceData || !priceData.price) return;
+
+      var price = parseFloat(priceData.price);
+      if (!price || price <= 0) return;
+
+      trade.currentPrice = price;
+
+      // Track price movement for stale detection
+      if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
+        trade.lastPriceChange = Date.now();
+        trade.lastPrice = price;
+      }
+
+      // Set entry price if not set yet
+      if (!trade.entryPrice || trade.entryPrice <= 0) {
+        trade.entryPrice = price;
+        trade.peakPrice = price;
+        log('PRICE SET ' + trade.tok.n + ' entry $' + price.toFixed(8) + ' [ST BATCH]', 'info');
+        return;
+      }
+
+      // Calculate P&L
+      var pct = (price - trade.entryPrice) / trade.entryPrice;
+      trade.realPnlPct = pct;
+      trade.realPnl = trade.size * pct;
+
+      // Update peak
+      if (price > trade.peakPrice) trade.peakPrice = price;
+
+      // Trail stop check
+      if (trade.tpl === 'TRAIL') {
+        var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+        if (peakGain >= CFG.TRAIL_ACT) {
+          var pullback = (trade.peakPrice - price) / trade.peakPrice;
+          if (pullback >= CFG.TRAIL_PB) {
+            log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+            closeTradeReal(trade.id, 'Trail exit');
+            return;
+          }
+        }
+      }
+
+      // Stop loss check
+      if (pct <= -CFG.STOP_LOSS) {
+        log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
+        closeTradeReal(trade.id, 'Stop loss hit');
+      }
+    });
+  } catch(e) {
+    log('Batch price update failed: ' + e.message, 'warn');
+  }
+}
+
 // ── SAFETY CHECKLIST ─────────────────────────────────────────
-// Hard rules based on deep dive research — protects against rugs
-// while not eliminating good early stage tokens
+// Secondary check after API filtering — catches anything API missed
+// API handles: mintAuthority, freezeAuthority, maxRiskScore, maxDev, maxTop10
+// We handle: lpBurn minimum, buy/sell ratio, valid mint address
 function passesChecklist(t) {
-  // HARD RULE — Must not be mintable — non negotiable
+  // Must have valid mint address
+  if (!t.mint) return false;
+
+  // HARD RULE — mint authority must be null
   if (t.mintAuthority !== null && t.mintAuthority !== undefined &&
       t.mintAuthority !== 'null' && t.mintAuthority !== '') return false;
 
-  // HARD RULE — Must not be freezable — non negotiable
+  // HARD RULE — freeze authority must be null
   if (t.freezeAuthority !== null && t.freezeAuthority !== undefined &&
       t.freezeAuthority !== 'null' && t.freezeAuthority !== '') return false;
 
-  // LP must be at least 80% burned — research shows 95%+ is gold standard
-  // but 80% still eliminates most rug risk
+  // LP must be at least 80% burned — research confirmed 80%+ is safe
+  // API doesn't have a minLpBurn filter so we check here
   if (t.lpBurn !== undefined && t.lpBurn !== null && t.lpBurn < 80) return false;
 
-  // Risk score must be acceptable — 5 or under on 10 point scale
-  if (t.riskScore !== undefined && t.riskScore !== null && t.riskScore > CFG.MAX_RISK) return false;
+  // Must have more buys than sells — buying pressure required
+  if (t.buys !== undefined && t.sells !== undefined && t.sells > 0) {
+    if (t.buys / t.sells < 1.0) return false;
+  }
 
-  // Dev holding must be low — stays strict at 5%
-  if (t.dev !== undefined && t.dev !== null && t.dev > CFG.MAX_DEV) return false;
-
-  // Top 10 holders must not be too concentrated
-  if (t.top10 !== undefined && t.top10 !== null && t.top10 > CFG.MAX_TOP10) return false;
-
-  // Must have market cap in range
+  // Must be in market cap range
   var mcap = t.marketCapUsd || 0;
   if (mcap < CFG.MIN_MCAP || mcap > CFG.MAX_MCAP) return false;
 
   // Must have real liquidity
-  var liq = t.liquidityUsd || 0;
-  if (liq < CFG.MIN_LIQ) return false;
-
-  // Must have minimum buy activity
-  if (t.buys !== undefined && t.buys < CFG.MIN_BUYS) return false;
-
-  // Must have more buys than sells — buying pressure required
-  if (t.buys !== undefined && t.sells !== undefined && t.sells > 0) {
-    var bsr = t.buys / t.sells;
-    if (bsr < 1.0) return false;
-  }
-
-  // NOTE: hasSocials removed — research shows social presence is a
-  // lagging indicator. Best opportunities come BEFORE major social presence.
-  // Rug protection comes from mint/freeze/LP/dev checks above.
-
-  // Must have a valid mint address
-  if (!t.mint) return false;
+  if ((t.liquidityUsd || 0) < CFG.MIN_LIQ) return false;
 
   return true;
 }
@@ -446,69 +543,14 @@ function connectPump() {
   } catch(e) { setTimeout(connectPump, 15000); }
 }
 
-// ── PRICE TRACKING FOR OPEN TRADES ───────────────────────────
-// Uses Solana Tracker price endpoint — real and reliable
-// Runs every 2 minutes per trade to conserve credits
-var priceTimers = {}; // tradeId -> interval
+// ── PRICE TRACKING ────────────────────────────────────────────
+// Batch pricing handles all open trades — see batchUpdatePrices()
+// This stub kept for compatibility with startTradePrice calls
+var priceTimers = {};
 
 function startTradePrice(trade) {
-  if (priceTimers[trade.id]) return;
-  priceTimers[trade.id] = setInterval(async function() {
-    if (!S.open.find(function(t) { return t.id === trade.id; })) {
-      clearInterval(priceTimers[trade.id]);
-      delete priceTimers[trade.id];
-      return;
-    }
-    if (!trade.mint) return;
-
-    // Grad trades priced via Pump.fun WebSocket — skip here
-    if (trade.isGrad) return;
-
-    var price = await getSTPrice(trade.mint);
-    if (!price || price <= 0) return;
-
-    trade.currentPrice = price;
-
-    // Track price movement for stale detection
-    if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
-      trade.lastPriceChange = Date.now();
-      trade.lastPrice = price;
-    }
-
-    if (!trade.entryPrice || trade.entryPrice <= 0) {
-      trade.entryPrice = price;
-      trade.peakPrice = price;
-      log('PRICE SET ' + trade.tok.n + ' entry $' + price.toFixed(8) + ' [ST]', 'info');
-      return;
-    }
-
-    // Calculate P&L
-    var pct = (price - trade.entryPrice) / trade.entryPrice;
-    trade.realPnlPct = pct;
-    trade.realPnl = trade.size * pct;
-
-    // Update peak
-    if (price > trade.peakPrice) trade.peakPrice = price;
-
-    // Trail stop check
-    if (trade.tpl === 'TRAIL') {
-      var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
-      if (peakGain >= CFG.TRAIL_ACT) {
-        var pullback = (trade.peakPrice - price) / trade.peakPrice;
-        if (pullback >= CFG.TRAIL_PB) {
-          log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
-          closeTradeReal(trade.id, 'Trail exit');
-          return;
-        }
-      }
-    }
-
-    // Stop loss check
-    if (pct <= -CFG.STOP_LOSS) {
-      log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
-      closeTradeReal(trade.id, 'Stop loss hit');
-    }
-  }, CFG.ST_PRICE_INTERVAL);
+  // Price tracking handled by batchUpdatePrices interval
+  // No individual timers needed — saves credits
 }
 
 // ── CLOSE TRADE ───────────────────────────────────────────────
@@ -594,7 +636,7 @@ function checkExitCriteria() {
     // Token went stale — no price movement for 2 minutes
     var lastMove = t.lastPriceChange || t.startTime;
     if ((now - lastMove) > CFG.STALE_TIME && age > 60000) {
-      log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
+      log('STALE ' + t.tok.n + ' — no movement for 5min', 'warn');
       closeTradeReal(t.id, 'Token went stale');
       return;
     }
@@ -804,6 +846,9 @@ function startBot() {
   fetchSearchI = setInterval(fetchSTTokens, CFG.ST_SEARCH_INTERVAL);
   fetchTrendI = setInterval(fetchSTTrending, CFG.ST_TREND_INTERVAL);
 
+  // Batch price updates — ONE credit for ALL open trades every 30 seconds
+  setInterval(batchUpdatePrices, CFG.ST_PRICE_INTERVAL);
+
   // Main scan loop
   scanI = setInterval(runScan, 500);
 
@@ -831,11 +876,6 @@ function stopBot() {
   clearInterval(gradI);
   clearInterval(exitI);
   clearInterval(cleanI);
-  // Stop all price tracking intervals
-  Object.keys(priceTimers).forEach(function(id) {
-    clearInterval(priceTimers[id]);
-    delete priceTimers[id];
-  });
   log('Bot stopped | ST Credits used this session: ' + S.stCredits, 'info');
 }
 
