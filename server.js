@@ -26,7 +26,7 @@ const CFG = {
 
   // Exit criteria
   LOSS_LIM: 0.10,        // daily loss limit 10%
-  STALE_TIME: 300000,    // exit if no price movement for 2 minutes
+  STALE_TIME: 300000,    // exit if no price movement for 5 minutes
   NO_PRICE_TIMEOUT: 180000, // exit if no price data after 3 minutes
   STOP_LOSS: 0.18,       // stop loss at -18%
 
@@ -50,7 +50,7 @@ const CFG = {
   // Solana Tracker credit management
   ST_SEARCH_INTERVAL: 1800000,  // search every 30 minutes
   ST_TREND_INTERVAL: 1800000,   // trending every 30 minutes
-  ST_PRICE_INTERVAL: 300000,    // price check every 2 minutes per open trade
+  ST_PRICE_INTERVAL: 300000,    // price check every 5 minutes per open trade
 };
 
 // ── STATE ─────────────────────────────────────────────────────
