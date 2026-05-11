@@ -30,16 +30,16 @@ const CFG = {
   NO_PRICE_TIMEOUT: 180000, // exit if no price data after 3 minutes
   STOP_LOSS: 0.18,       // stop loss at -18%
 
-  // Solana Tracker token filters — BONKbot style safety checklist
-  MIN_MCAP: 500000,      // minimum market cap $500k
-  MAX_MCAP: 25000000,    // maximum market cap $25M
+  // Solana Tracker token filters — research based safety checklist
+  MIN_MCAP: 100000,      // minimum market cap $100k — catch earlier momentum
+  MAX_MCAP: 25000000,    // maximum market cap $25M — small caps only
   MIN_LIQ: 10000,        // minimum liquidity $10k
-  MIN_VOL_1H: 50000,     // minimum 1h volume $50k
-  MAX_RISK: 3,           // maximum risk score (1-10 scale)
-  MAX_DEV: 5,            // maximum dev holding % 
+  MIN_VOL_1H: 10000,     // minimum 1h volume $10k — catch earlier momentum
+  MAX_RISK: 5,           // maximum risk score — relaxed from 3 to 5
+  MAX_DEV: 5,            // maximum dev holding % — stays strict
   MAX_TOP10: 30,         // maximum top 10 holders %
-  MIN_BUYS: 10,          // minimum buy transactions
-  MIN_HOLDERS: 50,       // minimum token holders
+  MIN_BUYS: 5,           // minimum buy transactions — relaxed from 10
+  MIN_HOLDERS: 10,       // minimum token holders — relaxed from 50
 
   // Graduation sniper config
   GRAD_ENTRY_SOL: 100,   // enter when bonding curve hits 100 SOL
@@ -130,15 +130,14 @@ async function fetchSTTokens() {
       minLiquidity: CFG.MIN_LIQ,
       // Must have 1h volume — active right now
       minVolume_1h: CFG.MIN_VOL_1H,
-      // Safety checks — BONKbot essentials
-      freezeAuthority: 'null',   // not freezable
-      mintAuthority: 'null',     // not mintable
-      // Must have socials — legitimate project
-      hasSocials: 'true',
+      // Hard safety checks — non negotiable
+      freezeAuthority: 'null',
+      mintAuthority: 'null',
       // Sort by current hour volume — most active first
       sortBy: 'volume_1h',
       sortOrder: 'desc',
-      // Limit results — 100 max for full format
+      // Full format gives us riskScore, dev%, lpBurn, holders
+      format: 'full',
       limit: 100,
     });
 
@@ -207,24 +206,25 @@ async function fetchSTTrending() {
 }
 
 // ── SAFETY CHECKLIST ─────────────────────────────────────────
-// BONKbot style — simple hard rules, no complex scoring
-// If any check fails — skip the token entirely
+// Hard rules based on deep dive research — protects against rugs
+// while not eliminating good early stage tokens
 function passesChecklist(t) {
-  // Must not be mintable
+  // HARD RULE — Must not be mintable — non negotiable
   if (t.mintAuthority !== null && t.mintAuthority !== undefined &&
       t.mintAuthority !== 'null' && t.mintAuthority !== '') return false;
 
-  // Must not be freezable
+  // HARD RULE — Must not be freezable — non negotiable
   if (t.freezeAuthority !== null && t.freezeAuthority !== undefined &&
       t.freezeAuthority !== 'null' && t.freezeAuthority !== '') return false;
 
-  // LP must be burned (100%)
-  if (t.lpBurn !== undefined && t.lpBurn !== null && t.lpBurn < 100) return false;
+  // LP must be at least 80% burned — research shows 95%+ is gold standard
+  // but 80% still eliminates most rug risk
+  if (t.lpBurn !== undefined && t.lpBurn !== null && t.lpBurn < 80) return false;
 
-  // Risk score must be low
+  // Risk score must be acceptable — 5 or under on 10 point scale
   if (t.riskScore !== undefined && t.riskScore !== null && t.riskScore > CFG.MAX_RISK) return false;
 
-  // Dev holding must be low
+  // Dev holding must be low — stays strict at 5%
   if (t.dev !== undefined && t.dev !== null && t.dev > CFG.MAX_DEV) return false;
 
   // Top 10 holders must not be too concentrated
@@ -238,17 +238,18 @@ function passesChecklist(t) {
   var liq = t.liquidityUsd || 0;
   if (liq < CFG.MIN_LIQ) return false;
 
-  // Must have minimum buys
+  // Must have minimum buy activity
   if (t.buys !== undefined && t.buys < CFG.MIN_BUYS) return false;
 
-  // Must have more buys than sells
+  // Must have more buys than sells — buying pressure required
   if (t.buys !== undefined && t.sells !== undefined && t.sells > 0) {
     var bsr = t.buys / t.sells;
-    if (bsr < 1.0) return false; // selling pressure dominant
+    if (bsr < 1.0) return false;
   }
 
-  // Must have socials
-  if (!t.hasSocials) return false;
+  // NOTE: hasSocials removed — research shows social presence is a
+  // lagging indicator. Best opportunities come BEFORE major social presence.
+  // Rug protection comes from mint/freeze/LP/dev checks above.
 
   // Must have a valid mint address
   if (!t.mint) return false;
