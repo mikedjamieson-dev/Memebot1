@@ -187,33 +187,32 @@ async function fetchSTTokens() {
   log('ST Search: ' + totalAdded + ' new tokens added | Pool now ' + S.tokens.size + ' (API returned ' + totalReturned + ' across 4 queries)', 'info');
 }
 
-// ── SOLANA TRACKER — TRENDING ─────────────────────────────────
-// Gets trending tokens by 1h volume — momentum tokens
-// Response is array of TokenInfo objects with nested token/pools/risk
+// ── SOLANA TRACKER — LATEST TOKENS ───────────────────────────
+// Gets newly created tokens — catches early momentum before trending
+// Endpoint confirmed in official docs: GET /tokens/latest
+// Returns nested TokenInfo objects same as trending
 async function fetchSTTrending() {
   try {
-    var res = await fetch(ST_URL + '/tokens/trending/1h', {
+    var res = await fetch(ST_URL + '/tokens/latest', {
       headers: { 'x-api-key': ST_KEY },
       timeout: 10000
     });
-    if (!res.ok) throw new Error('ST trending failed: ' + res.status);
+    if (!res.ok) throw new Error('ST latest failed: ' + res.status);
     var data = await res.json();
     S.stCredits++;
 
-    // Trending returns array of TokenInfo objects — nested structure
-    var items = Array.isArray(data) ? data : [];
+    // Latest returns array of TokenInfo objects — nested structure
+    var items = Array.isArray(data) ? data : (data.data || []);
     var added = 0;
 
     items.forEach(function(item) {
       try {
-        // Extract from nested structure
         var token = item.token || {};
         var pools = item.pools || [];
         var risk = item.risk || {};
         var pool = pools[0] || {};
         var security = pool.security || {};
 
-        // Build flat token object matching our checklist format
         var flat = {
           mint: token.mint,
           symbol: token.symbol,
@@ -230,17 +229,13 @@ async function fetchSTTrending() {
           riskScore: risk.score,
           dev: risk.dev && risk.dev.percentage,
           top10: risk.top10,
-          hasSocials: !!(token.strictSocials &&
-            (token.strictSocials.twitter || token.strictSocials.telegram || token.strictSocials.website)),
-          createdAt: token.creation && token.creation.created_time ?
-            token.creation.created_time * 1000 : null,
           volume_1h: pool.txns && pool.txns.volume || 0,
           volume_24h: pool.txns && pool.txns.volume24h || 0,
         };
 
         if (!passesChecklist(flat)) return;
         var tok = mapSTToken(flat, 'ST-TREND');
-        if (tok) {
+        if (tok && !S.tokens.has(tok.n + tok.id)) {
           S.tokens.set(tok.n + tok.id, tok);
           added++;
         }
@@ -248,10 +243,10 @@ async function fetchSTTrending() {
     });
 
     S.sources['ST-TREND'] = 'live:' + added;
-    log('ST Trending: ' + added + ' tokens passed checklist (API returned ' + items.length + ')', 'info');
+    log('ST Latest: ' + added + ' new tokens added (API returned ' + items.length + ')', 'info');
   } catch(e) {
     S.sources['ST-TREND'] = 'dead';
-    log('ST Trending failed: ' + e.message, 'warn');
+    log('ST Latest failed: ' + e.message, 'warn');
   }
 }
 
