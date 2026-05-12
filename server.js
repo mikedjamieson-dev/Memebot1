@@ -597,9 +597,14 @@ function closeTradeReal(id, reason) {
     tok: tr.tok,
     closeReason: closeReason,
     pnl: parseFloat(pnl.toFixed(4)),
+    pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
     entryPrice: tr.entryPrice,
     exitPrice: tr.currentPrice,
-    slip: tr.slip || 0
+    size: tr.size,
+    slip: tr.slip || 0,
+    openedAt: tr.openedAt,
+    closedAt: new Date().toLocaleTimeString(),
+    src: tr.tok.src || 'unknown'
   });
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
