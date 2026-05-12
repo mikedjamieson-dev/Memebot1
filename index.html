@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>MEME BOT V12</title>
+<title>MEME BOT V14</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
 :root{--bg:#04080d;--panel:#080f18;--border:#0d2035;--bb:#1a4060;--green:#00ff88;--gd:#00cc6a;--red:#ff3d5a;--yellow:#ffc233;--blue:#33b5ff;--purple:#bb88ff;--text:#e8f4ff;--dim:#7a9ab0;}
@@ -55,8 +55,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .ssitem{background:rgba(0,0,0,0.2);border-radius:6px;padding:6px 8px;}
 .sslbl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
 .ssval{font-family:'Orbitron',monospace;font-size:11px;font-weight:700;}
-
-/* ── OPEN TRADE CARDS ── */
 .otrade{background:var(--panel);border:1px solid #0d2a45;border-left:3px solid var(--blue);border-radius:8px;padding:9px 11px;margin-bottom:7px;}
 .otop{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
 .oname{color:var(--blue);font-weight:bold;font-size:13px;font-family:'Orbitron',monospace;}
@@ -67,7 +65,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .opnlitem{text-align:center;background:rgba(0,0,0,0.2);border-radius:4px;padding:4px 3px;}
 .opnllbl{font-size:6px;color:var(--dim);letter-spacing:1px;margin-bottom:1px;}
 .opnlval{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;}
-
 .logwrap{position:relative;margin-bottom:10px;}
 .fbar{position:absolute;top:0;left:0;right:0;background:rgba(255,194,51,0.15);border:1px solid rgba(255,194,51,0.4);border-radius:8px 8px 0 0;padding:5px 12px;font-size:9px;color:var(--yellow);display:none;z-index:10;text-align:center;}
 .logbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;max-height:300px;overflow-y:auto;}
@@ -85,7 +82,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .wsbar{background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:6px 12px;font-size:9px;color:#ffd700;margin-bottom:8px;}
 .foot{text-align:center;font-size:8px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
 .real-badge{font-size:7px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:1px 5px;color:var(--green);margin-left:6px;vertical-align:middle;}
-/* ── GRADUATION SNIPER ── */
 .gradcard{background:var(--panel);border:1px solid #2a1f00;border-left:3px solid var(--yellow);border-radius:8px;padding:9px 11px;margin-bottom:7px;position:relative;}
 .gradcard::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--yellow),transparent);opacity:0.4;}
 .grad-badge{font-size:7px;background:rgba(255,194,51,0.15);border:1px solid var(--yellow);border-radius:3px;padding:1px 5px;color:var(--yellow);margin-left:5px;vertical-align:middle;animation:gblink 1s infinite;}
@@ -99,14 +95,24 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .grad-section{background:rgba(255,194,51,0.03);border:1px solid rgba(255,194,51,0.2);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
 .grad-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
 .grad-title{font-size:8px;letter-spacing:3px;color:var(--yellow);font-weight:bold;}
-
+/* ── CLOSED TRADES ── */
+.ctrade{background:rgba(0,0,0,0.2);border-radius:8px;padding:8px 10px;margin-bottom:8px;}
+.ctrade-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
+.ctrade-name{font-family:'Orbitron',monospace;font-size:12px;font-weight:700;}
+.ctrade-pnl{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
+.ctrade-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:5px;}
+.ctrade-grid2{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px;}
+.ctrade-cell{background:rgba(0,0,0,0.2);border-radius:4px;padding:4px 6px;text-align:center;}
+.ctrade-lbl{font-size:6px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
+.ctrade-val{font-family:'Orbitron',monospace;font-size:9px;}
+.ctrade-footer{display:flex;justify-content:space-between;font-size:8px;color:var(--dim);}
 </style>
 </head>
 <body>
 <div class="wrap">
 
   <div class="hdr">
-    <div class="htag"><span class="dot"></span>SNIPER V12 · GRADUATION SNIPER · 24/7</div>
+    <div class="htag"><span class="dot"></span>SNIPER V14 · SOLANA TRACKER · 24/7</div>
     <div class="htitle">MEME BOT <span style="color:var(--green)">LIVE</span></div>
     <div class="hsub">SOLANA · PUMP.FUN · GRADUATION SNIPER · REAL PRICES</div>
   </div>
@@ -156,7 +162,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <button class="sbtn" id="startBtn" onclick="toggleBot()" style="background:linear-gradient(135deg,#062a12,#0a3d1a);color:var(--green);border-color:var(--gd)">▶ START BOT</button>
 
-
   <!-- GRADUATION SNIPER SECTION -->
   <div id="gradSec" style="display:none">
     <div class="grad-section">
@@ -205,8 +210,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="lbl">SESSION STATS</div>
     <div class="ssgrid">
       <div class="ssitem">
-        <div class="sslbl">TOTAL FEES PAID</div>
-        <div class="ssval" id="ss-fees" style="color:var(--red)">$0.00</div>
+        <div class="sslbl">ST CREDITS USED</div>
+        <div class="ssval" id="ss-credits" style="color:var(--yellow)">0</div>
       </div>
       <div class="ssitem">
         <div class="sslbl">AVG SLIPPAGE</div>
@@ -223,7 +228,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     </div>
   </div>
 
-  <div class="foot">GRADUATION SNIPER V12 · REAL DATA · 24/7</div>
+  <div class="foot">MEMEBOT V14 · SOLANA TRACKER · REAL DATA · 24/7</div>
 </div>
 
 <script>
@@ -381,7 +386,7 @@ async function fetchState() {
             '</div>' +
             '<button class="sellbtn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
           '</div>' +
-          '<div class="ometa" style="color:var(--dim)">$' + f2(t.size) + ' · ' + el + 's · SL -' + ((t.sl||0.12)*100).toFixed(0) + '%</div>' +
+          '<div class="ometa" style="color:var(--dim)">$' + f2(t.size) + ' · ' + el + 's · SL -12%</div>' +
           '<div class="oreasons">' + (t.reasons || []).join(' · ') + '</div>' +
           '<div class="grad-bar-wrap"><div class="grad-bar" style="width:' + Math.min(gradPct, 100) + '%"></div></div>' +
           '<div style="font-size:7px;color:var(--yellow);text-align:center;margin-bottom:4px">' + gradPct + '% TO GRADUATION</div>' +
@@ -396,7 +401,7 @@ async function fetchState() {
       gradSec.style.display = 'none';
     }
 
-    // ── OPEN TRADES — REAL DATA ONLY ──
+    // ── OPEN TRADES ──
     var openSec = document.getElementById('openSec'), openList = document.getElementById('openList');
     if (regularTrades.length > 0) {
       openSec.style.display = 'block';
@@ -404,22 +409,16 @@ async function fetchState() {
       openList.innerHTML = '';
       regularTrades.forEach(function(t) {
         var el = Math.floor((Date.now() - t.startTime) / 1000);
-        var slPct = ((t.sl || 0.15) * 100).toFixed(0);
-        var tag = t.tok.src === 'WS' ? '[LIVE] ' : t.tok.hot ? '[HOT] ' : t.tok.isNew ? '[NEW] ' : '';
-
-        // Real P&L from server price tracking
         var hasRealPnl = t.realPnl !== undefined && t.entryPrice;
         var pnlColor = !hasRealPnl ? 'var(--dim)' : t.realPnl >= 0 ? 'var(--green)' : 'var(--red)';
         var pnlDisplay = hasRealPnl ? (t.realPnl >= 0 ? '+' : '') + '$' + f2(Math.abs(t.realPnl)) : 'FETCHING...';
         var pctDisplay = hasRealPnl ? (t.realPnlPct >= 0 ? '+' : '') + (t.realPnlPct * 100).toFixed(1) + '%' : '---';
         var entryDisplay = t.entryPrice ? '$' + f8(t.entryPrice) : 'FETCHING...';
-
         var d = document.createElement('div');
         d.className = 'otrade';
         d.innerHTML =
           '<div class="otop">' +
-            '<div class="oname">' + tag + t.tok.n +
-              (t.tok.src === 'WS' ? '<span style="font-size:8px;background:rgba(0,255,136,0.15);border:1px solid var(--green);border-radius:3px;padding:1px 4px;margin-left:5px;color:var(--green);font-family:Share Tech Mono,monospace">⚡LIVE</span>' : '') +
+            '<div class="oname">' + t.tok.n +
               '<span class="real-badge">REAL</span>' +
             '</div>' +
             '<button class="sellbtn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
@@ -427,18 +426,9 @@ async function fetchState() {
           '<div class="ometa">Score ' + t.sc + ' · $' + f2(t.size) + ' · ' + el + 's · [' + t.tok.src + ']</div>' +
           '<div class="oreasons">' + (t.reasons || []).slice(0, 3).join(' · ') + '</div>' +
           '<div class="opnlrow">' +
-            '<div class="opnlitem">' +
-              '<div class="opnllbl">STOP LOSS</div>' +
-              '<div class="opnlval" style="color:var(--red)">-' + slPct + '%</div>' +
-            '</div>' +
-            '<div class="opnlitem">' +
-              '<div class="opnllbl">REAL P&amp;L</div>' +
-              '<div class="opnlval" style="color:' + pnlColor + '">' + pnlDisplay + '</div>' +
-            '</div>' +
-            '<div class="opnlitem">' +
-              '<div class="opnllbl">REAL %</div>' +
-              '<div class="opnlval" style="color:' + pnlColor + '">' + pctDisplay + '</div>' +
-            '</div>' +
+            '<div class="opnlitem"><div class="opnllbl">STOP LOSS</div><div class="opnlval" style="color:var(--red)">-18%</div></div>' +
+            '<div class="opnlitem"><div class="opnllbl">REAL P&amp;L</div><div class="opnlval" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
+            '<div class="opnlitem"><div class="opnllbl">REAL %</div><div class="opnlval" style="color:' + pnlColor + '">' + pctDisplay + '</div></div>' +
           '</div>' +
           '<div style="font-size:7px;color:var(--dim);margin-top:4px">ENTRY: ' + entryDisplay + '</div>';
         openList.appendChild(d);
@@ -447,18 +437,42 @@ async function fetchState() {
       openSec.style.display = 'none';
     }
 
-    // Closed trades
+    // ── CLOSED TRADES — FULL STORY ──
     var histSec = document.getElementById('histSec'), histList = document.getElementById('histList');
     if (data.closedTrades && data.closedTrades.length > 0) {
       histSec.style.display = 'block';
       histList.innerHTML = '';
       data.closedTrades.slice(0, 15).forEach(function(t) {
+        var pnlColor = t.pnl > 0 ? 'var(--green)' : 'var(--red)';
+        var pnlSign = t.pnl > 0 ? '+' : '';
+        var pctSign = t.pnlPct > 0 ? '+' : '';
+        var entryStr = t.entryPrice ? '$' + parseFloat(t.entryPrice).toFixed(8) : 'N/A';
+        var exitStr = t.exitPrice ? '$' + parseFloat(t.exitPrice).toFixed(8) : 'N/A';
+        var sizeStr = t.size ? '$' + parseFloat(t.size).toFixed(2) : 'N/A';
+        var pctStr = t.pnlPct !== undefined ? pctSign + parseFloat(t.pnlPct).toFixed(2) + '%' : 'N/A';
+        var srcStr = t.src || (t.tok && t.tok.src) || '?';
+        var nameStr = (t.tok && t.tok.src === 'GRAD' ? '🎓 ' : '') + (t.tok ? t.tok.n : '?');
         var d = document.createElement('div');
-        d.className = 'hrow';
+        d.className = 'ctrade';
+        d.style.borderLeft = '3px solid ' + pnlColor;
         d.innerHTML =
-          '<span style="color:var(--blue);width:65px;overflow:hidden;white-space:nowrap;font-size:10px">' + (t.tok.src === 'WS' ? '⚡ ' : '') + t.tok.n + '</span>' +
-          '<span style="color:var(--dim);font-size:8px;flex:1;padding:0 4px;overflow:hidden;white-space:nowrap">' + t.closeReason + '</span>' +
-          '<span style="color:' + (t.pnl > 0 ? 'var(--green)' : 'var(--red)') + ';font-weight:bold;font-family:Orbitron,monospace;font-size:11px;white-space:nowrap">' + (t.pnl > 0 ? '+' : '') + '$' + f2(t.pnl) + '</span>';
+          '<div class="ctrade-header">' +
+            '<span class="ctrade-name" style="color:var(--blue)">' + nameStr + '</span>' +
+            '<span class="ctrade-pnl" style="color:' + pnlColor + '">' + pnlSign + '$' + f2(t.pnl) + '</span>' +
+          '</div>' +
+          '<div class="ctrade-grid3">' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val" style="color:var(--text)">' + sizeStr + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">SOURCE</div><div class="ctrade-val" style="color:var(--blue)">' + srcStr + '</div></div>' +
+          '</div>' +
+          '<div class="ctrade-grid2">' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">ENTRY PRICE</div><div class="ctrade-val" style="color:var(--dim);font-size:8px">' + entryStr + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT PRICE</div><div class="ctrade-val" style="color:var(--dim);font-size:8px">' + exitStr + '</div></div>' +
+          '</div>' +
+          '<div class="ctrade-footer">' +
+            '<span style="color:var(--yellow)">' + (t.closeReason || 'Unknown') + '</span>' +
+            '<span>' + (t.openedAt ? t.openedAt : '') + (t.closedAt ? ' → ' + t.closedAt : '') + '</span>' +
+          '</div>';
         histList.appendChild(d);
       });
     } else {
@@ -467,11 +481,10 @@ async function fetchState() {
 
     // Session stats
     var closed = data.closedTrades || [];
-    var totalFees = ((data.stats.t || 0) * 0.001).toFixed(3);
     var slips = closed.map(function(t) { return t.slip || 0; }).filter(function(v) { return v > 0; });
     var avgSlip = slips.length ? ((slips.reduce(function(a, b) { return a + b; }, 0) / slips.length) * 100).toFixed(2) : '0.00';
     var bestTrade = closed.length ? Math.max.apply(null, closed.map(function(t) { return t.pnl || 0; })) : 0;
-    document.getElementById('ss-fees').textContent = '$' + totalFees;
+    document.getElementById('ss-credits').textContent = data.stCredits || 0;
     document.getElementById('ss-slip').textContent = avgSlip + '%';
     document.getElementById('ss-skip').textContent = data.rejectCount || 0;
     var bestEl = document.getElementById('ss-best');
@@ -482,7 +495,6 @@ async function fetchState() {
     document.getElementById('status').textContent = 'ERROR: ' + e.message;
   }
 }
-
 </script>
 </body>
 </html>
