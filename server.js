@@ -118,60 +118,73 @@ async function getSTPrice(mint) {
 }
 
 // ── SOLANA TRACKER — TOKEN DISCOVERY ─────────────────────────
-// Searches for tokens matching our safety checklist
-// Uses correct API parameters from official documentation
+// Runs 4 searches with different sort parameters to maximise pool size
+// Each search finds different tokens — volume, newest, smallest cap, most buys
+// 4 credits per cycle — well within daily budget
 async function fetchSTTokens() {
-  try {
-    var params = new URLSearchParams({
-      // Market cap range
-      minMarketCap: CFG.MIN_MCAP,
-      maxMarketCap: CFG.MAX_MCAP,
-      // Must have real liquidity
-      minLiquidity: CFG.MIN_LIQ,
-      // Must have 1h volume — active right now
-      minVolume_1h: CFG.MIN_VOL_1H,
-      // Hard safety — API level filtering
-      freezeAuthority: 'null',
-      mintAuthority: 'null',
-      // Risk and holder filters at API level
-      maxRiskScore: CFG.MAX_RISK,
-      maxDev: CFG.MAX_DEV,
-      maxTop10: CFG.MAX_TOP10,
-      // Must have buy activity
-      minBuys: CFG.MIN_BUYS,
-      // Sort by 1h volume — most active first
-      sortBy: 'volume_1h',
-      sortOrder: 'desc',
-      // No format=full — keeps response flat and fast
-      limit: 100,
-    });
+  // Base filters applied to all searches
+  var baseParams = {
+    minMarketCap: CFG.MIN_MCAP,
+    maxMarketCap: CFG.MAX_MCAP,
+    minLiquidity: CFG.MIN_LIQ,
+    minVolume_1h: CFG.MIN_VOL_1H,
+    freezeAuthority: 'null',
+    mintAuthority: 'null',
+    maxRiskScore: CFG.MAX_RISK,
+    maxDev: CFG.MAX_DEV,
+    maxTop10: CFG.MAX_TOP10,
+    maxInsiders: 10,   // insider wallets max 10%
+    maxSnipers: 10,    // sniper wallets max 10%
+    minBuys: CFG.MIN_BUYS,
+    sortOrder: 'desc',
+    limit: 100,
+  };
 
-    var res = await fetch(ST_URL + '/search?' + params.toString(), {
-      headers: { 'x-api-key': ST_KEY },
-      timeout: 10000
-    });
-    if (!res.ok) throw new Error('ST search failed: ' + res.status);
-    var data = await res.json();
-    S.stCredits++;
+  // Four different sort strategies — each finds different tokens
+  var searches = [
+    { sortBy: 'volume_1h',    label: 'volume'   }, // most active right now
+    { sortBy: 'createdAt',    label: 'newest'   }, // brand new tokens
+    { sortBy: 'buys',         label: 'buys'     }, // most buying activity
+    { sortBy: 'marketCapUsd', label: 'smallcap', sortOrder: 'asc' }, // smallest caps first
+  ];
 
-    var tokens = data.data || [];
-    var added = 0;
+  var totalAdded = 0;
+  var totalReturned = 0;
 
-    tokens.forEach(function(t) {
-      if (!passesChecklist(t)) return;
-      var tok = mapSTToken(t, 'ST-SEARCH');
-      if (tok) {
-        S.tokens.set(tok.n + tok.id, tok);
-        added++;
-      }
-    });
+  for (var i = 0; i < searches.length; i++) {
+    try {
+      var search = searches[i];
+      var params = Object.assign({}, baseParams, {
+        sortBy: search.sortBy,
+        sortOrder: search.sortOrder || 'desc',
+      });
 
-    S.sources['ST-SEARCH'] = 'live:' + added;
-    log('ST Search: ' + added + ' tokens passed checklist (API returned ' + tokens.length + ')', 'info');
-  } catch(e) {
-    S.sources['ST-SEARCH'] = 'dead';
-    log('ST Search failed: ' + e.message, 'warn');
+      var res = await fetch(ST_URL + '/search?' + new URLSearchParams(params).toString(), {
+        headers: { 'x-api-key': ST_KEY },
+        timeout: 10000
+      });
+      if (!res.ok) continue;
+      var data = await res.json();
+      S.stCredits++;
+
+      var tokens = data.data || [];
+      totalReturned += tokens.length;
+
+      tokens.forEach(function(t) {
+        if (!passesChecklist(t)) return;
+        var tok = mapSTToken(t, 'ST-SEARCH');
+        if (tok && !S.tokens.has(tok.n + tok.id)) {
+          S.tokens.set(tok.n + tok.id, tok);
+          totalAdded++;
+        }
+      });
+    } catch(e) {
+      log('ST Search [' + searches[i].label + '] failed: ' + e.message, 'warn');
+    }
   }
+
+  S.sources['ST-SEARCH'] = 'live:' + S.tokens.size;
+  log('ST Search: ' + totalAdded + ' new tokens added | Pool now ' + S.tokens.size + ' (API returned ' + totalReturned + ' across 4 queries)', 'info');
 }
 
 // ── SOLANA TRACKER — TRENDING ─────────────────────────────────
