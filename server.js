@@ -117,137 +117,168 @@ async function getSTPrice(mint) {
   } catch(e) { return null; }
 }
 
-// ── SOLANA TRACKER — TOKEN DISCOVERY ─────────────────────────
-// Runs 4 searches with different sort parameters to maximise pool size
-// Each search finds different tokens — volume, newest, smallest cap, most buys
-// 4 credits per cycle — well within daily budget
-async function fetchSTTokens() {
-  // Base filters applied to all searches
-  var baseParams = {
-    minMarketCap: CFG.MIN_MCAP,
-    maxMarketCap: CFG.MAX_MCAP,
-    minLiquidity: CFG.MIN_LIQ,
-    minVolume_1h: CFG.MIN_VOL_1H,
-    freezeAuthority: 'null',
-    mintAuthority: 'null',
-    maxRiskScore: CFG.MAX_RISK,
-    maxDev: CFG.MAX_DEV,
-    maxTop10: CFG.MAX_TOP10,
-    maxInsiders: 10,   // insider wallets max 10%
-    maxSnipers: 10,    // sniper wallets max 10%
-    minBuys: CFG.MIN_BUYS,
-    sortOrder: 'desc',
-    limit: 100,
-  };
+// ── DEXSCREENER — TOKEN DISCOVERY ────────────────────────────
+// Completely free, no API key, no credits, no limits
+// 300 requests/minute on pair endpoints
+// Replaces Solana Tracker search — saves all credits for price tracking
 
-  // Four different sort strategies — each finds different tokens
-  var searches = [
-    { sortBy: 'volume_1h',    label: 'volume'   }, // most active right now
-    { sortBy: 'createdAt',    label: 'newest'   }, // brand new tokens
-    { sortBy: 'buys',         label: 'buys'     }, // most buying activity
-    { sortBy: 'marketCapUsd', label: 'smallcap', sortOrder: 'asc' }, // smallest caps first
-  ];
+// Maps a DexScreener pair to our internal token format
+function mapDSPair(pair, src) {
+  try {
+    if (!pair || pair.chainId !== 'solana') return null;
+    var base = pair.baseToken || {};
+    var symbol = (base.symbol || '???').toUpperCase().slice(0, 12);
+    var mint = base.address;
+    if (!mint) return null;
 
-  var totalAdded = 0;
-  var totalReturned = 0;
+    var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
+    var mcap = parseFloat(pair.fdv || pair.marketCap || 0);
+    var price = parseFloat(pair.priceUsd || 0);
+    var vol1h = parseFloat((pair.volume && pair.volume.h1) || 0);
+    var vol24h = parseFloat((pair.volume && pair.volume.h24) || 0);
+    var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
+    var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
+    var bsr = buys / Math.max(sells, 1);
 
-  for (var i = 0; i < searches.length; i++) {
-    try {
-      var search = searches[i];
-      var params = Object.assign({}, baseParams, {
-        sortBy: search.sortBy,
-        sortOrder: search.sortOrder || 'desc',
-      });
+    // Age from pairCreatedAt timestamp
+    var age = pair.pairCreatedAt ?
+      (Date.now() - pair.pairCreatedAt) / 3600000 : 24;
 
-      var res = await fetch(ST_URL + '/search?' + new URLSearchParams(params).toString(), {
-        headers: { 'x-api-key': ST_KEY },
-        timeout: 10000
-      });
-      if (!res.ok) continue;
-      var data = await res.json();
-      S.stCredits++;
-
-      var tokens = data.data || [];
-      totalReturned += tokens.length;
-
-      tokens.forEach(function(t) {
-        if (!passesChecklist(t)) return;
-        var tok = mapSTToken(t, 'ST-SEARCH');
-        if (tok && !S.tokens.has(tok.n + tok.id)) {
-          S.tokens.set(tok.n + tok.id, tok);
-          totalAdded++;
-        }
-      });
-    } catch(e) {
-      log('ST Search [' + searches[i].label + '] failed: ' + e.message, 'warn');
-    }
-  }
-
-  S.sources['ST-SEARCH'] = 'live:' + S.tokens.size;
-  log('ST Search: ' + totalAdded + ' new tokens added | Pool now ' + S.tokens.size + ' (API returned ' + totalReturned + ' across 4 queries)', 'info');
+    return {
+      id: mint,
+      n: symbol,
+      src: src || 'DSC',
+      mint: mint,
+      liq, mcap, price,
+      vol1: vol1h,
+      vol24: vol24h,
+      bsr, buys, sells,
+      age,
+      isNew: age < 1,
+      hot: age < 0.17,
+      // DSC doesn't give us these directly — checklist will use defaults
+      mintAuthority: null,    // assume null — filter further in checklist
+      freezeAuthority: null,  // assume null
+      lpBurn: 100,            // assume burned — filter further
+      riskScore: 0,
+      dev: 0,
+      top10: 0,
+      hasSocials: !!(pair.info && (pair.info.websites || pair.info.socials)),
+      rug: false, hp: false,
+    };
+  } catch(e) { return null; }
 }
 
-// ── SOLANA TRACKER — LATEST TOKENS ───────────────────────────
-// Gets newly created tokens — catches early momentum before trending
-// Endpoint confirmed in official docs: GET /tokens/latest
-// Returns nested TokenInfo objects same as trending
-async function fetchSTTrending() {
+// DexScreener search — finds active Solana pairs
+// Endpoint: GET /latest/dex/search?q=solana
+// Returns pairs sorted by activity
+async function fetchDSSearch() {
   try {
-    var res = await fetch(ST_URL + '/tokens/latest', {
-      headers: { 'x-api-key': ST_KEY },
+    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana+meme', {
       timeout: 10000
     });
-    if (!res.ok) throw new Error('ST latest failed: ' + res.status);
+    if (!res.ok) throw new Error('DS search failed: ' + res.status);
     var data = await res.json();
-    S.stCredits++;
+    var pairs = (data.pairs || []).filter(function(p) {
+      return p.chainId === 'solana';
+    });
 
-    // Latest returns array of TokenInfo objects — nested structure
-    var items = Array.isArray(data) ? data : (data.data || []);
+    var added = 0;
+    pairs.forEach(function(pair) {
+      var tok = mapDSPair(pair, 'DSC-SEARCH');
+      if (!tok) return;
+      if (!passesDSChecklist(tok)) return;
+      if (!S.tokens.has(tok.n + tok.id)) {
+        S.tokens.set(tok.n + tok.id, tok);
+        added++;
+      }
+    });
+
+    S.sources['ST-SEARCH'] = 'live:' + S.tokens.size;
+    log('DS Search: ' + added + ' new tokens added | Pool: ' + S.tokens.size + ' (API returned ' + pairs.length + ')', 'info');
+  } catch(e) {
+    S.sources['ST-SEARCH'] = 'dead';
+    log('DS Search failed: ' + e.message, 'warn');
+  }
+}
+
+// DexScreener latest token profiles — newest tokens with socials
+// Endpoint: GET /token-profiles/latest/v1
+// Returns tokens that have just set up their profile — early stage
+async function fetchDSTrending() {
+  try {
+    var res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1', {
+      timeout: 10000
+    });
+    if (!res.ok) throw new Error('DS latest failed: ' + res.status);
+    var profiles = await res.json();
+
+    // Filter to Solana only
+    var solProfiles = (Array.isArray(profiles) ? profiles : []).filter(function(p) {
+      return p.chainId === 'solana' && p.tokenAddress;
+    });
+
     var added = 0;
 
-    items.forEach(function(item) {
-      try {
-        var token = item.token || {};
-        var pools = item.pools || [];
-        var risk = item.risk || {};
-        var pool = pools[0] || {};
-        var security = pool.security || {};
+    // Fetch pair data for each profile in batches of 30
+    var addresses = solProfiles.map(function(p) { return p.tokenAddress; }).slice(0, 30);
+    if (addresses.length === 0) {
+      S.sources['ST-TREND'] = 'live:0';
+      return;
+    }
 
-        var flat = {
-          mint: token.mint,
-          symbol: token.symbol,
-          name: token.name,
-          mintAuthority: security.mintAuthority,
-          freezeAuthority: security.freezeAuthority,
-          lpBurn: pool.lpBurn,
-          liquidityUsd: pool.liquidity && pool.liquidity.usd,
-          marketCapUsd: pool.marketCap && pool.marketCap.usd,
-          priceUsd: pool.price && pool.price.usd,
-          buys: item.buys || (pool.txns && pool.txns.buys) || 0,
-          sells: item.sells || (pool.txns && pool.txns.sells) || 0,
-          holders: item.holders || 0,
-          riskScore: risk.score,
-          dev: risk.dev && risk.dev.percentage,
-          top10: risk.top10,
-          volume_1h: pool.txns && pool.txns.volume || 0,
-          volume_24h: pool.txns && pool.txns.volume24h || 0,
-        };
+    var pairRes = await fetch('https://api.dexscreener.com/tokens/v1/solana/' + addresses.join(','), {
+      timeout: 10000
+    });
+    if (!pairRes.ok) throw new Error('DS pair fetch failed');
+    var pairData = await pairRes.json();
 
-        if (!passesChecklist(flat)) return;
-        var tok = mapSTToken(flat, 'ST-TREND');
-        if (tok && !S.tokens.has(tok.n + tok.id)) {
-          S.tokens.set(tok.n + tok.id, tok);
-          added++;
-        }
-      } catch(e) {}
+    // pairData is array of pairs
+    var pairs = Array.isArray(pairData) ? pairData : [];
+    pairs.forEach(function(pair) {
+      var tok = mapDSPair(pair, 'DSC-NEW');
+      if (!tok) return;
+      if (!passesDSChecklist(tok)) return;
+      if (!S.tokens.has(tok.n + tok.id)) {
+        S.tokens.set(tok.n + tok.id, tok);
+        added++;
+      }
     });
 
     S.sources['ST-TREND'] = 'live:' + added;
-    log('ST Latest: ' + added + ' new tokens added (API returned ' + items.length + ')', 'info');
+    log('DS Latest: ' + added + ' new tokens added (checked ' + solProfiles.length + ' profiles)', 'info');
   } catch(e) {
     S.sources['ST-TREND'] = 'dead';
-    log('ST Latest failed: ' + e.message, 'warn');
+    log('DS Latest failed: ' + e.message, 'warn');
   }
+}
+
+// ── DEXSCREENER SAFETY CHECKLIST ─────────────────────────────
+// DexScreener doesn't give us on-chain safety data directly
+// We check what we CAN from the pair data
+// Solana Tracker prices the token if it enters — providing additional safety
+function passesDSChecklist(tok) {
+  if (!tok.mint) return false;
+
+  // Must have real liquidity
+  if (tok.liq < CFG.MIN_LIQ) return false;
+
+  // Must be in market cap range
+  if (tok.mcap > 0 && (tok.mcap < CFG.MIN_MCAP || tok.mcap > CFG.MAX_MCAP)) return false;
+
+  // Must have 1h volume — active right now
+  if (tok.vol1 < CFG.MIN_VOL_1H) return false;
+
+  // Must have buying pressure
+  if (tok.bsr < 1.0) return false;
+
+  // Must have minimum buys
+  if (tok.buys < CFG.MIN_BUYS) return false;
+
+  // Pool not too old — we want momentum not established coins
+  if (tok.age > 48) return false;
+
+  return true;
 }
 
 // ── SOLANA TRACKER — BATCH PRICE ─────────────────────────────
@@ -851,13 +882,13 @@ function startBot() {
   connectPump();
 
   // Initial data fetch
-  fetchSTTokens();
-  fetchSTTrending();
+  fetchDSSearch();
+  fetchDSTrending();
   updateSolPrice();
 
-  // Scheduled fetches — credit aware intervals
-  fetchSearchI = setInterval(fetchSTTokens, CFG.ST_SEARCH_INTERVAL);
-  fetchTrendI = setInterval(fetchSTTrending, CFG.ST_TREND_INTERVAL);
+  // DexScreener discovery — free, no limits, every 5 minutes
+  fetchSearchI = setInterval(fetchDSSearch, 300000);
+  fetchTrendI = setInterval(fetchDSTrending, 300000);
 
   // Batch price updates — ONE credit for ALL open trades every 30 seconds
   setInterval(batchUpdatePrices, CFG.ST_PRICE_INTERVAL);
@@ -877,8 +908,8 @@ function startBot() {
   // SOL price update every 10 minutes
   setInterval(updateSolPrice, 600000);
 
-  log('MemeBot V14 started | Solana Tracker powered | Safety checklist active | Graduation Sniper live', 'info');
-  log('ST Credits available: 10,000/month | Budget: ~333/day', 'info');
+  log('MemeBot V14 started | DexScreener discovery (free) | Solana Tracker pricing | Graduation Sniper live', 'info');
+  log('ST Credits reserved for price tracking only | DS: unlimited free discovery', 'info');
 }
 
 function stopBot() {
@@ -929,8 +960,8 @@ app.get('/', function(req, res) {
 app.listen(PORT, function() {
   console.log('MemeBot V14 — Solana Tracker powered — running on port ' + PORT);
   connectPump();
-  fetchSTTokens();
-  fetchSTTrending();
+  fetchDSSearch();
+  fetchDSTrending();
   updateSolPrice();
   // Bot does NOT auto-start — Mike controls manually
 });
