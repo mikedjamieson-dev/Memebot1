@@ -11,13 +11,9 @@ const PORT = process.env.PORT || 3000;
 // ── API KEYS ──────────────────────────────────────────────────
 const ST_KEY = '75035862-d3fe-40a5-9a47-7d6338685930'; // Solana Tracker
 const ST_URL = 'https://data.solanatracker.io';
-const HELIUS_KEY = '04d7d86a-48da-45db-8364-1c57d40fc4b1'; // Helius
-const HELIUS_WS = 'wss://mainnet.helius-rpc.com/?api-key=' + HELIUS_KEY;
 
-// Raydium AMM program address — watching this gives us every new pool
+// Raydium AMM program address — for future use
 const RAYDIUM_AMM = '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8';
-// Pump.fun program address — for graduation detection
-const PUMPFUN_PROG = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 
 // ── CONFIG ────────────────────────────────────────────────────
 const CFG = {
@@ -176,36 +172,58 @@ function mapDSPair(pair, src) {
   } catch(e) { return null; }
 }
 
-// DexScreener search — finds active Solana pairs
-// Endpoint: GET /latest/dex/search?q=solana
-// Returns pairs sorted by activity
+// ── DEXSCREENER — TOKEN DISCOVERY ────────────────────────────
+// Multiple rotating searches — finds hundreds of active Solana tokens
+// All completely free, no API key, 300 req/min limit
+// Rotates through 8 different queries — 2 per cycle every 5 minutes
+
+var DS_QUERIES = [
+  'solana',
+  'pump',
+  'sol meme',
+  'pepe sol',
+  'dog sol',
+  'cat sol',
+  'ai sol',
+  'moon sol',
+];
+var dsQueryIndex = 0;
+
 async function fetchDSSearch() {
-  try {
-    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana+meme', {
-      timeout: 10000
-    });
-    if (!res.ok) throw new Error('DS search failed: ' + res.status);
-    var data = await res.json();
-    var pairs = (data.pairs || []).filter(function(p) {
-      return p.chainId === 'solana';
-    });
+  var added = 0;
+  var totalReturned = 0;
 
-    var added = 0;
-    pairs.forEach(function(pair) {
-      var tok = mapDSPair(pair, 'DSC-SEARCH');
-      if (!tok) return;
-      if (!passesDSChecklist(tok)) return;
-      if (!S.tokens.has(tok.n + tok.id)) {
-        S.tokens.set(tok.n + tok.id, tok);
-        added++;
-      }
-    });
+  // Run 2 queries per cycle — rotates through all 8 queries over time
+  for (var qi = 0; qi < 2; qi++) {
+    var query = DS_QUERIES[dsQueryIndex % DS_QUERIES.length];
+    dsQueryIndex++;
 
-    S.sources['ST-SEARCH'] = 'live:' + S.tokens.size;
-    log('DS Search: ' + added + ' new tokens added | Pool: ' + S.tokens.size + ' (API returned ' + pairs.length + ')', 'info');
-  } catch(e) {
-    S.sources['ST-SEARCH'] = 'dead';
-    log('DS Search failed: ' + e.message, 'warn');
+    try {
+      var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), {
+        timeout: 10000
+      });
+      if (!res.ok) continue;
+      var data = await res.json();
+      var pairs = (data.pairs || []).filter(function(p) {
+        return p.chainId === 'solana';
+      });
+      totalReturned += pairs.length;
+
+      pairs.forEach(function(pair) {
+        var tok = mapDSPair(pair, 'DSC-SEARCH');
+        if (!tok) return;
+        if (!passesDSChecklist(tok)) return;
+        if (!S.tokens.has(tok.n + tok.id)) {
+          S.tokens.set(tok.n + tok.id, tok);
+          added++;
+        }
+      });
+    } catch(e) {}
+  }
+
+  S.sources['ST-SEARCH'] = 'live:' + S.tokens.size;
+  if (added > 0 || S.tokens.size === 0) {
+    log('DS Search: ' + added + ' new tokens | Pool: ' + S.tokens.size + ' (checked ' + totalReturned + ' pairs)', 'info');
   }
 }
 
@@ -450,164 +468,6 @@ function mapSTToken(t, src) {
   } catch(e) { return null; }
 }
 
-// ── HELIUS WEBSOCKET — RAYDIUM NEW POOL DETECTION ─────────────
-// Watches Raydium program for new liquidity pool creation events
-// Fires instantly when a new pool is created — no polling needed
-// This is how top bots get thousands of tokens — reading blockchain directly
-var heliusWs = null;
-var heliusReconnectTimer = null;
-var seenSignatures = new Set(); // prevent duplicate processing
-
-function connectHelius() {
-  if (heliusWs && heliusWs.readyState === WebSocket.OPEN) return;
-
-  try {
-    heliusWs = new WebSocket(HELIUS_WS);
-
-    heliusWs.on('open', function() {
-      log('Helius WebSocket LIVE — Raydium new pool detector active', 'info');
-      S.sources['HELIUS'] = 'live:0';
-
-      // Subscribe to all logs for Raydium AMM program
-      // Filter for initialize2 — the instruction that creates new liquidity pools
-      heliusWs.send(JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'logsSubscribe',
-        params: [
-          { mentions: [RAYDIUM_AMM] },
-          { commitment: 'confirmed' }
-        ]
-      }));
-
-      // Heartbeat to keep connection alive
-      var hbInterval = setInterval(function() {
-        if (heliusWs && heliusWs.readyState === WebSocket.OPEN) {
-          heliusWs.send(JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'ping' }));
-        } else {
-          clearInterval(hbInterval);
-        }
-      }, 30000);
-    });
-
-    heliusWs.on('message', async function(raw) {
-      try {
-        var msg = JSON.parse(raw.toString());
-        var result = msg.params && msg.params.result;
-        if (!result) return;
-
-        var logs = result.value && result.value.logs;
-        var sig = result.value && result.value.signature;
-        var err = result.value && result.value.err;
-
-        // Skip failed transactions and duplicates
-        if (err || !logs || !sig) return;
-        if (seenSignatures.has(sig)) return;
-        seenSignatures.add(sig);
-
-        // Clean up old signatures to prevent memory leak
-        if (seenSignatures.size > 5000) {
-          var arr = Array.from(seenSignatures);
-          seenSignatures = new Set(arr.slice(arr.length - 2500));
-        }
-
-        // Check if this is a new pool creation event
-        var isNewPool = logs.some(function(log) {
-          return log.indexOf('initialize2') >= 0 ||
-                 log.indexOf('InitializeInstruction2') >= 0;
-        });
-        if (!isNewPool) return;
-
-        // Extract token mint address from the transaction
-        // Account keys contain the new token mint address
-        var accounts = result.value && result.value.accounts;
-        if (!accounts || accounts.length === 0) return;
-
-        // Get the transaction details to extract mint address
-        // Use DexScreener to get full token data for any new pool
-        // This keeps us on free tier — Helius detects, DS provides data
-        setTimeout(async function() {
-          await processNewRaydiumPool(sig);
-        }, 3000); // Wait 3 seconds for DexScreener to index the new pool
-
-      } catch(e) {}
-    });
-
-    heliusWs.on('error', function(e) {
-      log('Helius WebSocket error: ' + e.message, 'warn');
-      S.sources['HELIUS'] = 'dead';
-    });
-
-    heliusWs.on('close', function() {
-      S.sources['HELIUS'] = 'dead';
-      log('Helius WebSocket closed — reconnecting in 15s', 'warn');
-      if (heliusReconnectTimer) clearTimeout(heliusReconnectTimer);
-      heliusReconnectTimer = setTimeout(connectHelius, 15000);
-    });
-
-  } catch(e) {
-    log('Helius WebSocket failed: ' + e.message, 'warn');
-    if (heliusReconnectTimer) clearTimeout(heliusReconnectTimer);
-    heliusReconnectTimer = setTimeout(connectHelius, 15000);
-  }
-}
-
-// Process a new Raydium pool — fetch pair data from DexScreener
-// Called when Helius detects a new pool creation event
-var processedPools = new Set();
-async function processNewRaydiumPool(signature) {
-  if (processedPools.has(signature)) return;
-  processedPools.add(signature);
-
-  // Clean up to prevent memory leak
-  if (processedPools.size > 2000) {
-    var arr2 = Array.from(processedPools);
-    processedPools = new Set(arr2.slice(arr2.length - 1000));
-  }
-
-  try {
-    // Search DexScreener for the most recent Solana pools
-    // DexScreener indexes new pools within 1 second of creation
-    var res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1', {
-      timeout: 8000
-    });
-    if (!res.ok) return;
-
-    var profiles = await res.json();
-    var solProfiles = (Array.isArray(profiles) ? profiles : []).filter(function(p) {
-      return p.chainId === 'solana' && p.tokenAddress;
-    });
-
-    if (solProfiles.length === 0) return;
-
-    // Fetch pair data for newest profiles
-    var addresses = solProfiles.slice(0, 20).map(function(p) { return p.tokenAddress; });
-    var pairRes = await fetch('https://api.dexscreener.com/tokens/v1/solana/' + addresses.join(','), {
-      timeout: 8000
-    });
-    if (!pairRes.ok) return;
-
-    var pairs = await pairRes.json();
-    var added = 0;
-
-    (Array.isArray(pairs) ? pairs : []).forEach(function(pair) {
-      var tok = mapDSPair(pair, 'HELIUS-RAY');
-      if (!tok) return;
-      if (!passesDSChecklist(tok)) return;
-      if (!S.tokens.has(tok.n + tok.id)) {
-        S.tokens.set(tok.n + tok.id, tok);
-        added++;
-      }
-    });
-
-    if (added > 0) {
-      // Update Helius source counter
-      var current = parseInt((S.sources['HELIUS'] || 'live:0').split(':')[1] || 0);
-      S.sources['HELIUS'] = 'live:' + (current + added);
-      log('HELIUS NEW POOL: ' + added + ' tokens added to pool | Total: ' + S.tokens.size, 'info');
-    }
-  } catch(e) {}
-}
 function calcPumpPrice(d) {
   var vSol = parseFloat(d.vSolInBondingCurve) || 0;
   var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
@@ -812,11 +672,12 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
-  // Stale cooldown — block re-entry for 30 minutes
-  if (reason && reason.toLowerCase().indexOf('stale') >= 0) {
+  // Cooldown on ANY loss exit — blocks re-entry for 30 minutes
+  // Prevents UAPE-type disasters where same losing token re-enters repeatedly
+  if (pnl < 0) {
     var cooldownKey = tr.tok.n + (tr.mint || '');
     S.staleCooldown.set(cooldownKey, Date.now());
-    log('COOLDOWN ' + tr.tok.n + ' — blocked 30min after stale', 'warn');
+    log('COOLDOWN ' + tr.tok.n + ' — blocked 30min after loss', 'warn');
   }
 
   // Daily loss limit
@@ -1045,9 +906,6 @@ function startBot() {
   // Connect Pump.fun WebSocket for graduation sniper
   connectPump();
 
-  // Connect Helius WebSocket for Raydium new pool detection
-  connectHelius();
-
   // Initial data fetch
   fetchDSSearch();
   fetchDSTrending();
@@ -1075,7 +933,7 @@ function startBot() {
   // SOL price update every 10 minutes
   setInterval(updateSolPrice, 600000);
 
-  log('MemeBot V14 started | Helius WebSocket (Raydium new pools) | DexScreener discovery | Solana Tracker pricing | Graduation Sniper live', 'info');
+  log('MemeBot V14 started | DexScreener discovery (8 rotating queries) | Solana Tracker pricing | Graduation Sniper live', 'info');
   log('ST Credits reserved for price tracking only | DS: unlimited free discovery', 'info');
 }
 
@@ -1127,7 +985,6 @@ app.get('/', function(req, res) {
 app.listen(PORT, function() {
   console.log('MemeBot V14 — Solana Tracker powered — running on port ' + PORT);
   connectPump();
-  connectHelius();
   fetchDSSearch();
   fetchDSTrending();
   updateSolPrice();
