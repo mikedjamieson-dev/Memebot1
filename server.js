@@ -34,15 +34,15 @@ const CFG = {
   STOP_LOSS: 0.18,       // stop loss at -18%
 
   // Solana Tracker token filters — research based safety checklist
-  MIN_MCAP: 100000,      // minimum market cap $100k — catch earlier momentum
+  MIN_MCAP: 50000,       // minimum market cap $50k
   MAX_MCAP: 25000000,    // maximum market cap $25M — small caps only
-  MIN_LIQ: 10000,        // minimum liquidity $10k
-  MIN_VOL_1H: 10000,     // minimum 1h volume $10k — catch earlier momentum
-  MAX_RISK: 5,           // maximum risk score — relaxed from 3 to 5
+  MIN_LIQ: 5000,         // minimum liquidity $5k
+  MIN_VOL_1H: 1000,      // minimum 1h volume $1k
+  MAX_RISK: 5,           // maximum risk score
   MAX_DEV: 5,            // maximum dev holding % — stays strict
   MAX_TOP10: 30,         // maximum top 10 holders %
-  MIN_BUYS: 5,           // minimum buy transactions — relaxed from 10
-  MIN_HOLDERS: 10,       // minimum token holders — relaxed from 50
+  MIN_BUYS: 3,           // minimum buy transactions
+  MIN_HOLDERS: 10,       // minimum token holders
 
   // Graduation sniper config
   GRAD_ENTRY_SOL: 100,   // enter when bonding curve hits 100 SOL
