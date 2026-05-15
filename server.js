@@ -3,7 +3,7 @@ const express = require('express');
 const WebSocket = require('ws');
 const fetch = require('node-fetch');
 const cors = require('cors');
-
+require('dotenv').config();
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -150,8 +150,9 @@ function recheckExpiredBans() {
 
 // ── SAFETY CHECKLIST ─────────────────────────────────────────
 // Runs on every new token before it enters the pool
-// Fast and simple — five checks, first fail = banned
-async function runSafetyChecklist(mint, tokenData) {
+// isPumpFun flag skips Jupiter honeypot check — new Pump.fun tokens
+// don't have Jupiter routing yet, so the check always fails incorrectly
+async function runSafetyChecklist(mint, tokenData, isPumpFun) {
   // Check 1 — Mint authority must be null
   if (tokenData.mintAuthority && tokenData.mintAuthority !== 'null' && tokenData.mintAuthority !== '') {
     tempBan(mint, 'Mint authority not renounced');
@@ -160,8 +161,9 @@ async function runSafetyChecklist(mint, tokenData) {
 
   // Check 2 — Freeze authority must be null
   // On Solana honeypots work by retaining freeze authority to trap buyers
+  // This is the most reliable honeypot indicator for Pump.fun tokens
   if (tokenData.freezeAuthority && tokenData.freezeAuthority !== 'null' && tokenData.freezeAuthority !== '') {
-    permanentBan(mint, 'Freeze authority retained — likely honeypot');
+    permanentBan(mint, 'Freeze authority retained — honeypot');
     return false;
   }
 
@@ -178,11 +180,14 @@ async function runSafetyChecklist(mint, tokenData) {
   }
 
   // Check 5 — Honeypot simulation via Jupiter quote
-  // If we can't get a sell quote — it's a honeypot
-  var isHoneypot = await checkHoneypot(mint);
-  if (isHoneypot) {
-    permanentBan(mint, 'Honeypot confirmed — sell simulation failed');
-    return false;
+  // SKIP for Pump.fun tokens — they don't have Jupiter routing yet
+  // Freeze authority check above already covers the main honeypot risk
+  if (!isPumpFun) {
+    var isHoneypot = await checkHoneypot(mint);
+    if (isHoneypot) {
+      permanentBan(mint, 'Honeypot confirmed — sell simulation failed');
+      return false;
+    }
   }
 
   return true;
@@ -346,8 +351,8 @@ function connectPump() {
             dev: undefined,            // No dev holding data yet
           };
 
-          // Run safety checklist
-          var safe = await runSafetyChecklist(mint, tokenData);
+          // Run safety checklist — skip Jupiter check for Pump.fun tokens
+          var safe = await runSafetyChecklist(mint, tokenData, true);
           if (!safe) return;
 
           // Get initial price from bonding curve
