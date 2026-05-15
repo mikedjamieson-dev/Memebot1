@@ -277,7 +277,7 @@ async function fetchDSTokens() {
           lpBurn: undefined,     // DS doesn't give us this
           dev: undefined,        // DS doesn't give us this
         };
-        var safe = await runSafetyChecklist(mint, tokenData);
+        var safe = await runSafetyChecklist(mint, tokenData, true); // skip Jupiter - unreliable
         if (!safe) continue;
         S.tokens.set(mint, {
           mint, price,
@@ -328,7 +328,12 @@ function connectPump() {
         var d = JSON.parse(raw.toString());
 
         // ── NEW TOKEN LAUNCH ──────────────────────────────────
-        if (d.txType === 'create' && d.mint) {
+        // Pump.fun sends new token creation events with mint + symbol/name
+        // These do NOT have txType 'buy' or 'sell'
+        // Check: has mint, has name/symbol, is NOT a buy/sell trade
+        var isNewToken = d.mint && (d.symbol || d.name) &&
+                         d.txType !== 'buy' && d.txType !== 'sell';
+        if (isNewToken) {
           var mint = d.mint;
           var name = ((d.symbol || d.name || 'NEW') + '').toUpperCase().slice(0, 12);
           S.pumpCount++;
