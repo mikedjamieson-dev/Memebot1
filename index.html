@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>MEME BOT V14</title>
+<title>MEME BOT V15</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
 :root{--bg:#04080d;--panel:#080f18;--border:#0d2035;--bb:#1a4060;--green:#00ff88;--gd:#00cc6a;--red:#ff3d5a;--yellow:#ffc233;--blue:#33b5ff;--purple:#bb88ff;--text:#e8f4ff;--dim:#7a9ab0;}
@@ -106,13 +106,21 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .ctrade-lbl{font-size:6px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
 .ctrade-val{font-family:'Orbitron',monospace;font-size:9px;}
 .ctrade-footer{display:flex;justify-content:space-between;font-size:8px;color:var(--dim);}
+/* Settings Panel */
+.settings-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;display:none;}
+.settings-panel.open{display:block;}
+.settings-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:9px;padding:6px 8px;margin-bottom:6px;}
+.settings-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--green);background:transparent;color:var(--green);cursor:pointer;font-size:9px;font-family:'Share Tech Mono',monospace;}
+.settings-toggle{padding:4px 10px;border-radius:5px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:8px;font-family:'Share Tech Mono',monospace;margin-bottom:8px;}
+/* Ban stats */
+.ban-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;}
 </style>
 </head>
 <body>
 <div class="wrap">
 
   <div class="hdr">
-    <div class="htag"><span class="dot"></span>SNIPER V14 · SOLANA TRACKER · 24/7</div>
+    <div class="htag"><span class="dot"></span>SNIPER V15 · PUMP.FUN LIVE · 24/7</div>
     <div class="htitle">MEME BOT <span style="color:var(--green)">LIVE</span></div>
     <div class="hsub">SOLANA · PUMP.FUN · GRADUATION SNIPER · REAL PRICES</div>
   </div>
@@ -130,7 +138,25 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="spill"><div class="sl2">PUMP LIVE</div><div class="sv" id="pumpCnt" style="color:var(--yellow)">0</div></div>
   </div>
 
+  <!-- Ban stats -->
+  <div class="ban-row">
+    <div class="spill"><div class="sl2">PERM BANS</div><div class="sv" id="permBans" style="color:var(--red)">0</div></div>
+    <div class="spill"><div class="sl2">TEMP BANS</div><div class="sv" id="tempBans" style="color:var(--yellow)">0</div></div>
+  </div>
+
   <div class="srcrow" id="srcrow"></div>
+
+  <!-- Settings Panel -->
+  <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
+  <div class="settings-panel" id="settingsPanel">
+    <div class="lbl" style="margin-bottom:8px">WALLET SETTINGS</div>
+    <div style="font-size:8px;color:var(--dim);margin-bottom:4px">TRADING WALLET</div>
+    <input class="settings-input" id="tradingWalletInput" placeholder="Solana trading wallet address..." />
+    <div style="font-size:8px;color:var(--dim);margin-bottom:4px">SAVINGS WALLET</div>
+    <input class="settings-input" id="savingsWalletInput" placeholder="Solana savings wallet address..." />
+    <button class="settings-btn" onclick="saveSettings()">SAVE WALLETS</button>
+    <div style="font-size:8px;color:var(--dim);margin-top:8px" id="walletStatus"></div>
+  </div>
 
   <div class="g2">
     <div class="card">
@@ -228,7 +254,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     </div>
   </div>
 
-  <div class="foot">MEMEBOT V14 · SOLANA TRACKER · REAL DATA · 24/7</div>
+  <div class="foot">MEMEBOT V15 · SNIPER BOT · REAL DATA · 24/7</div>
 </div>
 
 <script>
@@ -285,7 +311,31 @@ function startTimer(st) {
   }, 1000);
 }
 
-async function toggleBot() {
+function toggleSettings() {
+  var panel = document.getElementById('settingsPanel');
+  panel.classList.toggle('open');
+}
+
+async function saveSettings() {
+  var trading = document.getElementById('tradingWalletInput').value.trim();
+  var savings = document.getElementById('savingsWalletInput').value.trim();
+  if (!trading && !savings) { alert('Please enter at least one wallet address'); return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tradingWallet: trading, savingsWallet: savings })
+    });
+    if (res.ok) {
+      document.getElementById('walletStatus').textContent = '✅ Wallets saved successfully';
+      document.getElementById('walletStatus').style.color = 'var(--green)';
+    }
+  } catch(e) {
+    document.getElementById('walletStatus').textContent = '❌ Failed to save';
+    document.getElementById('walletStatus').style.color = 'var(--red)';
+  }
+}
+
   try { await fetch(botRunning ? BASE + '/api/stop' : BASE + '/api/start', { method: 'POST' }); }
   catch(e) { alert('Cannot reach server. Please refresh and try again.'); }
 }
@@ -479,7 +529,17 @@ async function fetchState() {
       histSec.style.display = 'none';
     }
 
-    // Session stats
+    // Ban stats
+    document.getElementById('permBans').textContent = data.permanentBans || 0;
+    document.getElementById('tempBans').textContent = data.tempBans || 0;
+
+    // Wallet status
+    if (data.wallets) {
+      var ws2 = document.getElementById('walletStatus');
+      if (ws2) {
+        ws2.textContent = 'Trading: ' + (data.wallets.trading || 'not set') + ' | Savings: ' + (data.wallets.savings || 'not set');
+      }
+    }
     var closed = data.closedTrades || [];
     var slips = closed.map(function(t) { return t.slip || 0; }).filter(function(v) { return v > 0; });
     var avgSlip = slips.length ? ((slips.reduce(function(a, b) { return a + b; }, 0) / slips.length) * 100).toFixed(2) : '0.00';
