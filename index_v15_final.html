@@ -336,6 +336,7 @@ async function saveSettings() {
   }
 }
 
+async function toggleBot() {
   try { await fetch(botRunning ? BASE + '/api/stop' : BASE + '/api/start', { method: 'POST' }); }
   catch(e) { alert('Cannot reach server. Please refresh and try again.'); }
 }
