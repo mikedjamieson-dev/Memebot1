@@ -728,12 +728,10 @@ async function runScan() {
     return;
   }
 
-  // BSR kick — remove tokens with more sellers than buyers
-  // BSR below 0.8 means clear selling pressure — not worth trading
-  // Never kick tokens currently in an open trade
+  // BSR check — skip tokens with more sellers than buyers
+  // Token stays in pool — BSR may recover, bot will catch it immediately
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-  if (bsr < 0.8 && !S.open.find(function(t) { return t.mint === tok.mint; })) {
-    S.tokens.delete(tok.mint);
+  if (bsr < 0.8) {
     S.rejectCount++;
     return;
   }
