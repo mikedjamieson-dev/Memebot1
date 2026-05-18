@@ -54,8 +54,9 @@ const CFG = {
   GRAD_MIN_BSR: 1.2,     // minimum buy/sell ratio for grad entry
   GRAD_MIN_TXNS: 3,      // minimum transactions before grad entry
 
-  // Ban durations
-  BAN_TEMP_MS: 43200000, // 12 hour temporary ban
+  // Pool management
+  MAX_POOL: 10000,       // maximum tokens in pool at any time
+  POOL_AGE_MS: 14400000, // remove tokens older than 4 hours
   COOLDOWN_MS: 1800000,  // 30 minute cooldown after loss
 
   // DexScreener polling
@@ -342,8 +343,25 @@ function connectPump() {
 
           // Skip if banned
           if (isBanned(mint)) return;
-          // Skip if already in pool
+          // Skip if already in pool — deduplication by mint address
           if (S.tokens.has(mint)) return;
+          // Pool cap — max 10,000 tokens
+          // Remove worst performing token (lowest BSR) when cap is reached
+          // Never remove tokens currently in an open trade
+          if (S.tokens.size >= CFG.MAX_POOL) {
+            var worstKey = null;
+            var worstBSR = Infinity;
+            S.tokens.forEach(function(tok, key) {
+              // Never remove tokens in an open trade
+              if (S.open.find(function(t) { return t.mint === key; })) return;
+              var bsr = tok.buys / Math.max(tok.sells || 1, 1);
+              if (bsr < worstBSR) {
+                worstBSR = bsr;
+                worstKey = key;
+              }
+            });
+            if (worstKey) S.tokens.delete(worstKey);
+          }
 
           // New token data from creation event
           // Pump.fun tokens: mintAuthority is renounced at creation
@@ -710,6 +728,16 @@ async function runScan() {
     return;
   }
 
+  // BSR kick — remove tokens with more sellers than buyers
+  // BSR below 0.8 means clear selling pressure — not worth trading
+  // Never kick tokens currently in an open trade
+  var bsr = tok.buys / Math.max(tok.sells || 1, 1);
+  if (bsr < 0.8 && !S.open.find(function(t) { return t.mint === tok.mint; })) {
+    S.tokens.delete(tok.mint);
+    S.rejectCount++;
+    return;
+  }
+
   // Check cooldown after loss
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
@@ -773,7 +801,7 @@ function cleanPool() {
   var removed = 0;
   S.tokens.forEach(function(tok, mint) {
     // Remove tokens older than 4 hours with no trades
-    if (tok.addedAt && (now - tok.addedAt) > 14400000 && !S.open.find(function(t) { return t.mint === mint; })) {
+    if (tok.addedAt && (now - tok.addedAt) > CFG.POOL_AGE_MS && !S.open.find(function(t) { return t.mint === mint; })) {
       S.tokens.delete(mint);
       removed++;
     }
@@ -880,7 +908,9 @@ app.get('/api/state', function(req, res) {
 });
 
 app.post('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
+app.get('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
 app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
+app.get('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
 
 // Settings panel — update wallets without code changes
