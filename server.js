@@ -839,7 +839,7 @@ function startBot() {
   exitI = setInterval(checkExitCriteria, 10000);
 
   // Price tracking for non-Pump trades — every 30 seconds
-  priceI = setInterval(updateOpenTradePrices, 30000);
+  priceI = setInterval(updateOpenTradePrices, 2000);
 
   // DexScreener discovery — every 5 minutes
   dsI = setInterval(fetchDSTokens, CFG.DS_INTERVAL);
