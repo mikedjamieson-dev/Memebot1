@@ -10,67 +10,58 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // ── API KEYS & CONFIG FROM ENV ────────────────────────────────
-// All sensitive config lives in .env — never hardcoded
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
 const ST_URL = 'https://data.solanatracker.io';
 
-// Wallet addresses — configurable without code changes
-// Set these in .env or via the settings panel on the dashboard
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 
 // ── BOT CONFIGURATION ─────────────────────────────────────────
 const CFG = {
-  // Position sizing
-  MAX_POS: 0.05,         // 5% of fund per trade
-  MAX_OPEN: 8,           // max simultaneous open trades
-  MAX_GRAD: 2,           // max graduation sniper trades at once
-  SOL_GAS: 0.001,        // estimated gas cost per trade
+  MAX_POS: 0.05,
+  MAX_OPEN: 8,
+  MAX_GRAD: 2,
+  SOL_GAS: 0.001,
 
   // Trail stop — NEVER CHANGE THESE TWO VALUES
-  TRAIL_ACT: 0.04,       // trail activates at 4% gain
-  TRAIL_PB: 0.02,        // exit on 2% pullback from peak
+  TRAIL_ACT: 0.04,
+  TRAIL_PB: 0.02,
 
-  // Exit criteria
-  STOP_LOSS: 0.10,       // stop loss at 10%
-  STALE_TIME: 120000,    // exit if no price movement for 2 minutes
-  NO_PRICE_TIMEOUT: 180000, // exit if no price after 3 minutes
-  LOSS_LIM: 0.10,        // daily loss limit 10%
+  STOP_LOSS: 0.10,
+  STALE_TIME: 120000,
+  NO_PRICE_TIMEOUT: 180000,
+  LOSS_LIM: 0.10,
 
-  // Profit split
-  MIN_SPLIT_WIN: 0.05,   // minimum win to trigger 80/20 split ($0.05)
-  SAVINGS_PCT: 0.20,     // 20% to savings on every win above minimum
+  MIN_SPLIT_WIN: 0.05,
+  SAVINGS_PCT: 0.20,
 
-  // Safety checklist thresholds
-  MIN_LIQ_USD: 5000,     // minimum liquidity $5k
-  MAX_MCAP_USD: 25000000,// maximum market cap $25M
-  MIN_MCAP_USD: 1000,    // minimum market cap $1k
+  MIN_LIQ_USD: 5000,
+  MAX_MCAP_USD: 25000000,
+  MIN_MCAP_USD: 1000,
 
-  // Graduation sniper
-  GRAD_ENTRY_SOL: 100,   // enter when bonding curve hits 100 SOL
-  GRAD_MAX_SOL: 480,     // don't enter above 480 SOL
-  GRAD_TARGET: 500,      // graduation at ~500 SOL
-  GRAD_POS: 0.10,        // 10% position for graduation plays
-  GRAD_MIN_BSR: 1.2,     // minimum buy/sell ratio for grad entry
-  GRAD_MIN_TXNS: 3,      // minimum transactions before grad entry
+  GRAD_ENTRY_SOL: 100,
+  GRAD_MAX_SOL: 480,
+  GRAD_TARGET: 500,
+  GRAD_POS: 0.10,
+  GRAD_MIN_BSR: 1.2,
+  GRAD_MIN_TXNS: 3,
 
-  // Pool management
-  MAX_POOL: 10000,       // maximum tokens in pool at any time
-  POOL_AGE_MS: 14400000, // remove tokens older than 4 hours
-  COOLDOWN_MS: 1800000,  // 30 minute cooldown after loss
+  MAX_POOL: 10000,
+  POOL_AGE_MS: 14400000,
+  COOLDOWN_MS: 1800000,
+  BAN_TEMP_MS: 43200000,
 
-  // DexScreener polling
-  DS_INTERVAL: 300000,   // DexScreener search every 5 minutes
+  DS_INTERVAL: 300000,
 };
 
 // ── STATE ─────────────────────────────────────────────────────
 const S = {
-  tokens: new Map(),         // pool of tokens passing safety checklist
-  open: [],                  // open trades
-  closed: [],                // closed trade history
+  tokens: new Map(),
+  open: [],
+  closed: [],
   stats: { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 },
-  fund: 100,                 // trading fund (paper)
-  savings: 0,                // savings wallet (paper)
+  fund: 100,
+  savings: 0,
   running: false,
   pumpLive: false,
   pumpCount: 0,
@@ -81,11 +72,11 @@ const S = {
   sources: {},
   startTime: null,
   dayStartFund: 100,
-  gradCandidates: new Map(), // graduation sniper candidates
+  gradCandidates: new Map(),
   gradCount: 0,
-  permanentBans: new Map(),  // mint -> reason (honeypot etc)
-  tempBans: new Map(),       // mint -> { bannedAt, reason }
-  cooldowns: new Map(),      // token key -> timestamp after loss
+  permanentBans: new Map(),
+  tempBans: new Map(),
+  cooldowns: new Map(),
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -112,32 +103,27 @@ async function updateSolPrice() {
 }
 
 // ── BAN SYSTEM ────────────────────────────────────────────────
-// Permanent ban — honeypot or confirmed bad actor
 function permanentBan(mint, reason) {
   S.permanentBans.set(mint, reason);
   log('PERMANENT BAN ' + mint.slice(0,8) + '... | ' + reason, 'warn');
 }
 
-// Temporary 12 hour ban — failed safety check
 function tempBan(mint, reason) {
   S.tempBans.set(mint, { bannedAt: Date.now(), reason });
   log('12HR BAN ' + mint.slice(0,8) + '... | ' + reason, 'warn');
 }
 
-// Check if token is banned
 function isBanned(mint) {
   if (!mint) return true;
   if (S.permanentBans.has(mint)) return true;
   var tb = S.tempBans.get(mint);
   if (tb) {
     if (Date.now() - tb.bannedAt < CFG.BAN_TEMP_MS) return true;
-    // 12 hours expired — remove temp ban for recheck
     S.tempBans.delete(mint);
   }
   return false;
 }
 
-// Clean up expired temp bans — recheck them
 function recheckExpiredBans() {
   var now = Date.now();
   S.tempBans.forEach(function(ban, mint) {
@@ -149,39 +135,27 @@ function recheckExpiredBans() {
 }
 
 // ── SAFETY CHECKLIST ─────────────────────────────────────────
-// Runs on every new token before it enters the pool
-// isPumpFun flag skips Jupiter honeypot check — new Pump.fun tokens
-// don't have Jupiter routing yet, so the check always fails incorrectly
 async function runSafetyChecklist(mint, tokenData, isPumpFun) {
-  // Check 1 — Mint authority must be null
   if (tokenData.mintAuthority && tokenData.mintAuthority !== 'null' && tokenData.mintAuthority !== '') {
     tempBan(mint, 'Mint authority not renounced');
     return false;
   }
 
-  // Check 2 — Freeze authority must be null
-  // On Solana honeypots work by retaining freeze authority to trap buyers
-  // This is the most reliable honeypot indicator for Pump.fun tokens
   if (tokenData.freezeAuthority && tokenData.freezeAuthority !== 'null' && tokenData.freezeAuthority !== '') {
     permanentBan(mint, 'Freeze authority retained — honeypot');
     return false;
   }
 
-  // Check 3 — LP must be burned (checked via DexScreener or ST)
   if (tokenData.lpBurn !== undefined && tokenData.lpBurn !== null && tokenData.lpBurn < 80) {
     tempBan(mint, 'LP burn too low: ' + tokenData.lpBurn + '%');
     return false;
   }
 
-  // Check 4 — Dev holding must be under 5%
   if (tokenData.dev !== undefined && tokenData.dev !== null && tokenData.dev > 5) {
     tempBan(mint, 'Dev holding too high: ' + tokenData.dev + '%');
     return false;
   }
 
-  // Check 5 — Honeypot simulation via Jupiter quote
-  // SKIP for Pump.fun tokens — they don't have Jupiter routing yet
-  // Freeze authority check above already covers the main honeypot risk
   if (!isPumpFun) {
     var isHoneypot = await checkHoneypot(mint);
     if (isHoneypot) {
@@ -194,32 +168,24 @@ async function runSafetyChecklist(mint, tokenData, isPumpFun) {
 }
 
 // ── HONEYPOT CHECK ────────────────────────────────────────────
-// Simulates a sell via Jupiter quote API
-// If no sell quote available — token is a honeypot
 async function checkHoneypot(mint) {
   try {
-    // Try to get a sell quote from Jupiter
-    // If selling is disabled the quote will fail
     var res = await fetch(
       'https://quote-api.jup.ag/v6/quote?inputMint=' + mint +
       '&outputMint=So11111111111111111111111111111111111111112' +
       '&amount=1000000&slippageBps=5000',
       { timeout: 5000 }
     );
-    if (!res.ok) return true; // Can't get quote — treat as honeypot
+    if (!res.ok) return true;
     var data = await res.json();
-    // If no routes or output is zero — honeypot
     if (!data || !data.outAmount || parseInt(data.outAmount) === 0) return true;
     return false;
   } catch(e) {
-    // If check fails — err on side of caution, treat as honeypot
     return true;
   }
 }
 
 // ── DEXSCREENER PRICE ─────────────────────────────────────────
-// Gets current price for a token from DexScreener
-// Used for entry price confirmation and open trade tracking
 async function getDSPrice(mint, pairAddress) {
   try {
     var url = pairAddress
@@ -237,62 +203,116 @@ async function getDSPrice(mint, pairAddress) {
 }
 
 // ── DEXSCREENER TOKEN DISCOVERY ───────────────────────────────
-// Secondary discovery — rotating queries every 5 minutes
-// Finds tokens already trading that Pump.fun WebSocket may have missed
+// Runs two queries every 5 minutes:
+// 1. Age-filtered — pairs created within last 5 minutes (new sniper targets)
+// 2. Rotating keyword — backup, catches anything age filter misses
+// Both feed into the same pool with the same safety checklist
+
 var DS_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
 var dsQueryIdx = 0;
 
 async function fetchDSTokens() {
-  // Run 2 rotating queries per cycle
-  for (var i = 0; i < 2; i++) {
-    var query = DS_QUERIES[dsQueryIdx % DS_QUERIES.length];
-    dsQueryIdx++;
-    try {
-      var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
-      if (!res.ok) continue;
-      var data = await res.json();
-      var pairs = (data.pairs || []).filter(function(p) { return p.chainId === 'solana'; });
+  var now = Date.now();
+  var fiveMinAgo = now - (5 * 60 * 1000);
+
+  // ── QUERY 1: Age-filtered — tokens created in last 5 minutes ──
+  try {
+    var res1 = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana', { timeout: 10000 });
+    if (res1.ok) {
+      var data1 = await res1.json();
+      var pairs1 = (data1.pairs || []).filter(function(p) {
+        return p.chainId === 'solana' && p.pairCreatedAt && p.pairCreatedAt >= fiveMinAgo;
+      });
       var added = 0;
-      for (var j = 0; j < pairs.length; j++) {
-        var pair = pairs[j];
+      for (var j = 0; j < pairs1.length; j++) {
+        var pair = pairs1[j];
         var mint = pair.baseToken && pair.baseToken.address;
         if (!mint) continue;
         if (isBanned(mint)) continue;
         if (S.tokens.has(mint)) continue;
-        // Quick checklist from available pair data
         var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
         var mcap = parseFloat(pair.fdv || 0);
         var price = parseFloat(pair.priceUsd || 0);
         var vol1h = parseFloat((pair.volume && pair.volume.h1) || 0);
         var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
         var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
-        var age = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3600000 : 24;
+        var ageMin = (now - pair.pairCreatedAt) / 60000;
         if (liq < CFG.MIN_LIQ_USD) continue;
         if (mcap > CFG.MAX_MCAP_USD) continue;
         if (buys < 3) continue;
         if (buys / Math.max(sells, 1) < 1.0) continue;
-        // Run safety checklist
         var tokenData = {
-          mintAuthority: null,   // DS doesn't give us this — handled by freeze check
-          freezeAuthority: null, // DS doesn't give us this
-          lpBurn: undefined,     // DS doesn't give us this
-          dev: undefined,        // DS doesn't give us this
+          mintAuthority: null,
+          freezeAuthority: null,
+          lpBurn: undefined,
+          dev: undefined,
         };
-        var safe = await runSafetyChecklist(mint, tokenData, true); // skip Jupiter - unreliable
+        var safe = await runSafetyChecklist(mint, tokenData, true);
         if (!safe) continue;
         S.tokens.set(mint, {
           mint, price,
           n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
           src: 'DSC',
-          liq, mcap, vol1h, buys, sells, age,
+          liq, mcap, vol1h, buys, sells,
+          age: ageMin,
           pairAddress: pair.pairAddress || null,
           addedAt: Date.now(),
         });
         added++;
       }
-      if (added > 0) log('DS Search [' + query + ']: ' + added + ' tokens added | Pool: ' + S.tokens.size, 'info');
-    } catch(e) {}
-  }
+      log('DS Age-Filter: ' + pairs1.length + ' new pairs checked | ' + added + ' added | Pool: ' + S.tokens.size, 'info');
+    }
+  } catch(e) {}
+
+  // ── QUERY 2: Rotating keyword — backup discovery ───────────────
+  var query = DS_QUERIES[dsQueryIdx % DS_QUERIES.length];
+  dsQueryIdx++;
+  try {
+    var res2 = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
+    if (res2.ok) {
+      var data2 = await res2.json();
+      var pairs2 = (data2.pairs || []).filter(function(p) { return p.chainId === 'solana'; });
+      var addedKw = 0;
+      for (var k = 0; k < pairs2.length; k++) {
+        var pair2 = pairs2[k];
+        var mint2 = pair2.baseToken && pair2.baseToken.address;
+        if (!mint2) continue;
+        if (isBanned(mint2)) continue;
+        if (S.tokens.has(mint2)) continue;
+        var liq2 = parseFloat((pair2.liquidity && pair2.liquidity.usd) || 0);
+        var mcap2 = parseFloat(pair2.fdv || 0);
+        var price2 = parseFloat(pair2.priceUsd || 0);
+        var vol1h2 = parseFloat((pair2.volume && pair2.volume.h1) || 0);
+        var buys2 = parseInt((pair2.txns && pair2.txns.h1 && pair2.txns.h1.buys) || 0);
+        var sells2 = parseInt((pair2.txns && pair2.txns.h1 && pair2.txns.h1.sells) || 1);
+        var age2 = pair2.pairCreatedAt ? (now - pair2.pairCreatedAt) / 3600000 : 24;
+        if (liq2 < CFG.MIN_LIQ_USD) continue;
+        if (mcap2 > CFG.MAX_MCAP_USD) continue;
+        if (buys2 < 3) continue;
+        if (buys2 / Math.max(sells2, 1) < 1.0) continue;
+        var tokenData2 = {
+          mintAuthority: null,
+          freezeAuthority: null,
+          lpBurn: undefined,
+          dev: undefined,
+        };
+        var safe2 = await runSafetyChecklist(mint2, tokenData2, true);
+        if (!safe2) continue;
+        S.tokens.set(mint2, {
+          mint: mint2, price: price2,
+          n: (pair2.baseToken && pair2.baseToken.symbol || '???').toUpperCase().slice(0, 12),
+          src: 'DSC',
+          liq: liq2, mcap: mcap2, vol1h: vol1h2, buys: buys2, sells: sells2,
+          age: age2,
+          pairAddress: pair2.pairAddress || null,
+          addedAt: Date.now(),
+        });
+        addedKw++;
+      }
+      if (addedKw > 0) log('DS Keyword [' + query + ']: ' + addedKw + ' added | Pool: ' + S.tokens.size, 'info');
+    }
+  } catch(e) {}
+
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
@@ -307,7 +327,7 @@ function calcPumpPrice(d) {
 }
 
 // ── PUMP.FUN WEBSOCKET ────────────────────────────────────────
-var pumpPrices = {}; // mint -> { price, solInCurve, ts }
+var pumpPrices = {};
 var pumpWs = null;
 
 function connectPump() {
@@ -317,9 +337,7 @@ function connectPump() {
     pumpWs.on('open', function() {
       S.pumpLive = true;
       S.sources['PUMP.FUN'] = 'live:0';
-      // Subscribe to new token launches — free, no key needed
       pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
-      // Subscribe to all token trades — needed for graduation tracking and price updates
       pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade' }));
       log('Pump.fun WebSocket LIVE — Sniper + Graduation active', 'pump');
     });
@@ -329,9 +347,6 @@ function connectPump() {
         var d = JSON.parse(raw.toString());
 
         // ── NEW TOKEN LAUNCH ──────────────────────────────────
-        // Pump.fun sends new token creation events with mint + symbol/name
-        // These do NOT have txType 'buy' or 'sell'
-        // Check: has mint, has name/symbol, is NOT a buy/sell trade
         var isNewToken = d.mint && (d.symbol || d.name) &&
                          d.txType !== 'buy' && d.txType !== 'sell';
         if (isNewToken) {
@@ -341,18 +356,13 @@ function connectPump() {
           S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
           if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
 
-          // Skip if banned
           if (isBanned(mint)) return;
-          // Skip if already in pool — deduplication by mint address
           if (S.tokens.has(mint)) return;
-          // Pool cap — max 10,000 tokens
-          // Remove worst performing token (lowest BSR) when cap is reached
-          // Never remove tokens currently in an open trade
+
           if (S.tokens.size >= CFG.MAX_POOL) {
             var worstKey = null;
             var worstBSR = Infinity;
             S.tokens.forEach(function(tok, key) {
-              // Never remove tokens in an open trade
               if (S.open.find(function(t) { return t.mint === key; })) return;
               var bsr = tok.buys / Math.max(tok.sells || 1, 1);
               if (bsr < worstBSR) {
@@ -363,25 +373,19 @@ function connectPump() {
             if (worstKey) S.tokens.delete(worstKey);
           }
 
-          // New token data from creation event
-          // Pump.fun tokens: mintAuthority is renounced at creation
-          // freezeAuthority check is the critical honeypot indicator
           var tokenData = {
-            mintAuthority: null,       // Pump.fun tokens always renounce mint at creation
+            mintAuthority: null,
             freezeAuthority: d.freezeAuthority || null,
-            lpBurn: undefined,         // Not yet burned — very new token
-            dev: undefined,            // No dev holding data yet
+            lpBurn: undefined,
+            dev: undefined,
           };
 
-          // Run safety checklist — skip Jupiter check for Pump.fun tokens
           var safe = await runSafetyChecklist(mint, tokenData, true);
           if (!safe) return;
 
-          // Get initial price from bonding curve
           var price = calcPumpPrice(d);
           if (price) pumpPrices[mint] = { price, solInCurve: 0, ts: Date.now() };
 
-          // Add to pool
           S.tokens.set(mint, {
             mint, price,
             n: name,
@@ -404,12 +408,10 @@ function connectPump() {
           var price2 = calcPumpPrice(d);
           var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
 
-          // Update price cache
           if (price2) {
             pumpPrices[mint2] = { price: price2, solInCurve, ts: Date.now() };
           }
 
-          // Update token in pool if present
           var poolTok = S.tokens.get(mint2);
           if (poolTok && price2) {
             poolTok.price = price2;
@@ -417,7 +419,6 @@ function connectPump() {
             else poolTok.sells = (poolTok.sells || 0) + 1;
           }
 
-          // Update open Pump.fun trades with latest price
           S.open.forEach(function(trade) {
             if (trade.mint === mint2 && trade.src === 'PUMP') {
               trade.currentPrice = price2 || trade.currentPrice;
@@ -445,7 +446,6 @@ function connectPump() {
             if (d.txType === 'buy') existing.buys = (existing.buys || 0) + 1;
             else existing.sells = (existing.sells || 0) + 1;
             existing.bsr = existing.buys / Math.max(existing.sells, 1);
-            // Near graduation window
             if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
               existing.nearGrad = true;
               var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
@@ -476,8 +476,7 @@ function connectPump() {
 }
 
 // ── PRICE TRACKING FOR OPEN TRADES ───────────────────────────
-// Polls DexScreener every 30 seconds for non-Pump.fun trades
-// Pump.fun trades get real time updates via WebSocket above
+// Polls DexScreener every 2 seconds for non-Pump.fun trades
 async function updateOpenTradePrices() {
   var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.mint; });
   if (trades.length === 0) return;
@@ -487,7 +486,6 @@ async function updateOpenTradePrices() {
     var price = await getDSPrice(trade.mint, trade.pairAddress);
     if (!price || price <= 0) continue;
 
-    // Sanity check — reject impossible price moves
     if (trade.currentPrice && trade.currentPrice > 0) {
       var change = Math.abs(price - trade.currentPrice) / trade.currentPrice;
       if (change > 0.90) {
@@ -514,7 +512,6 @@ async function updateOpenTradePrices() {
     trade.realPnl = trade.size * pct;
     if (price > (trade.peakPrice || 0)) trade.peakPrice = price;
 
-    // Trail stop check
     if (trade.tpl === 'TRAIL' && trade.peakPrice && trade.entryPrice) {
       var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
@@ -527,7 +524,6 @@ async function updateOpenTradePrices() {
       }
     }
 
-    // Stop loss check
     if (pct <= -CFG.STOP_LOSS) {
       log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
       closeTradeReal(trade.id, 'Stop loss hit');
@@ -542,7 +538,6 @@ function closeTradeReal(id, reason) {
   var tr = S.open[i];
   var closeReason = reason || 'Manual sell';
 
-  // Calculate P&L
   var pnl = 0;
   if (tr.entryPrice && tr.currentPrice && tr.entryPrice > 0) {
     var pricePct = (tr.currentPrice - tr.entryPrice) / tr.entryPrice;
@@ -552,7 +547,6 @@ function closeTradeReal(id, reason) {
     closeReason = reason + ' (no price data)';
   }
 
-  // 80/20 profit split
   if (pnl > CFG.MIN_SPLIT_WIN) {
     var savings = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
     var trading = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
@@ -562,7 +556,6 @@ function closeTradeReal(id, reason) {
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
   } else if (pnl > 0) {
-    // Win below minimum split — full amount to trading fund
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
     log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' (below split min) | ' + closeReason, 'win');
     S.stats.w++;
@@ -574,7 +567,6 @@ function closeTradeReal(id, reason) {
     if (tr.isGrad) S.stats.gl++;
   }
 
-  // Store closed trade with full story
   S.stats.t++;
   S.closed.unshift({
     tok: tr.tok,
@@ -593,14 +585,12 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
-  // Cooldown on any loss — blocks re-entry for 30 minutes
   if (pnl < 0) {
     var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
     S.cooldowns.set(cooldownKey, Date.now());
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 30min after loss', 'warn');
   }
 
-  // Daily loss limit
   if (S.fund < S.dayStartFund * (1 - CFG.LOSS_LIM)) {
     log('Daily loss limit hit — bot stopped', 'rug');
     stopBot();
@@ -613,7 +603,6 @@ function checkExitCriteria() {
   S.open.slice().forEach(function(t) {
     var age = now - t.startTime;
 
-    // No price after 3 minutes — close
     if (!t.entryPrice && age > CFG.NO_PRICE_TIMEOUT) {
       log('TIMEOUT ' + t.tok.n + ' — no price after 3min', 'warn');
       closeTradeReal(t.id, 'Timeout — no price data');
@@ -622,7 +611,6 @@ function checkExitCriteria() {
 
     if (!t.entryPrice || !t.currentPrice) return;
 
-    // Stale — no movement for 2 minutes
     var lastMove = t.lastPriceChange || t.startTime;
     if ((now - lastMove) > CFG.STALE_TIME && age > 30000) {
       log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
@@ -630,7 +618,6 @@ function checkExitCriteria() {
       return;
     }
 
-    // Graduation trade — check trail stop via Pump.fun WebSocket price
     if (t.isGrad && t.tok && t.tpl === 'TRAIL' && t.entryPrice > 0 && t.currentPrice > 0) {
       var peakGain = (t.peakPrice - t.entryPrice) / t.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
@@ -641,7 +628,6 @@ function checkExitCriteria() {
           return;
         }
       }
-      // Stop loss for grad trades
       var pct = (t.currentPrice - t.entryPrice) / t.entryPrice;
       if (pct <= -CFG.STOP_LOSS) {
         log('SL HIT ' + t.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
@@ -664,8 +650,6 @@ async function runGradSniper() {
     if (isBanned(mint)) continue;
     if (S.open.find(function(t) { return t.mint === mint; })) continue;
     if (!cand.price || cand.price <= 0) continue;
-    // Minimum transactions — no age restriction per Mike's direction
-    // Bonding curve progress is the indicator, not time
     var totalTxns = (cand.buys || 0) + (cand.sells || 0);
     if (totalTxns < CFG.GRAD_MIN_TXNS) continue;
     if (cand.bsr < CFG.GRAD_MIN_BSR) continue;
@@ -704,7 +688,6 @@ async function runGradSniper() {
 }
 
 // ── MAIN SNIPER SCAN ──────────────────────────────────────────
-// Evaluates tokens in pool and enters trades
 var scanI = null;
 var scanIdx = 0;
 
@@ -722,36 +705,28 @@ async function runScan() {
 
   if (!tok || !tok.mint) return;
 
-  // Skip banned tokens
   if (isBanned(tok.mint)) {
     S.tokens.delete(tok.mint);
     return;
   }
 
-  // BSR check — skip tokens with more sellers than buyers
-  // Token stays in pool — BSR may recover, bot will catch it immediately
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
   if (bsr < 0.8) {
     S.rejectCount++;
     return;
   }
 
-  // Check cooldown after loss
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
   if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) return;
 
-  // Already in an open trade on this token
   if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
 
-  // Must have buying pressure
   if (tok.buys < 3) return;
 
-  // Position sizing
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
   if (size < 0.50) { S.rejectCount++; return; }
 
-  // Fetch fresh entry price before entering
   var entryPrice = null;
   if (tok.src === 'PUMP' && pumpPrices[tok.mint]) {
     entryPrice = pumpPrices[tok.mint].price;
@@ -759,7 +734,6 @@ async function runScan() {
     entryPrice = await getDSPrice(tok.mint, tok.pairAddress);
   }
 
-  // If no price available — skip for now
   if (!entryPrice || entryPrice <= 0) {
     S.rejectCount++;
     return;
@@ -798,17 +772,14 @@ function cleanPool() {
   var now = Date.now();
   var removed = 0;
   S.tokens.forEach(function(tok, mint) {
-    // Remove tokens older than 4 hours with no trades
     if (tok.addedAt && (now - tok.addedAt) > CFG.POOL_AGE_MS && !S.open.find(function(t) { return t.mint === mint; })) {
       S.tokens.delete(mint);
       removed++;
     }
   });
-  // Clean expired cooldowns
   S.cooldowns.forEach(function(ts, key) {
     if (now - ts > CFG.COOLDOWN_MS) S.cooldowns.delete(key);
   });
-  // Recheck expired temp bans
   recheckExpiredBans();
   if (removed > 0) log('Pool cleaned: ' + removed + ' old tokens removed | Pool: ' + S.tokens.size, 'info');
 }
@@ -822,32 +793,16 @@ function startBot() {
   S.startTime = Date.now();
   S.dayStartFund = S.fund;
 
-  // Connect Pump.fun WebSocket — primary token discovery
   connectPump();
-
-  // Initial DexScreener fetch
   fetchDSTokens();
   updateSolPrice();
 
-  // Main scan loop — evaluates pool every 500ms
   scanI = setInterval(runScan, 500);
-
-  // Graduation sniper — checks every second
   gradI = setInterval(runGradSniper, 1000);
-
-  // Exit criteria checker — every 10 seconds
   exitI = setInterval(checkExitCriteria, 10000);
-
-  // Price tracking for non-Pump trades — every 30 seconds
   priceI = setInterval(updateOpenTradePrices, 2000);
-
-  // DexScreener discovery — every 5 minutes
   dsI = setInterval(fetchDSTokens, CFG.DS_INTERVAL);
-
-  // Pool cleanup — every hour
   cleanI = setInterval(cleanPool, 3600000);
-
-  // SOL price update — every 10 minutes
   solPriceI = setInterval(updateSolPrice, 600000);
 
   log('🚀 MemeBot V15 STARTED | Sniper Bot | Pump.fun WebSocket LIVE | Graduation Sniper ACTIVE', 'info');
@@ -911,7 +866,6 @@ app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }
 app.get('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
 
-// Settings panel — update wallets without code changes
 app.post('/api/settings', function(req, res) {
   if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
   if (req.body.savingsWallet) SAVINGS_WALLET = req.body.savingsWallet;
@@ -931,5 +885,4 @@ app.listen(PORT, function() {
   connectPump();
   fetchDSTokens();
   updateSolPrice();
-  // Bot does NOT auto-start — Mike controls manually via dashboard
 });
