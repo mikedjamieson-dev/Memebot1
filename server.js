@@ -77,6 +77,8 @@ const S = {
   permanentBans: new Map(),
   tempBans: new Map(),
   cooldowns: new Map(),
+  dscAge: 0,
+  dscKey: 0,
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -259,6 +261,7 @@ async function fetchDSTokens() {
           addedAt: Date.now(),
         });
         added++;
+        S.dscAge++;
       }
       log('DS Age-Filter: ' + pairs1.length + ' new pairs checked | ' + added + ' added | Pool: ' + S.tokens.size, 'info');
     }
@@ -308,6 +311,7 @@ async function fetchDSTokens() {
           addedAt: Date.now(),
         });
         addedKw++;
+        S.dscKey++;
       }
       if (addedKw > 0) log('DS Keyword [' + query + ']: ' + addedKw + ' added | Pool: ' + S.tokens.size, 'info');
     }
@@ -792,6 +796,8 @@ function startBot() {
   S.running = true;
   S.startTime = Date.now();
   S.dayStartFund = S.fund;
+  S.dscAge = 0;
+  S.dscKey = 0;
 
   connectPump();
   fetchDSTokens();
@@ -850,6 +856,8 @@ app.get('/api/state', function(req, res) {
     gradCandidates: S.gradCandidates.size,
     permanentBans: S.permanentBans.size,
     tempBans: S.tempBans.size,
+    dscAge: S.dscAge,
+    dscKey: S.dscKey,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
