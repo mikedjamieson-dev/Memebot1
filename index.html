@@ -156,11 +156,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <!-- Pump.fun bar -->
   <div class="wsbar" id="wsbar">⚡ PUMP.FUN WEBSOCKET: CONNECTING...</div>
 
-  <!-- Pool stats -->
+  <!-- Pool stats row 1 -->
   <div class="g3" style="margin-bottom:8px;">
     <div class="stat"><div class="stat-lbl">POOL</div><div class="stat-val" id="pool" style="color:var(--blue)">0</div></div>
     <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim)">0</div></div>
     <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow)">0</div></div>
+  </div>
+
+  <!-- DSC discovery stats row -->
+  <div class="g2" style="margin-bottom:8px;">
+    <div class="stat"><div class="stat-lbl">DSC AGE FILTER</div><div class="stat-val" id="dsc-age" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">DSC KEYWORD</div><div class="stat-val" id="dsc-key" style="color:var(--blue)">0</div></div>
   </div>
 
   <!-- Ban stats -->
@@ -408,6 +414,12 @@ async function fetchState() {
     document.getElementById('pool').textContent = data.poolSize;
     document.getElementById('scanned').textContent = data.scanCount;
     document.getElementById('pump-cnt').textContent = data.pumpCount;
+
+    // DSC discovery counters
+    document.getElementById('dsc-age').textContent = data.dscAge || 0;
+    document.getElementById('dsc-key').textContent = data.dscKey || 0;
+
+    // Ban stats
     document.getElementById('perm-bans').textContent = data.permanentBans || 0;
     document.getElementById('temp-bans').textContent = data.tempBans || 0;
 
