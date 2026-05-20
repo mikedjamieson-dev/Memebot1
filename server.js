@@ -52,6 +52,7 @@ const CFG = {
   BAN_TEMP_MS: 43200000,
 
   DS_INTERVAL: 300000,
+  WIN_COOLDOWN_MS: 300000,
 };
 
 // ── STATE ─────────────────────────────────────────────────────
@@ -77,8 +78,9 @@ const S = {
   permanentBans: new Map(),
   tempBans: new Map(),
   cooldowns: new Map(),
-  dscAge: 0,
+  dscPool: 0,
   dscKey: 0,
+  bestTrade: 0,
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -204,30 +206,25 @@ async function getDSPrice(mint, pairAddress) {
   } catch(e) { return null; }
 }
 
-// ── DEXSCREENER TOKEN DISCOVERY ───────────────────────────────
-// Runs two queries every 5 minutes:
-// 1. Age-filtered — pairs created within last 5 minutes (new sniper targets)
-// 2. Rotating keyword — backup, catches anything age filter misses
-// Both feed into the same pool with the same safety checklist
+// ── DEXSCREENER TOKEN DISCOVERY ─────────────────────────────
+// Rotating keyword search every 5 minutes
+// Feeds into the pool with the same safety checklist
 
 var DS_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
 var dsQueryIdx = 0;
 
 async function fetchDSTokens() {
   var now = Date.now();
-  var fiveMinAgo = now - (5 * 60 * 1000);
-
-  // ── QUERY 1: Age-filtered — tokens created in last 5 minutes ──
+  var query = DS_QUERIES[dsQueryIdx % DS_QUERIES.length];
+  dsQueryIdx++;
   try {
-    var res1 = await fetch('https://api.dexscreener.com/latest/dex/search?q=solana', { timeout: 10000 });
-    if (res1.ok) {
-      var data1 = await res1.json();
-      var pairs1 = (data1.pairs || []).filter(function(p) {
-        return p.chainId === 'solana' && p.pairCreatedAt && p.pairCreatedAt >= fiveMinAgo;
-      });
+    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
+    if (res.ok) {
+      var data = await res.json();
+      var pairs = (data.pairs || []).filter(function(p) { return p.chainId === 'solana'; });
       var added = 0;
-      for (var j = 0; j < pairs1.length; j++) {
-        var pair = pairs1[j];
+      for (var k = 0; k < pairs.length; k++) {
+        var pair = pairs[k];
         var mint = pair.baseToken && pair.baseToken.address;
         if (!mint) continue;
         if (isBanned(mint)) continue;
@@ -238,7 +235,7 @@ async function fetchDSTokens() {
         var vol1h = parseFloat((pair.volume && pair.volume.h1) || 0);
         var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
         var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
-        var ageMin = (now - pair.pairCreatedAt) / 60000;
+        var age = pair.pairCreatedAt ? (now - pair.pairCreatedAt) / 3600000 : 24;
         if (liq < CFG.MIN_LIQ_USD) continue;
         if (mcap > CFG.MAX_MCAP_USD) continue;
         if (buys < 3) continue;
@@ -256,67 +253,18 @@ async function fetchDSTokens() {
           n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
           src: 'DSC',
           liq, mcap, vol1h, buys, sells,
-          age: ageMin,
+          age,
           pairAddress: pair.pairAddress || null,
           addedAt: Date.now(),
         });
         added++;
-        S.dscAge++;
-      }
-      log('DS Age-Filter: ' + pairs1.length + ' new pairs checked | ' + added + ' added | Pool: ' + S.tokens.size, 'info');
-    }
-  } catch(e) {}
-
-  // ── QUERY 2: Rotating keyword — backup discovery ───────────────
-  var query = DS_QUERIES[dsQueryIdx % DS_QUERIES.length];
-  dsQueryIdx++;
-  try {
-    var res2 = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
-    if (res2.ok) {
-      var data2 = await res2.json();
-      var pairs2 = (data2.pairs || []).filter(function(p) { return p.chainId === 'solana'; });
-      var addedKw = 0;
-      for (var k = 0; k < pairs2.length; k++) {
-        var pair2 = pairs2[k];
-        var mint2 = pair2.baseToken && pair2.baseToken.address;
-        if (!mint2) continue;
-        if (isBanned(mint2)) continue;
-        if (S.tokens.has(mint2)) continue;
-        var liq2 = parseFloat((pair2.liquidity && pair2.liquidity.usd) || 0);
-        var mcap2 = parseFloat(pair2.fdv || 0);
-        var price2 = parseFloat(pair2.priceUsd || 0);
-        var vol1h2 = parseFloat((pair2.volume && pair2.volume.h1) || 0);
-        var buys2 = parseInt((pair2.txns && pair2.txns.h1 && pair2.txns.h1.buys) || 0);
-        var sells2 = parseInt((pair2.txns && pair2.txns.h1 && pair2.txns.h1.sells) || 1);
-        var age2 = pair2.pairCreatedAt ? (now - pair2.pairCreatedAt) / 3600000 : 24;
-        if (liq2 < CFG.MIN_LIQ_USD) continue;
-        if (mcap2 > CFG.MAX_MCAP_USD) continue;
-        if (buys2 < 3) continue;
-        if (buys2 / Math.max(sells2, 1) < 1.0) continue;
-        var tokenData2 = {
-          mintAuthority: null,
-          freezeAuthority: null,
-          lpBurn: undefined,
-          dev: undefined,
-        };
-        var safe2 = await runSafetyChecklist(mint2, tokenData2, true);
-        if (!safe2) continue;
-        S.tokens.set(mint2, {
-          mint: mint2, price: price2,
-          n: (pair2.baseToken && pair2.baseToken.symbol || '???').toUpperCase().slice(0, 12),
-          src: 'DSC',
-          liq: liq2, mcap: mcap2, vol1h: vol1h2, buys: buys2, sells: sells2,
-          age: age2,
-          pairAddress: pair2.pairAddress || null,
-          addedAt: Date.now(),
-        });
-        addedKw++;
         S.dscKey++;
       }
-      if (addedKw > 0) log('DS Keyword [' + query + ']: ' + addedKw + ' added | Pool: ' + S.tokens.size, 'info');
+      if (added > 0) log('DS Keyword [' + query + ']: ' + added + ' added | Pool: ' + S.tokens.size, 'info');
     }
   } catch(e) {}
 
+  S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
@@ -589,10 +537,24 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
+  // Track best trade of session — never resets
+  if (pnl > S.bestTrade) {
+    S.bestTrade = parseFloat(pnl.toFixed(4));
+  }
+
+  var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
+
+  // Loss cooldown — 30 minutes full block
   if (pnl < 0) {
-    var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
     S.cooldowns.set(cooldownKey, Date.now());
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 30min after loss', 'warn');
+  }
+
+  // Win cooldown — 5 minutes only
+  // Store timestamp offset so the 30min check expires after 5min
+  if (pnl > 0) {
+    S.cooldowns.set(cooldownKey, Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS));
+    log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 5min after win', 'info');
   }
 
   if (S.fund < S.dayStartFund * (1 - CFG.LOSS_LIM)) {
@@ -796,8 +758,9 @@ function startBot() {
   S.running = true;
   S.startTime = Date.now();
   S.dayStartFund = S.fund;
-  S.dscAge = 0;
+  S.dscPool = 0;
   S.dscKey = 0;
+  S.bestTrade = 0;
 
   connectPump();
   fetchDSTokens();
@@ -856,8 +819,9 @@ app.get('/api/state', function(req, res) {
     gradCandidates: S.gradCandidates.size,
     permanentBans: S.permanentBans.size,
     tempBans: S.tempBans.size,
-    dscAge: S.dscAge,
+    dscPool: S.dscPool,
     dscKey: S.dscKey,
+    bestTrade: S.bestTrade,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
