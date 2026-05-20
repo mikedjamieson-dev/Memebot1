@@ -165,7 +165,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <!-- DSC discovery stats row -->
   <div class="g2" style="margin-bottom:8px;">
-    <div class="stat"><div class="stat-lbl">DSC AGE FILTER</div><div class="stat-val" id="dsc-age" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">DSC POOL</div><div class="stat-val" id="dsc-pool" style="color:var(--green)">0</div></div>
     <div class="stat"><div class="stat-lbl">DSC KEYWORD</div><div class="stat-val" id="dsc-key" style="color:var(--blue)">0</div></div>
   </div>
 
@@ -416,7 +416,7 @@ async function fetchState() {
     document.getElementById('pump-cnt').textContent = data.pumpCount;
 
     // DSC discovery counters
-    document.getElementById('dsc-age').textContent = data.dscAge || 0;
+    document.getElementById('dsc-pool').textContent = data.dscPool || 0;
     document.getElementById('dsc-key').textContent = data.dscKey || 0;
 
     // Ban stats
@@ -577,7 +577,7 @@ async function fetchState() {
     var closed = data.closedTrades || [];
     var slips = closed.map(function(t) { return t.slip || 0; }).filter(function(v) { return v > 0; });
     var avgSlip = slips.length ? ((slips.reduce(function(a,b){return a+b;},0)/slips.length)*100).toFixed(2) : '0.00';
-    var best = closed.length ? Math.max.apply(null, closed.map(function(t){return t.pnl||0;})) : 0;
+    var best = data.bestTrade || 0;
     document.getElementById('ss-pool').textContent = data.poolSize;
     document.getElementById('ss-slip').textContent = avgSlip + '%';
     document.getElementById('ss-skip').textContent = data.rejectCount || 0;
