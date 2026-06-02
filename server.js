@@ -80,7 +80,11 @@ const S = {
   cooldowns: new Map(),
   dscPool: 0,
   dscKey: 0,
-  bestTrade: 0,
+  bestTrade: null,
+  sessionFund: 100,
+  takeProfitMode: "TRAIL",
+  takeProfitPct: 5,
+  stopLossPct: 10,
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -464,6 +468,14 @@ async function updateOpenTradePrices() {
     trade.realPnl = trade.size * pct;
     if (price > (trade.peakPrice || 0)) trade.peakPrice = price;
 
+    // Fixed take profit check
+    if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
+      log('TP HIT ' + trade.tok.n + ' | +' + (pct*100).toFixed(1) + '% | Target ' + trade.tpPct + '%', 'win');
+      closeTradeReal(trade.id, 'Take profit hit');
+      continue;
+    }
+
+    // Trail stop check
     if (trade.tpl === 'TRAIL' && trade.peakPrice && trade.entryPrice) {
       var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
@@ -476,7 +488,8 @@ async function updateOpenTradePrices() {
       }
     }
 
-    if (pct <= -CFG.STOP_LOSS) {
+    // Stop loss — uses trade's own sl set at entry
+    if (pct <= -(trade.sl || 0.10)) {
       log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
       closeTradeReal(trade.id, 'Stop loss hit');
     }
@@ -538,8 +551,15 @@ function closeTradeReal(id, reason) {
   S.open.splice(i, 1);
 
   // Track best trade of session — never resets
-  if (pnl > S.bestTrade) {
-    S.bestTrade = parseFloat(pnl.toFixed(4));
+  if (!S.bestTrade || pnl > S.bestTrade.pnl) {
+    S.bestTrade = {
+      name: tr.tok && tr.tok.n ? tr.tok.n : "?",
+      entryPrice: tr.entryPrice || 0,
+      exitPrice: tr.currentPrice || 0,
+      size: tr.size || 0,
+      pnl: parseFloat(pnl.toFixed(4)),
+      pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+    };
   }
 
   var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
@@ -595,7 +615,7 @@ function checkExitCriteria() {
         }
       }
       var pct = (t.currentPrice - t.entryPrice) / t.entryPrice;
-      if (pct <= -CFG.STOP_LOSS) {
+      if (pct <= -(t.sl || 0.10)) {
         log('SL HIT ' + t.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
         closeTradeReal(t.id, 'Stop loss hit');
       }
@@ -713,8 +733,9 @@ async function runScan() {
     tok: Object.assign({}, tok),
     sc: 85,
     size: parseFloat(size.toFixed(4)),
-    tpl: 'TRAIL',
-    sl: CFG.STOP_LOSS,
+    tpl: S.takeProfitMode,
+    tpPct: S.takeProfitPct,
+    sl: S.stopLossPct / 100,
     slip, mint: tok.mint,
     src: tok.src,
     pairAddress: tok.pairAddress || null,
@@ -757,10 +778,11 @@ function startBot() {
   if (S.running) return;
   S.running = true;
   S.startTime = Date.now();
-  S.dayStartFund = S.fund;
   S.dscPool = 0;
   S.dscKey = 0;
-  S.bestTrade = 0;
+  S.bestTrade = null;
+  S.dayStartFund = S.sessionFund;
+  S.fund = S.sessionFund;
 
   connectPump();
   fetchDSTokens();
@@ -822,6 +844,10 @@ app.get('/api/state', function(req, res) {
     dscPool: S.dscPool,
     dscKey: S.dscKey,
     bestTrade: S.bestTrade,
+    sessionFund: S.sessionFund,
+    takeProfitMode: S.takeProfitMode,
+    takeProfitPct: S.takeProfitPct,
+    stopLossPct: S.stopLossPct,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -841,6 +867,31 @@ app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Ma
 app.post('/api/settings', function(req, res) {
   if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
   if (req.body.savingsWallet) SAVINGS_WALLET = req.body.savingsWallet;
+  if (req.body.sessionFund !== undefined) {
+    var sf = parseFloat(req.body.sessionFund);
+    if (!isNaN(sf) && sf > 0) {
+      S.sessionFund = parseFloat(sf.toFixed(2));
+      log('Session fund updated to ' + S.sessionFund, 'info');
+    }
+  }
+  if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED')) {
+    S.takeProfitMode = req.body.takeProfitMode;
+    log('Take profit mode: ' + S.takeProfitMode, 'info');
+  }
+  if (req.body.takeProfitPct !== undefined) {
+    var tp = parseFloat(req.body.takeProfitPct);
+    if (!isNaN(tp) && tp > 0 && tp <= 1000) {
+      S.takeProfitPct = parseFloat(tp.toFixed(1));
+      log('Take profit target: ' + S.takeProfitPct + '%', 'info');
+    }
+  }
+  if (req.body.stopLossPct !== undefined) {
+    var sl = parseFloat(req.body.stopLossPct);
+    if (!isNaN(sl) && sl > 0 && sl <= 100) {
+      S.stopLossPct = parseFloat(sl.toFixed(1));
+      log('Stop loss: ' + S.stopLossPct + '%', 'info');
+    }
+  }
   log('Settings updated | Trading: ' + (TRADING_WALLET || 'not set') + ' | Savings: ' + (SAVINGS_WALLET || 'not set'), 'info');
   res.json({ success: true });
 });
