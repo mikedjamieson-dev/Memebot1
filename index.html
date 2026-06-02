@@ -12,129 +12,159 @@
   --blue:#33b5ff;--purple:#bb88ff;--text:#e8f4ff;--dim:#7a9ab0;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monospace;min-height:100vh;padding-bottom:40px;}
+body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monospace;min-height:100vh;padding-bottom:40px;font-size:16px;}
 .wrap{max-width:520px;margin:0 auto;padding:16px;}
 
 /* Header */
 .hdr{text-align:center;padding:14px 0 10px;}
 .hdr::after{content:'';display:block;height:1px;background:linear-gradient(90deg,transparent,var(--green),transparent);margin-top:10px;opacity:0.4;}
-.htag{font-size:9px;letter-spacing:4px;color:var(--green);margin-bottom:4px;}
-.htitle{font-family:'Orbitron',monospace;font-size:24px;font-weight:900;color:#fff;letter-spacing:3px;text-shadow:0 0 20px rgba(0,255,136,0.4);}
-.hsub{font-size:9px;color:var(--dim);margin-top:3px;letter-spacing:2px;}
-.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 1.5s infinite;vertical-align:middle;}
+.htag{font-size:11px;letter-spacing:4px;color:var(--green);margin-bottom:4px;}
+.htitle{font-family:'Orbitron',monospace;font-size:26px;font-weight:900;color:#fff;letter-spacing:3px;text-shadow:0 0 20px rgba(0,255,136,0.4);}
+.hsub{font-size:11px;color:var(--dim);margin-top:3px;letter-spacing:2px;}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 1.5s infinite;vertical-align:middle;}
 @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 6px var(--green);}50%{opacity:0.4;}}
 
 /* Status bar */
 .topbar{display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px;}
-.sbar{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:9px;color:var(--dim);}
-.tbox{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:7px 10px;text-align:center;min-width:78px;}
-.tval{font-family:'Orbitron',monospace;font-size:11px;color:var(--green);margin-top:1px;}
-.tlbl{font-size:7px;color:var(--dim);letter-spacing:1px;}
+.sbar{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--dim);}
+.tbox{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;text-align:center;min-width:90px;}
+.tval{font-family:'Orbitron',monospace;font-size:13px;color:var(--green);margin-top:2px;}
+.tlbl{font-size:11px;color:var(--dim);letter-spacing:1px;}
 
 /* Pump.fun bar */
-.wsbar{background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:6px 12px;font-size:9px;color:#ffd700;margin-bottom:8px;}
+.wsbar{background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:8px 12px;font-size:12px;color:#ffd700;margin-bottom:8px;}
 
 /* Stats grid */
 .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;}
 .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;}
-.stat{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:5px 8px;text-align:center;}
-.stat-lbl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
-.stat-val{font-family:'Orbitron',monospace;font-size:12px;font-weight:700;margin-top:1px;}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;}
+.stat-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
+.stat-val{font-family:'Orbitron',monospace;font-size:16px;font-weight:700;margin-top:2px;}
 
 /* Source badges */
 .srcrow{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
-.bdg{padding:2px 6px;border-radius:4px;font-size:7px;letter-spacing:1px;}
+.bdg{padding:4px 8px;border-radius:4px;font-size:11px;letter-spacing:1px;}
 .live{background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.3);color:var(--green);}
 .dead{background:rgba(255,61,90,0.1);border:1px solid rgba(255,61,90,0.3);color:var(--red);}
 .pump-bdg{background:rgba(255,215,0,0.15);border:1px solid rgba(255,215,0,0.5);color:#ffd700;animation:wsp 2s infinite;}
 @keyframes wsp{0%,100%{opacity:1;}50%{opacity:0.6;}}
 
 /* Fund cards */
-.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;position:relative;overflow:hidden;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;position:relative;overflow:hidden;}
 .card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--bb),transparent);}
-.card-lbl{font-size:8px;letter-spacing:2px;color:var(--dim);margin-bottom:5px;text-transform:uppercase;}
-.card-val{font-family:'Orbitron',monospace;font-size:19px;font-weight:700;}
-.card-sub{font-size:9px;color:var(--dim);margin-top:3px;}
+.card-lbl{font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:6px;text-transform:uppercase;}
+.card-val{font-family:'Orbitron',monospace;font-size:22px;font-weight:700;}
+.card-sub{font-size:12px;color:var(--dim);margin-top:4px;}
 
 /* Trail stop info */
-.trail-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
-.trail-lbl{font-size:8px;letter-spacing:2px;color:var(--dim);margin-bottom:6px;}
-.trail-badge{display:inline-block;padding:5px 9px;border-radius:5px;background:rgba(187,136,255,0.15);border:1px solid var(--purple);color:var(--purple);font-size:9px;margin-bottom:6px;}
-.trail-desc{font-size:8px;color:var(--dim);padding-top:5px;border-top:1px solid var(--border);}
+.trail-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;}
+.trail-lbl{font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;}
+.trail-badge{display:inline-block;padding:6px 12px;border-radius:5px;background:rgba(187,136,255,0.15);border:1px solid var(--purple);color:var(--purple);font-size:12px;margin-bottom:8px;}
+.trail-desc{font-size:12px;color:var(--dim);padding-top:6px;border-top:1px solid var(--border);line-height:1.6;}
 
 /* Start/Stop button */
-.main-btn{width:100%;padding:14px;border-radius:10px;border:1px solid;cursor:pointer;font-size:12px;font-family:'Orbitron',monospace;font-weight:700;letter-spacing:4px;margin-bottom:10px;}
+.main-btn{width:100%;padding:16px;border-radius:10px;border:1px solid;cursor:pointer;font-size:14px;font-family:'Orbitron',monospace;font-weight:700;letter-spacing:4px;margin-bottom:10px;}
 .btn-start{background:linear-gradient(135deg,#062a12,#0a3d1a);color:var(--green);border-color:var(--gd);}
 .btn-stop{background:linear-gradient(135deg,#3d0000,#5c0a0a);color:var(--red);border-color:var(--red);}
 
 /* Settings */
-.settings-toggle{width:100%;padding:7px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:9px;font-family:'Share Tech Mono',monospace;margin-bottom:8px;text-align:left;}
-.settings-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;display:none;}
+.settings-toggle{width:100%;padding:10px 14px;border-radius:8px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;margin-bottom:8px;text-align:left;letter-spacing:1px;}
+.settings-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:none;}
 .settings-panel.open{display:block;}
-.settings-lbl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;margin-top:6px;}
-.settings-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:9px;padding:6px 8px;margin-bottom:6px;}
-.settings-save{padding:6px 14px;border-radius:6px;border:1px solid var(--green);background:transparent;color:var(--green);cursor:pointer;font-size:9px;font-family:'Share Tech Mono',monospace;}
-.settings-status{font-size:8px;margin-top:6px;}
-.wallet-display{font-size:8px;color:var(--dim);margin-top:4px;}
+
+/* Settings menu */
+.settings-menu{display:flex;flex-direction:column;gap:8px;}
+.settings-menu-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:14px;color:var(--text);letter-spacing:1px;}
+.settings-menu-item:hover{border-color:var(--bb);color:var(--green);}
+.settings-menu-arrow{color:var(--dim);font-size:16px;}
+
+/* Settings sub-panel */
+.settings-sub{display:none;}
+.settings-sub.open{display:block;}
+.settings-back{display:flex;align-items:center;gap:8px;padding:8px 0;margin-bottom:12px;cursor:pointer;font-size:13px;color:var(--dim);border:none;background:transparent;font-family:'Share Tech Mono',monospace;letter-spacing:1px;}
+.settings-back:hover{color:var(--green);}
+.settings-sub-title{font-size:14px;letter-spacing:2px;color:var(--text);margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+.settings-lbl{font-size:12px;color:var(--dim);letter-spacing:1px;margin-bottom:6px;margin-top:12px;}
+.settings-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:14px;padding:10px 12px;margin-bottom:4px;}
+.settings-save{width:100%;padding:10px;border-radius:6px;border:1px solid var(--green);background:rgba(0,255,136,0.08);color:var(--green);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:2px;margin-top:10px;}
+.settings-status{font-size:12px;margin-top:8px;min-height:18px;}
+.wallet-display{font-size:12px;color:var(--dim);margin-top:6px;}
+.settings-hint{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.5;}
+
+/* Take profit mode buttons */
+.tp-mode-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.tp-btn{padding:10px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:1px;text-align:center;}
+.tp-btn.active{border-color:var(--green);background:rgba(0,255,136,0.1);color:var(--green);}
 
 /* Section labels */
-.sec-lbl{font-size:8px;letter-spacing:3px;color:var(--dim);margin-bottom:7px;display:flex;align-items:center;gap:8px;}
+.sec-lbl{font-size:12px;letter-spacing:3px;color:var(--dim);margin-bottom:8px;display:flex;align-items:center;gap:8px;}
 .sec-lbl::after{content:'';flex:1;height:1px;background:var(--border);}
 
 /* Open trades */
-.trade{background:var(--panel);border:1px solid #0d2a45;border-left:3px solid var(--blue);border-radius:8px;padding:9px 11px;margin-bottom:7px;}
+.trade{background:var(--panel);border:1px solid #0d2a45;border-left:3px solid var(--blue);border-radius:8px;padding:12px;margin-bottom:8px;}
 .trade-grad{border-left-color:var(--yellow);}
-.trade-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;}
-.trade-name{color:var(--blue);font-weight:bold;font-size:13px;font-family:'Orbitron',monospace;}
+.trade-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.trade-name{color:var(--blue);font-weight:bold;font-size:16px;font-family:'Orbitron',monospace;}
 .trade-name-grad{color:var(--yellow);}
-.sell-btn{padding:5px 10px;border-radius:5px;border:1px solid var(--yellow);background:transparent;color:var(--yellow);cursor:pointer;font-size:9px;font-family:'Share Tech Mono',monospace;font-weight:bold;}
-.trade-meta{font-size:9px;color:var(--dim);margin-bottom:4px;}
-.real-badge{font-size:7px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:1px 5px;color:var(--green);margin-left:6px;vertical-align:middle;}
-.grad-badge{font-size:7px;background:rgba(255,194,51,0.15);border:1px solid var(--yellow);border-radius:3px;padding:1px 5px;color:var(--yellow);margin-left:5px;vertical-align:middle;animation:wsp 1s infinite;}
-.pnl-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:5px;padding-top:5px;border-top:1px solid var(--border);}
-.pnl-item{text-align:center;background:rgba(0,0,0,0.2);border-radius:4px;padding:4px 3px;}
-.pnl-lbl{font-size:6px;color:var(--dim);letter-spacing:1px;margin-bottom:1px;}
-.pnl-val{font-family:'Orbitron',monospace;font-size:10px;font-weight:700;}
-.entry-price{font-size:7px;color:var(--dim);margin-top:4px;}
+.sell-btn{padding:8px 14px;border-radius:5px;border:1px solid var(--yellow);background:transparent;color:var(--yellow);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;font-weight:bold;}
+.trade-meta{font-size:12px;color:var(--dim);margin-bottom:6px;}
+.real-badge{font-size:11px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:2px 6px;color:var(--green);margin-left:6px;vertical-align:middle;}
+.grad-badge{font-size:11px;background:rgba(255,194,51,0.15);border:1px solid var(--yellow);border-radius:3px;padding:2px 6px;color:var(--yellow);margin-left:5px;vertical-align:middle;animation:wsp 1s infinite;}
+.pnl-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border);}
+.pnl-item{text-align:center;background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 4px;}
+.pnl-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
+.pnl-val{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
+.entry-price{font-size:11px;color:var(--dim);margin-top:6px;}
 
 /* Graduation candidates */
 .grad-bar-wrap{background:rgba(0,0,0,0.3);border-radius:4px;height:6px;margin:6px 0;overflow:hidden;}
 .grad-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--yellow),var(--green));transition:width 0.5s;}
 
+/* Best trade card */
+.best-trade-card{background:rgba(0,255,136,0.04);border:1px solid rgba(0,255,136,0.2);border-radius:8px;padding:10px 12px;margin-top:8px;}
+.best-trade-title{font-size:11px;letter-spacing:2px;color:var(--green);margin-bottom:8px;}
+.best-trade-name{font-family:'Orbitron',monospace;font-size:16px;font-weight:700;color:var(--green);margin-bottom:6px;}
+.best-trade-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.best-trade-cell{background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 8px;}
+.best-trade-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
+.best-trade-val{font-family:'Orbitron',monospace;font-size:13px;}
+
 /* Log */
 .logwrap{position:relative;margin-bottom:10px;}
-.fbar{position:absolute;top:0;left:0;right:0;background:rgba(255,194,51,0.15);border:1px solid rgba(255,194,51,0.4);border-radius:8px 8px 0 0;padding:5px 12px;font-size:9px;color:var(--yellow);display:none;z-index:10;text-align:center;}
-.logbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;max-height:300px;overflow-y:auto;}
+.fbar{position:absolute;top:0;left:0;right:0;background:rgba(255,194,51,0.15);border:1px solid rgba(255,194,51,0.4);border-radius:8px 8px 0 0;padding:6px 12px;font-size:12px;color:var(--yellow);display:none;z-index:10;text-align:center;}
+.logbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;max-height:300px;overflow-y:auto;}
 .logbox::-webkit-scrollbar{width:3px;}
 .logbox::-webkit-scrollbar-thumb{background:var(--bb);border-radius:3px;}
-.log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-.log-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;}
-.lf{padding:2px 7px;border-radius:4px;border:1px solid var(--bb);cursor:pointer;font-size:8px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);}
+.log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.log-header-lbl{font-size:12px;letter-spacing:2px;color:var(--dim);}
+.log-cnt{font-size:12px;color:var(--dim);}
+.log-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
+.lf{padding:4px 10px;border-radius:4px;border:1px solid var(--bb);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);}
 .lf.act{background:var(--bb);color:var(--text);}
-.le{font-size:9px;padding:3px 0;border-bottom:1px solid rgba(13,32,53,0.4);line-height:1.6;}
-.lt{color:#4a7090;margin-right:5px;}
+.le{font-size:12px;padding:4px 0;border-bottom:1px solid rgba(13,32,53,0.4);line-height:1.6;}
+.lt{color:#4a7090;margin-right:6px;}
 .info{color:#8ab4cc;}.warn{color:var(--yellow);}.entry{color:#66ccff;}.win{color:var(--green);}.loss{color:#ff7a7a;}.pump{color:#ffd700;}.rug{color:var(--yellow);}
 
 /* Closed trades */
-.ctrade{background:rgba(0,0,0,0.2);border-radius:8px;padding:8px 10px;margin-bottom:8px;}
-.ctrade-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
-.ctrade-name{font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--blue);}
-.ctrade-pnl{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
-.ctrade-g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:5px;}
-.ctrade-g2{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px;}
-.ctrade-cell{background:rgba(0,0,0,0.2);border-radius:4px;padding:4px 6px;text-align:center;}
-.ctrade-lbl{font-size:6px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
-.ctrade-val{font-family:'Orbitron',monospace;font-size:9px;}
-.ctrade-footer{display:flex;justify-content:space-between;font-size:8px;color:var(--dim);}
+.ctrade{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
+.ctrade-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.ctrade-name{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;color:var(--blue);}
+.ctrade-pnl{font-family:'Orbitron',monospace;font-size:15px;font-weight:700;}
+.ctrade-g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px;}
+.ctrade-g2{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px;}
+.ctrade-cell{background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 8px;text-align:center;}
+.ctrade-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
+.ctrade-val{font-family:'Orbitron',monospace;font-size:12px;}
+.ctrade-footer{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);}
 
 /* Session stats */
-.ss-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:7px;}
-.ss-item{background:rgba(0,0,0,0.2);border-radius:6px;padding:6px 8px;}
-.ss-lbl{font-size:7px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
-.ss-val{font-family:'Orbitron',monospace;font-size:11px;font-weight:700;}
+.ss-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+.ss-item{background:rgba(0,0,0,0.2);border-radius:6px;padding:8px 10px;}
+.ss-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
+.ss-val{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;}
 
-.foot{text-align:center;font-size:8px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
+.foot{text-align:center;font-size:11px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
 </style>
 </head>
 <body>
@@ -156,14 +186,14 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <!-- Pump.fun bar -->
   <div class="wsbar" id="wsbar">⚡ PUMP.FUN WEBSOCKET: CONNECTING...</div>
 
-  <!-- Pool stats row 1 -->
+  <!-- Pool stats -->
   <div class="g3" style="margin-bottom:8px;">
     <div class="stat"><div class="stat-lbl">POOL</div><div class="stat-val" id="pool" style="color:var(--blue)">0</div></div>
     <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim)">0</div></div>
     <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow)">0</div></div>
   </div>
 
-  <!-- DSC discovery stats row -->
+  <!-- DSC stats -->
   <div class="g2" style="margin-bottom:8px;">
     <div class="stat"><div class="stat-lbl">DSC POOL</div><div class="stat-val" id="dsc-pool" style="color:var(--green)">0</div></div>
     <div class="stat"><div class="stat-lbl">DSC KEYWORD</div><div class="stat-val" id="dsc-key" style="color:var(--blue)">0</div></div>
@@ -179,7 +209,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <div class="srcrow" id="srcrow"></div>
 
   <!-- Fund + Savings -->
-  <div class="g2">
+  <div class="g2" style="margin-bottom:8px;">
     <div class="card">
       <div class="card-lbl">TRADING FUND</div>
       <div class="card-val" id="fund" style="color:var(--green)">$100.00</div>
@@ -203,21 +233,84 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <!-- Trail stop info -->
   <div class="trail-card" style="margin-bottom:8px;">
     <div class="trail-lbl">TAKE PROFIT MODE</div>
-    <div class="trail-badge">TRAIL STOP</div>
-    <div class="trail-desc">📈 Trail: activates at 4% gain — exits on 2% pullback from peak | SL: 10%</div>
+    <div class="trail-badge" id="tp-mode-badge">TRAIL STOP</div>
+    <div class="trail-desc" id="tp-mode-desc">📈 Trail: activates at 4% gain — exits on 2% pullback from peak | SL: 10%</div>
   </div>
 
   <!-- Settings -->
-  <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS — WALLET ADDRESSES</button>
+  <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
   <div class="settings-panel" id="settings-panel">
-    <div class="card-lbl" style="margin-bottom:8px;">CONFIGURE WALLETS</div>
-    <div class="settings-lbl">TRADING WALLET</div>
-    <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..." />
-    <div class="settings-lbl">SAVINGS WALLET</div>
-    <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..." />
-    <button class="settings-save" onclick="saveSettings()">SAVE WALLETS</button>
-    <div class="settings-status" id="settings-status"></div>
-    <div class="wallet-display" id="wallet-display"></div>
+
+    <!-- Main settings menu -->
+    <div class="settings-menu" id="settings-menu">
+      <div class="settings-menu-item" onclick="openSub('sub-fund')">
+        <span>💰 TRADING FUND</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-tp')">
+        <span>🎯 TAKE PROFIT MODE</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-sl')">
+        <span>🛡 STOP LOSS</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-wallets')">
+        <span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span>
+      </div>
+    </div>
+
+    <!-- Sub: Trading Fund -->
+    <div class="settings-sub" id="sub-fund">
+      <button class="settings-back" onclick="closeSub('sub-fund')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">TRADING FUND</div>
+      <div class="settings-lbl">STARTING FUND AMOUNT ($)</div>
+      <input class="settings-input" id="input-fund" type="number" min="1" step="0.01" placeholder="e.g. 100.00" />
+      <div class="settings-hint">Changes apply to new trades only. Open trades are unaffected. Current fund shown on dashboard.</div>
+      <button class="settings-save" onclick="saveFund()">SAVE FUND AMOUNT</button>
+      <div class="settings-status" id="status-fund"></div>
+    </div>
+
+    <!-- Sub: Take Profit -->
+    <div class="settings-sub" id="sub-tp">
+      <button class="settings-back" onclick="closeSub('sub-tp')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">TAKE PROFIT MODE</div>
+      <div class="settings-lbl">SELECT MODE</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
+        <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
+      </div>
+      <div id="fixed-pct-row" style="display:none;">
+        <div class="settings-lbl">TARGET PROFIT %</div>
+        <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" />
+        <div class="settings-hint">Enter any percentage. e.g. 2 for 2%, 24.7 for 24.7%</div>
+      </div>
+      <div class="settings-hint" style="margin-top:8px;">Trail Stop: activates at 4% gain, exits on 2% pullback from peak.<br>Fixed: exits immediately when target % is reached.</div>
+      <button class="settings-save" onclick="saveTP()">SAVE TAKE PROFIT</button>
+      <div class="settings-status" id="status-tp"></div>
+    </div>
+
+    <!-- Sub: Stop Loss -->
+    <div class="settings-sub" id="sub-sl">
+      <button class="settings-back" onclick="closeSub('sub-sl')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">STOP LOSS</div>
+      <div class="settings-lbl">STOP LOSS %</div>
+      <input class="settings-input" id="input-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10" />
+      <div class="settings-hint">Current default: 10%. Changes apply to new trades only. Open trades keep their original stop loss.</div>
+      <button class="settings-save" onclick="saveSL()">SAVE STOP LOSS</button>
+      <div class="settings-status" id="status-sl"></div>
+    </div>
+
+    <!-- Sub: Wallets -->
+    <div class="settings-sub" id="sub-wallets">
+      <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">WALLET ADDRESSES</div>
+      <div class="settings-lbl">TRADING WALLET</div>
+      <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..." />
+      <div class="settings-lbl">SAVINGS WALLET</div>
+      <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..." />
+      <button class="settings-save" onclick="saveWallets()">SAVE WALLETS</button>
+      <div class="settings-status" id="status-wallets"></div>
+      <div class="wallet-display" id="wallet-display"></div>
+    </div>
+
   </div>
 
   <!-- Start/Stop button -->
@@ -240,8 +333,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="fbar" id="frozbar">LOG PAUSED — scroll to top to resume</div>
     <div class="logbox" id="logbox">
       <div class="log-header">
-        <div style="font-size:8px;letter-spacing:2px;color:var(--dim)">ACTIVITY LOG</div>
-        <div style="font-size:8px;color:var(--dim)" id="log-cnt">0 entries</div>
+        <div class="log-header-lbl">ACTIVITY LOG</div>
+        <div class="log-cnt" id="log-cnt">0 entries</div>
       </div>
       <div class="log-filters">
         <button class="lf act" onclick="setFilter('all')">ALL</button>
@@ -250,13 +343,13 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
         <button class="lf" onclick="setFilter('loss')">LOSSES</button>
         <button class="lf" onclick="setFilter('pump')">🔥PUMP</button>
       </div>
-      <div id="log-list"><div style="font-size:10px;color:var(--dim)">Connecting...</div></div>
+      <div id="log-list"><div style="font-size:13px;color:var(--dim)">Connecting...</div></div>
     </div>
   </div>
 
   <!-- Closed trades -->
   <div id="closed-sec" class="card" style="display:none;margin-bottom:8px;">
-    <div class="card-lbl" style="margin-bottom:7px;">CLOSED TRADES</div>
+    <div class="card-lbl" style="margin-bottom:8px;">CLOSED TRADES</div>
     <div id="closed-list"></div>
   </div>
 
@@ -267,7 +360,19 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="ss-item"><div class="ss-lbl">POOL SIZE</div><div class="ss-val" id="ss-pool" style="color:var(--blue)">0</div></div>
       <div class="ss-item"><div class="ss-lbl">AVG SLIPPAGE</div><div class="ss-val" id="ss-slip" style="color:var(--yellow)">0.00%</div></div>
       <div class="ss-item"><div class="ss-lbl">TRADES SKIPPED</div><div class="ss-val" id="ss-skip" style="color:var(--dim)">0</div></div>
-      <div class="ss-item"><div class="ss-lbl">BEST TRADE</div><div class="ss-val" id="ss-best" style="color:var(--green)">$0.00</div></div>
+      <div class="ss-item"><div class="ss-lbl">SESSION FUND</div><div class="ss-val" id="ss-fund" style="color:var(--dim)">$100</div></div>
+    </div>
+    <!-- Best Trade Card -->
+    <div class="best-trade-card" id="best-trade-card" style="display:none;">
+      <div class="best-trade-title">⭐ BEST TRADE THIS SESSION</div>
+      <div class="best-trade-name" id="bt-name">—</div>
+      <div class="best-trade-grid">
+        <div class="best-trade-cell"><div class="best-trade-lbl">PROFIT</div><div class="best-trade-val" id="bt-pnl" style="color:var(--green)">$0.00</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">GAIN %</div><div class="best-trade-val" id="bt-pct" style="color:var(--green)">0.00%</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">ENTRY</div><div class="best-trade-val" id="bt-entry" style="font-size:11px;">—</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">EXIT</div><div class="best-trade-val" id="bt-exit" style="font-size:11px;">—</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">POSITION</div><div class="best-trade-val" id="bt-size">$0.00</div></div>
+      </div>
     </div>
   </div>
 
@@ -282,6 +387,7 @@ var allLogs = [];
 var frozen = false;
 var startTime = null;
 var timerId = null;
+var currentTPMode = 'TRAIL';
 
 document.addEventListener('DOMContentLoaded', function() {
   var lb = document.getElementById('logbox');
@@ -304,6 +410,100 @@ function f2(n) { return parseFloat(n || 0).toFixed(2); }
 function f8(n) { return parseFloat(n || 0).toFixed(8); }
 function pSign(n) { return n >= 0 ? '+' : ''; }
 
+// ── SETTINGS NAVIGATION ───────────────────────────────────────
+function toggleSettings() {
+  document.getElementById('settings-panel').classList.toggle('open');
+  // Always show main menu when opening
+  document.getElementById('settings-menu').style.display = 'flex';
+  document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+}
+
+function openSub(id) {
+  document.getElementById('settings-menu').style.display = 'none';
+  document.getElementById(id).classList.add('open');
+}
+
+function closeSub(id) {
+  document.getElementById(id).classList.remove('open');
+  document.getElementById('settings-menu').style.display = 'flex';
+}
+
+function selectTP(mode) {
+  currentTPMode = mode;
+  document.getElementById('btn-trail').classList.toggle('active', mode === 'TRAIL');
+  document.getElementById('btn-fixed').classList.toggle('active', mode === 'FIXED');
+  document.getElementById('fixed-pct-row').style.display = mode === 'FIXED' ? 'block' : 'none';
+}
+
+// ── SETTINGS SAVE FUNCTIONS ───────────────────────────────────
+async function saveFund() {
+  var val = document.getElementById('input-fund').value.trim();
+  var el = document.getElementById('status-fund');
+  if (!val) { el.textContent = 'Please enter an amount'; el.style.color = 'var(--red)'; return; }
+  var n = parseFloat(val);
+  if (isNaN(n) || n <= 0) { el.textContent = 'Invalid amount'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionFund: n })
+    });
+    if (res.ok) { el.textContent = '✅ Fund set to $' + n.toFixed(2); el.style.color = 'var(--green)'; }
+    else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function saveTP() {
+  var el = document.getElementById('status-tp');
+  var body = { takeProfitMode: currentTPMode };
+  if (currentTPMode === 'FIXED') {
+    var pct = parseFloat(document.getElementById('input-tp-pct').value);
+    if (isNaN(pct) || pct <= 0) { el.textContent = 'Please enter a valid %'; el.style.color = 'var(--red)'; return; }
+    body.takeProfitPct = pct;
+  }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (res.ok) {
+      var msg = currentTPMode === 'TRAIL' ? '✅ Trail Stop active' : '✅ Fixed TP set to ' + body.takeProfitPct + '%';
+      el.textContent = msg; el.style.color = 'var(--green)';
+    } else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function saveSL() {
+  var val = document.getElementById('input-sl').value.trim();
+  var el = document.getElementById('status-sl');
+  if (!val) { el.textContent = 'Please enter a percentage'; el.style.color = 'var(--red)'; return; }
+  var n = parseFloat(val);
+  if (isNaN(n) || n <= 0 || n > 100) { el.textContent = 'Enter a value between 1 and 100'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ stopLossPct: n })
+    });
+    if (res.ok) { el.textContent = '✅ Stop loss set to ' + n + '%'; el.style.color = 'var(--green)'; }
+    else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function saveWallets() {
+  var trading = document.getElementById('trading-wallet').value.trim();
+  var savings = document.getElementById('savings-wallet').value.trim();
+  var el = document.getElementById('status-wallets');
+  if (!trading && !savings) { el.textContent = 'Please enter at least one wallet'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tradingWallet: trading, savingsWallet: savings })
+    });
+    if (res.ok) { el.textContent = '✅ Wallets saved'; el.style.color = 'var(--green)'; }
+    else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+// ── LOG ───────────────────────────────────────────────────────
 function setFilter(f) {
   logFilter = f;
   document.querySelectorAll('.lf').forEach(function(b) {
@@ -336,45 +536,17 @@ function startTimer(st) {
   }, 1000);
 }
 
-function toggleSettings() {
-  document.getElementById('settings-panel').classList.toggle('open');
-}
-
-async function saveSettings() {
-  var trading = document.getElementById('trading-wallet').value.trim();
-  var savings = document.getElementById('savings-wallet').value.trim();
-  if (!trading && !savings) { alert('Please enter at least one wallet address'); return; }
-  try {
-    var res = await fetch(BASE + '/api/settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tradingWallet: trading, savingsWallet: savings })
-    });
-    var el = document.getElementById('settings-status');
-    if (res.ok) {
-      el.textContent = '✅ Wallets saved';
-      el.style.color = 'var(--green)';
-    } else {
-      el.textContent = '❌ Failed to save';
-      el.style.color = 'var(--red)';
-    }
-  } catch(e) {
-    document.getElementById('settings-status').textContent = '❌ Server error';
-  }
-}
-
 async function toggleBot() {
   try {
     await fetch(BASE + (botRunning ? '/api/stop' : '/api/start'), { method: 'POST' });
-  } catch(e) {
-    alert('Cannot reach server. Please refresh.');
-  }
+  } catch(e) { alert('Cannot reach server. Please refresh.'); }
 }
 
 async function sellTrade(id) {
   try { await fetch(BASE + '/api/sell/' + id, { method: 'POST' }); } catch(e) {}
 }
 
+// ── MAIN STATE FETCH ──────────────────────────────────────────
 async function fetchState() {
   try {
     var res = await fetch(BASE + '/api/state');
@@ -414,12 +586,8 @@ async function fetchState() {
     document.getElementById('pool').textContent = data.poolSize;
     document.getElementById('scanned').textContent = data.scanCount;
     document.getElementById('pump-cnt').textContent = data.pumpCount;
-
-    // DSC discovery counters
     document.getElementById('dsc-pool').textContent = data.dscPool || 0;
     document.getElementById('dsc-key').textContent = data.dscKey || 0;
-
-    // Ban stats
     document.getElementById('perm-bans').textContent = data.permanentBans || 0;
     document.getElementById('temp-bans').textContent = data.tempBans || 0;
 
@@ -435,11 +603,12 @@ async function fetchState() {
       srcrow.appendChild(d2);
     });
 
-    // Fund
-    var pnl = (data.fund + data.savings) - 100;
+    // Fund — use sessionFund as base for all-time calc
+    var sessionBase = data.sessionFund || 100;
+    var pnl = (data.fund + data.savings) - sessionBase;
     var fundEl = document.getElementById('fund');
     fundEl.textContent = '$' + f2(data.fund);
-    fundEl.style.color = data.fund >= 100 ? 'var(--green)' : 'var(--red)';
+    fundEl.style.color = data.fund >= sessionBase ? 'var(--green)' : 'var(--red)';
     document.getElementById('savings').textContent = '$' + f2(data.savings);
     document.getElementById('alltime').textContent = pSign(pnl) + '$' + f2(pnl) + ' all time';
 
@@ -452,6 +621,30 @@ async function fetchState() {
     document.getElementById('wins').textContent = data.stats.w;
     document.getElementById('losses').textContent = data.stats.l;
     document.getElementById('rugs').textContent = data.stats.r;
+
+    // Take profit mode display
+    var tpMode = data.takeProfitMode || 'TRAIL';
+    var tpPct = data.takeProfitPct || 5;
+    var slPct = data.stopLossPct || 10;
+    var badge = document.getElementById('tp-mode-badge');
+    var desc = document.getElementById('tp-mode-desc');
+    if (tpMode === 'TRAIL') {
+      badge.textContent = 'TRAIL STOP';
+      badge.style.borderColor = 'var(--purple)';
+      badge.style.color = 'var(--purple)';
+      desc.textContent = '📈 Trail: activates at 4% gain — exits on 2% pullback from peak | SL: ' + slPct + '%';
+    } else {
+      badge.textContent = 'FIXED ' + tpPct + '%';
+      badge.style.borderColor = 'var(--green)';
+      badge.style.color = 'var(--green)';
+      desc.textContent = '🎯 Fixed take profit: exits at ' + tpPct + '% gain | SL: ' + slPct + '%';
+    }
+
+    // Sync TP mode buttons
+    currentTPMode = tpMode;
+    document.getElementById('btn-trail').classList.toggle('active', tpMode === 'TRAIL');
+    document.getElementById('btn-fixed').classList.toggle('active', tpMode === 'FIXED');
+    document.getElementById('fixed-pct-row').style.display = tpMode === 'FIXED' ? 'block' : 'none';
 
     // Wallet display
     if (data.wallets) {
@@ -484,11 +677,11 @@ async function fetchState() {
           '</div>' +
           '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · [' + t.tok.src + ']</div>' +
           '<div class="grad-bar-wrap"><div class="grad-bar" style="width:' + gradPct + '%"></div></div>' +
-          '<div style="font-size:7px;color:var(--yellow);text-align:center;margin-bottom:4px">' + gradPct + '% TO GRADUATION</div>' +
+          '<div style="font-size:12px;color:var(--yellow);text-align:center;margin-bottom:4px">' + gradPct + '% TO GRADUATION</div>' +
           '<div class="pnl-row">' +
             '<div class="pnl-item"><div class="pnl-lbl">REAL P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pSign(t.realPnl || 0) + '$' + f2(Math.abs(t.realPnl || 0)) + '</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">REAL %</div><div class="pnl-val" style="color:' + pnlColor + '">' + pSign(t.realPnlPct || 0) + ((t.realPnlPct || 0)*100).toFixed(1) + '%</div></div>' +
-            '<div class="pnl-item"><div class="pnl-lbl">STOP LOSS</div><div class="pnl-val" style="color:var(--red)">-10%</div></div>' +
+            '<div class="pnl-item"><div class="pnl-lbl">STOP LOSS</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl ? (t.sl*100).toFixed(0) : '10') + '%</div></div>' +
           '</div>' +
           '<div class="entry-price">ENTRY: $' + f8(t.entryPrice) + '</div>';
         gradList.appendChild(d3);
@@ -510,6 +703,8 @@ async function fetchState() {
         var pnlColor = !hasPrice ? 'var(--dim)' : (t.realPnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
         var pnlDisplay = hasPrice ? pSign(t.realPnl || 0) + '$' + f2(Math.abs(t.realPnl || 0)) : 'FETCHING...';
         var pctDisplay = hasPrice ? pSign(t.realPnlPct || 0) + ((t.realPnlPct || 0)*100).toFixed(1) + '%' : '---';
+        var slDisplay = t.sl ? (t.sl * 100).toFixed(0) : '10';
+        var tpDisplay = t.tpl === 'FIXED' ? 'TP ' + (t.tpPct || 5) + '%' : 'TRAIL';
         var d4 = document.createElement('div');
         d4.className = 'trade';
         d4.innerHTML =
@@ -517,9 +712,9 @@ async function fetchState() {
             '<div class="trade-name">' + t.tok.n + '<span class="real-badge">REAL</span></div>' +
             '<button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
           '</div>' +
-          '<div class="trade-meta">Score ' + t.sc + ' · $' + f2(t.size) + ' · ' + age + 's · [' + t.tok.src + ']</div>' +
+          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · [' + t.tok.src + '] · ' + tpDisplay + '</div>' +
           '<div class="pnl-row">' +
-            '<div class="pnl-item"><div class="pnl-lbl">STOP LOSS</div><div class="pnl-val" style="color:var(--red)">-10%</div></div>' +
+            '<div class="pnl-item"><div class="pnl-lbl">STOP LOSS</div><div class="pnl-val" style="color:var(--red)">-' + slDisplay + '%</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">REAL P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">REAL %</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div>' +
           '</div>' +
@@ -560,8 +755,8 @@ async function fetchState() {
             '<div class="ctrade-cell"><div class="ctrade-lbl">SOURCE</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src || '?') + '</div></div>' +
           '</div>' +
           '<div class="ctrade-g2">' +
-            '<div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:8px">$' + f8(t.entryPrice) + '</div></div>' +
-            '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:8px">$' + f8(t.exitPrice) + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div>' +
           '</div>' +
           '<div class="ctrade-footer">' +
             '<span style="color:var(--yellow)">' + (t.closeReason || '?') + '</span>' +
@@ -577,13 +772,25 @@ async function fetchState() {
     var closed = data.closedTrades || [];
     var slips = closed.map(function(t) { return t.slip || 0; }).filter(function(v) { return v > 0; });
     var avgSlip = slips.length ? ((slips.reduce(function(a,b){return a+b;},0)/slips.length)*100).toFixed(2) : '0.00';
-    var best = data.bestTrade || 0;
     document.getElementById('ss-pool').textContent = data.poolSize;
     document.getElementById('ss-slip').textContent = avgSlip + '%';
     document.getElementById('ss-skip').textContent = data.rejectCount || 0;
-    var bestEl = document.getElementById('ss-best');
-    bestEl.textContent = pSign(best) + '$' + f2(best);
-    bestEl.style.color = best > 0 ? 'var(--green)' : 'var(--dim)';
+    document.getElementById('ss-fund').textContent = '$' + f2(data.sessionFund || 100);
+
+    // Best Trade card
+    var bt = data.bestTrade;
+    var btCard = document.getElementById('best-trade-card');
+    if (bt && bt.pnl > 0) {
+      btCard.style.display = 'block';
+      document.getElementById('bt-name').textContent = bt.name || '?';
+      document.getElementById('bt-pnl').textContent = '+$' + f2(bt.pnl);
+      document.getElementById('bt-pct').textContent = '+' + f2(bt.pnlPct) + '%';
+      document.getElementById('bt-entry').textContent = '$' + f8(bt.entryPrice);
+      document.getElementById('bt-exit').textContent = '$' + f8(bt.exitPrice);
+      document.getElementById('bt-size').textContent = '$' + f2(bt.size);
+    } else {
+      btCard.style.display = 'none';
+    }
 
   } catch(e) {
     document.getElementById('status').textContent = 'ERROR: ' + e.message;
