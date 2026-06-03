@@ -85,6 +85,8 @@ const S = {
   takeProfitMode: "TRAIL",
   takeProfitPct: 5,
   stopLossPct: 10,
+  totalFees: 0,
+  maxOpen: 8,
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -512,6 +514,10 @@ function closeTradeReal(id, reason) {
     closeReason = reason + ' (no price data)';
   }
 
+  // Track total fees paid this session
+  var feePaid = tr.size * (tr.slip || 0.005) + CFG.SOL_GAS;
+  S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
+
   if (pnl > CFG.MIN_SPLIT_WIN) {
     var savings = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
     var trading = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
@@ -627,7 +633,7 @@ function checkExitCriteria() {
 async function runGradSniper() {
   if (!S.running || S.fund < 1) return;
   var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
-  if (openGrads >= CFG.MAX_GRAD) return;
+  if (openGrads >= Math.max(Math.floor(S.maxOpen * 0.25), 1)) return;
 
   for (var entry of S.gradCandidates.entries()) {
     var mint = entry[0];
@@ -680,7 +686,7 @@ var scanIdx = 0;
 async function runScan() {
   if (!S.running || S.tokens.size === 0) return;
   if (S.fund < 1) { stopBot(); return; }
-  if (S.open.length >= CFG.MAX_OPEN) return;
+  if (S.open.length >= S.maxOpen) return;
 
   var tokens = Array.from(S.tokens.values());
   if (tokens.length === 0) return;
@@ -767,8 +773,19 @@ function cleanPool() {
   S.cooldowns.forEach(function(ts, key) {
     if (now - ts > CFG.COOLDOWN_MS) S.cooldowns.delete(key);
   });
+  // Clean stale grad candidates older than 4 hours
+  var gradRemoved = 0;
+  S.gradCandidates.forEach(function(cand, mint) {
+    if (!S.open.find(function(t) { return t.mint === mint; })) {
+      if (now - cand.firstSeen > CFG.POOL_AGE_MS) {
+        S.gradCandidates.delete(mint);
+        gradRemoved++;
+      }
+    }
+  });
   recheckExpiredBans();
   if (removed > 0) log('Pool cleaned: ' + removed + ' old tokens removed | Pool: ' + S.tokens.size, 'info');
+  if (gradRemoved > 0) log('Grad candidates cleaned: ' + gradRemoved + ' removed | Remaining: ' + S.gradCandidates.size, 'info');
 }
 
 // ── BOT CONTROL ───────────────────────────────────────────────
@@ -781,6 +798,7 @@ function startBot() {
   S.dscPool = 0;
   S.dscKey = 0;
   S.bestTrade = null;
+  S.totalFees = 0;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
@@ -797,7 +815,7 @@ function startBot() {
   solPriceI = setInterval(updateSolPrice, 600000);
 
   log('🚀 MemeBot V15 STARTED | Sniper Bot | Pump.fun WebSocket LIVE | Graduation Sniper ACTIVE', 'info');
-  log('Settings: ' + CFG.MAX_POS*100 + '% position | ' + CFG.STOP_LOSS*100 + '% SL | Trail ' + CFG.TRAIL_ACT*100 + '%/' + CFG.TRAIL_PB*100 + '% | ' + CFG.MAX_OPEN + ' max trades', 'info');
+  log('Settings: ' + CFG.MAX_POS*100 + '% position | ' + S.stopLossPct + '% SL | Trail ' + CFG.TRAIL_ACT*100 + '%/' + CFG.TRAIL_PB*100 + '% | ' + S.maxOpen + ' max trades', 'info');
 }
 
 function stopBot() {
@@ -827,7 +845,7 @@ app.get('/api/state', function(req, res) {
     stCredits: S.stCredits,
     openTrades: S.open.map(function(t) {
       return {
-        id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, sl: t.sl,
+        id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, tpPct: t.tpPct, sl: t.sl,
         slip: t.slip, mint: t.mint, src: t.src,
         entryPrice: t.entryPrice, currentPrice: t.currentPrice,
         peakPrice: t.peakPrice, realPnl: t.realPnl, realPnlPct: t.realPnlPct,
@@ -848,6 +866,8 @@ app.get('/api/state', function(req, res) {
     takeProfitMode: S.takeProfitMode,
     takeProfitPct: S.takeProfitPct,
     stopLossPct: S.stopLossPct,
+    totalFees: S.totalFees,
+    maxOpen: S.maxOpen,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -890,6 +910,13 @@ app.post('/api/settings', function(req, res) {
     if (!isNaN(sl) && sl > 0 && sl <= 100) {
       S.stopLossPct = parseFloat(sl.toFixed(1));
       log('Stop loss: ' + S.stopLossPct + '%', 'info');
+    }
+  }
+  if (req.body.maxOpen !== undefined) {
+    var mo = parseInt(req.body.maxOpen);
+    if (!isNaN(mo) && mo >= 1 && mo <= 20) {
+      S.maxOpen = mo;
+      log('Max open trades: ' + S.maxOpen, 'info');
     }
   }
   log('Settings updated | Trading: ' + (TRADING_WALLET || 'not set') + ' | Savings: ' + (SAVINGS_WALLET || 'not set'), 'info');
