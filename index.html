@@ -277,9 +277,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
         <button class="tp-btn" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
         <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
       </div>
-      <div id="fixed-pct-row" style="display:none;">
-        <div class="settings-lbl">TARGET PROFIT %</div>
-        <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" />
+      <div id="fixed-pct-row">
+        <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET PROFIT % — SELECT FIXED % ABOVE</div>
+        <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;" />
         <div class="settings-hint">Enter any percentage. e.g. 2 for 2%, 24.7 for 24.7%</div>
       </div>
       <div class="settings-hint" style="margin-top:8px;">Trail Stop: activates at 4% gain, exits on 2% pullback from peak.<br>Fixed: exits immediately when target % is reached.</div>
@@ -432,7 +432,20 @@ function selectTP(mode) {
   currentTPMode = mode;
   document.getElementById('btn-trail').classList.toggle('active', mode === 'TRAIL');
   document.getElementById('btn-fixed').classList.toggle('active', mode === 'FIXED');
-  document.getElementById('fixed-pct-row').style.display = mode === 'FIXED' ? 'block' : 'none';
+  var input = document.getElementById('input-tp-pct');
+  var lbl = document.getElementById('tp-pct-lbl');
+  if (mode === 'FIXED') {
+    input.disabled = false;
+    input.style.opacity = '1';
+    lbl.textContent = 'TARGET PROFIT %';
+    lbl.style.color = 'var(--dim)';
+    input.focus();
+  } else {
+    input.disabled = true;
+    input.style.opacity = '0.4';
+    lbl.textContent = 'TARGET PROFIT % — SELECT FIXED % ABOVE';
+    lbl.style.color = 'var(--bb)';
+  }
 }
 
 // ── SETTINGS SAVE FUNCTIONS ───────────────────────────────────
@@ -644,7 +657,19 @@ async function fetchState() {
     currentTPMode = tpMode;
     document.getElementById('btn-trail').classList.toggle('active', tpMode === 'TRAIL');
     document.getElementById('btn-fixed').classList.toggle('active', tpMode === 'FIXED');
-    document.getElementById('fixed-pct-row').style.display = tpMode === 'FIXED' ? 'block' : 'none';
+    var tpInput = document.getElementById('input-tp-pct');
+    var tpLbl = document.getElementById('tp-pct-lbl');
+    if (tpMode === 'FIXED') {
+      tpInput.disabled = false;
+      tpInput.style.opacity = '1';
+      tpLbl.textContent = 'TARGET PROFIT %';
+      tpLbl.style.color = 'var(--dim)';
+    } else {
+      tpInput.disabled = true;
+      tpInput.style.opacity = '0.4';
+      tpLbl.textContent = 'TARGET PROFIT % — SELECT FIXED % ABOVE';
+      tpLbl.style.color = 'var(--bb)';
+    }
 
     // Wallet display
     if (data.wallets) {
