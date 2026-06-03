@@ -177,6 +177,96 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="hsub">SOLANA · PUMP.FUN · GRADUATION SNIPER · REAL PRICES</div>
   </div>
 
+  <!-- Settings toggle — top of page -->
+  <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
+  <div class="settings-panel" id="settings-panel">
+
+    <!-- Main settings menu -->
+    <div class="settings-menu" id="settings-menu">
+      <div class="settings-menu-item" onclick="openSub('sub-fund')">
+        <span>💰 TRADING FUND</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-tp')">
+        <span>🎯 TAKE PROFIT MODE</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-sl')">
+        <span>🛡 STOP LOSS</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-maxopen')">
+        <span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span>
+      </div>
+      <div class="settings-menu-item" onclick="openSub('sub-wallets')">
+        <span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span>
+      </div>
+    </div>
+
+    <!-- Sub: Trading Fund -->
+    <div class="settings-sub" id="sub-fund">
+      <button class="settings-back" onclick="closeSub('sub-fund')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">TRADING FUND</div>
+      <div class="settings-lbl">STARTING FUND AMOUNT ($)</div>
+      <input class="settings-input" id="input-fund" type="number" min="1" step="0.01" placeholder="e.g. 100.00" />
+      <div class="settings-hint">Current: <span id="current-fund-display">$100.00</span>. Changes apply to new trades only. Open trades are unaffected.</div>
+      <button class="settings-save" onclick="saveFund()">SAVE FUND AMOUNT</button>
+      <div class="settings-status" id="status-fund"></div>
+    </div>
+
+    <!-- Sub: Take Profit -->
+    <div class="settings-sub" id="sub-tp">
+      <button class="settings-back" onclick="closeSub('sub-tp')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">TAKE PROFIT MODE</div>
+      <div class="settings-lbl">SELECT MODE</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
+        <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
+      </div>
+      <div id="fixed-pct-row">
+        <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET PROFIT % — SELECT FIXED % ABOVE</div>
+        <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;" />
+        <div class="settings-hint">Enter any percentage. e.g. 2 for 2%, 24.7 for 24.7%</div>
+      </div>
+      <div class="settings-hint" style="margin-top:8px;">Trail Stop: activates at 4% gain, exits on 2% pullback from peak.<br>Fixed: exits immediately when target % is reached.</div>
+      <button class="settings-save" onclick="saveTP()">SAVE TAKE PROFIT</button>
+      <div class="settings-status" id="status-tp"></div>
+    </div>
+
+    <!-- Sub: Stop Loss -->
+    <div class="settings-sub" id="sub-sl">
+      <button class="settings-back" onclick="closeSub('sub-sl')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">STOP LOSS</div>
+      <div class="settings-lbl">STOP LOSS %</div>
+      <input class="settings-input" id="input-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10" />
+      <div class="settings-hint">Current: <span id="current-sl-display">10</span>%. Changes apply to new trades only. Open trades keep their original stop loss.</div>
+      <button class="settings-save" onclick="saveSL()">SAVE STOP LOSS</button>
+      <div class="settings-status" id="status-sl"></div>
+    </div>
+
+    <!-- Sub: Max Open Trades -->
+    <div class="settings-sub" id="sub-maxopen">
+      <button class="settings-back" onclick="closeSub('sub-maxopen')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">MAX OPEN TRADES</div>
+      <div class="settings-lbl">MAXIMUM SIMULTANEOUS TRADES</div>
+      <input class="settings-input" id="input-maxopen" type="number" min="1" max="20" step="1" placeholder="e.g. 8" />
+      <div class="settings-hint">Current: <span id="current-maxopen-display">8</span> trades. Range: 1 to 20. Changes take effect immediately.</div>
+      <button class="settings-save" onclick="saveMaxOpen()">SAVE MAX TRADES</button>
+      <div class="settings-status" id="status-maxopen"></div>
+    </div>
+
+    <!-- Sub: Wallets -->
+    <div class="settings-sub" id="sub-wallets">
+      <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">WALLET ADDRESSES</div>
+      <div class="settings-lbl">TRADING WALLET</div>
+      <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..." />
+      <div class="settings-lbl">SAVINGS WALLET</div>
+      <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..." />
+      <button class="settings-save" onclick="saveWallets()">SAVE WALLETS</button>
+      <div class="settings-status" id="status-wallets"></div>
+      <div class="wallet-display" id="wallet-display"></div>
+    </div>
+
+  </div>
+
   <!-- Status + Runtime -->
   <div class="topbar">
     <div class="sbar" id="status">CONNECTING...</div>
@@ -237,82 +327,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="trail-desc" id="tp-mode-desc">📈 Trail: activates at 4% gain — exits on 2% pullback from peak | SL: 10%</div>
   </div>
 
-  <!-- Settings -->
-  <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
-  <div class="settings-panel" id="settings-panel">
-
-    <!-- Main settings menu -->
-    <div class="settings-menu" id="settings-menu">
-      <div class="settings-menu-item" onclick="openSub('sub-fund')">
-        <span>💰 TRADING FUND</span><span class="settings-menu-arrow">›</span>
-      </div>
-      <div class="settings-menu-item" onclick="openSub('sub-tp')">
-        <span>🎯 TAKE PROFIT MODE</span><span class="settings-menu-arrow">›</span>
-      </div>
-      <div class="settings-menu-item" onclick="openSub('sub-sl')">
-        <span>🛡 STOP LOSS</span><span class="settings-menu-arrow">›</span>
-      </div>
-      <div class="settings-menu-item" onclick="openSub('sub-wallets')">
-        <span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span>
-      </div>
-    </div>
-
-    <!-- Sub: Trading Fund -->
-    <div class="settings-sub" id="sub-fund">
-      <button class="settings-back" onclick="closeSub('sub-fund')">← BACK TO SETTINGS</button>
-      <div class="settings-sub-title">TRADING FUND</div>
-      <div class="settings-lbl">STARTING FUND AMOUNT ($)</div>
-      <input class="settings-input" id="input-fund" type="number" min="1" step="0.01" placeholder="e.g. 100.00" />
-      <div class="settings-hint">Changes apply to new trades only. Open trades are unaffected. Current fund shown on dashboard.</div>
-      <button class="settings-save" onclick="saveFund()">SAVE FUND AMOUNT</button>
-      <div class="settings-status" id="status-fund"></div>
-    </div>
-
-    <!-- Sub: Take Profit -->
-    <div class="settings-sub" id="sub-tp">
-      <button class="settings-back" onclick="closeSub('sub-tp')">← BACK TO SETTINGS</button>
-      <div class="settings-sub-title">TAKE PROFIT MODE</div>
-      <div class="settings-lbl">SELECT MODE</div>
-      <div class="tp-mode-row">
-        <button class="tp-btn" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
-        <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
-      </div>
-      <div id="fixed-pct-row">
-        <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET PROFIT % — SELECT FIXED % ABOVE</div>
-        <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;" />
-        <div class="settings-hint">Enter any percentage. e.g. 2 for 2%, 24.7 for 24.7%</div>
-      </div>
-      <div class="settings-hint" style="margin-top:8px;">Trail Stop: activates at 4% gain, exits on 2% pullback from peak.<br>Fixed: exits immediately when target % is reached.</div>
-      <button class="settings-save" onclick="saveTP()">SAVE TAKE PROFIT</button>
-      <div class="settings-status" id="status-tp"></div>
-    </div>
-
-    <!-- Sub: Stop Loss -->
-    <div class="settings-sub" id="sub-sl">
-      <button class="settings-back" onclick="closeSub('sub-sl')">← BACK TO SETTINGS</button>
-      <div class="settings-sub-title">STOP LOSS</div>
-      <div class="settings-lbl">STOP LOSS %</div>
-      <input class="settings-input" id="input-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10" />
-      <div class="settings-hint">Current default: 10%. Changes apply to new trades only. Open trades keep their original stop loss.</div>
-      <button class="settings-save" onclick="saveSL()">SAVE STOP LOSS</button>
-      <div class="settings-status" id="status-sl"></div>
-    </div>
-
-    <!-- Sub: Wallets -->
-    <div class="settings-sub" id="sub-wallets">
-      <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK TO SETTINGS</button>
-      <div class="settings-sub-title">WALLET ADDRESSES</div>
-      <div class="settings-lbl">TRADING WALLET</div>
-      <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..." />
-      <div class="settings-lbl">SAVINGS WALLET</div>
-      <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..." />
-      <button class="settings-save" onclick="saveWallets()">SAVE WALLETS</button>
-      <div class="settings-status" id="status-wallets"></div>
-      <div class="wallet-display" id="wallet-display"></div>
-    </div>
-
-  </div>
-
   <!-- Start/Stop button -->
   <button class="main-btn btn-start" id="main-btn" onclick="toggleBot()">▶ START BOT</button>
 
@@ -359,8 +373,10 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="ss-grid">
       <div class="ss-item"><div class="ss-lbl">POOL SIZE</div><div class="ss-val" id="ss-pool" style="color:var(--blue)">0</div></div>
       <div class="ss-item"><div class="ss-lbl">AVG SLIPPAGE</div><div class="ss-val" id="ss-slip" style="color:var(--yellow)">0.00%</div></div>
+      <div class="ss-item"><div class="ss-lbl">FEES PAID</div><div class="ss-val" id="ss-fees" style="color:var(--red)">$0.00</div></div>
       <div class="ss-item"><div class="ss-lbl">TRADES SKIPPED</div><div class="ss-val" id="ss-skip" style="color:var(--dim)">0</div></div>
       <div class="ss-item"><div class="ss-lbl">SESSION FUND</div><div class="ss-val" id="ss-fund" style="color:var(--dim)">$100</div></div>
+      <div class="ss-item"><div class="ss-lbl">MAX TRADES</div><div class="ss-val" id="ss-maxopen" style="color:var(--dim)">8</div></div>
     </div>
     <!-- Best Trade Card -->
     <div class="best-trade-card" id="best-trade-card" style="display:none;">
@@ -512,6 +528,22 @@ async function saveWallets() {
       body: JSON.stringify({ tradingWallet: trading, savingsWallet: savings })
     });
     if (res.ok) { el.textContent = '✅ Wallets saved'; el.style.color = 'var(--green)'; }
+    else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function saveMaxOpen() {
+  var val = document.getElementById('input-maxopen').value.trim();
+  var el = document.getElementById('status-maxopen');
+  if (!val) { el.textContent = 'Please enter a number'; el.style.color = 'var(--red)'; return; }
+  var n = parseInt(val);
+  if (isNaN(n) || n < 1 || n > 20) { el.textContent = 'Enter a value between 1 and 20'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxOpen: n })
+    });
+    if (res.ok) { el.textContent = '✅ Max trades set to ' + n; el.style.color = 'var(--green)'; }
     else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
   } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
@@ -681,6 +713,14 @@ async function fetchState() {
         'Trading: ' + (data.wallets.trading || 'not set') + ' | Savings: ' + (data.wallets.savings || 'not set');
     }
 
+    // Update current values in settings hints
+    var slDisp = document.getElementById('current-sl-display');
+    if (slDisp) slDisp.textContent = data.stopLossPct || 10;
+    var fundDisp = document.getElementById('current-fund-display');
+    if (fundDisp) fundDisp.textContent = '$' + f2(data.sessionFund || 100);
+    var maxOpenDisp = document.getElementById('current-maxopen-display');
+    if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
+
     // Open trades
     var openTrades = (data.openTrades || []);
     var gradTrades = openTrades.filter(function(t) { return t.isGrad; });
@@ -733,7 +773,7 @@ async function fetchState() {
         var pnlDisplay = hasPrice ? pSign(t.realPnl || 0) + '$' + f2(Math.abs(t.realPnl || 0)) : 'FETCHING...';
         var pctDisplay = hasPrice ? pSign(t.realPnlPct || 0) + ((t.realPnlPct || 0)*100).toFixed(1) + '%' : '---';
         var slDisplay = t.sl ? (t.sl * 100).toFixed(0) : '10';
-        var tpDisplay = t.tpl === 'FIXED' ? 'TP ' + (t.tpPct || 5) + '%' : 'TRAIL';
+        var tpDisplay = t.tpl === 'FIXED' ? 'TP ' + (t.tpPct || '?') + '%' : 'TRAIL';
         var d4 = document.createElement('div');
         d4.className = 'trade';
         d4.innerHTML =
@@ -803,8 +843,10 @@ async function fetchState() {
     var avgSlip = slips.length ? ((slips.reduce(function(a,b){return a+b;},0)/slips.length)*100).toFixed(2) : '0.00';
     document.getElementById('ss-pool').textContent = data.poolSize;
     document.getElementById('ss-slip').textContent = avgSlip + '%';
+    document.getElementById('ss-fees').textContent = '$' + f2(data.totalFees || 0);
     document.getElementById('ss-skip').textContent = data.rejectCount || 0;
     document.getElementById('ss-fund').textContent = '$' + f2(data.sessionFund || 100);
+    document.getElementById('ss-maxopen').textContent = data.maxOpen || 8;
 
     // Best Trade card
     var bt = data.bestTrade;
