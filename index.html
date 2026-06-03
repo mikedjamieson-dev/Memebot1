@@ -653,22 +653,26 @@ async function fetchState() {
       desc.textContent = '🎯 Fixed take profit: exits at ' + tpPct + '% gain | SL: ' + slPct + '%';
     }
 
-    // Sync TP mode buttons
-    currentTPMode = tpMode;
-    document.getElementById('btn-trail').classList.toggle('active', tpMode === 'TRAIL');
-    document.getElementById('btn-fixed').classList.toggle('active', tpMode === 'FIXED');
-    var tpInput = document.getElementById('input-tp-pct');
-    var tpLbl = document.getElementById('tp-pct-lbl');
-    if (tpMode === 'FIXED') {
-      tpInput.disabled = false;
-      tpInput.style.opacity = '1';
-      tpLbl.textContent = 'TARGET PROFIT %';
-      tpLbl.style.color = 'var(--dim)';
-    } else {
-      tpInput.disabled = true;
-      tpInput.style.opacity = '0.4';
-      tpLbl.textContent = 'TARGET PROFIT % — SELECT FIXED % ABOVE';
-      tpLbl.style.color = 'var(--bb)';
+    // Sync TP mode buttons — only when settings panel is closed
+    // This prevents fetchState from resetting the input while user is typing
+    var settingsOpen = document.getElementById('settings-panel').classList.contains('open');
+    if (!settingsOpen) {
+      currentTPMode = tpMode;
+      document.getElementById('btn-trail').classList.toggle('active', tpMode === 'TRAIL');
+      document.getElementById('btn-fixed').classList.toggle('active', tpMode === 'FIXED');
+      var tpInput = document.getElementById('input-tp-pct');
+      var tpLbl = document.getElementById('tp-pct-lbl');
+      if (tpMode === 'FIXED') {
+        tpInput.disabled = false;
+        tpInput.style.opacity = '1';
+        tpLbl.textContent = 'TARGET PROFIT %';
+        tpLbl.style.color = 'var(--dim)';
+      } else {
+        tpInput.disabled = true;
+        tpInput.style.opacity = '0.4';
+        tpLbl.textContent = 'TARGET PROFIT % — SELECT FIXED % ABOVE';
+        tpLbl.style.color = 'var(--bb)';
+      }
     }
 
     // Wallet display
