@@ -195,6 +195,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-maxopen')">
         <span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span>
       </div>
+      <div class="settings-menu-item" onclick="openSub('sub-fundloss')">
+        <span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span>
+      </div>
       <div class="settings-menu-item" onclick="openSub('sub-wallets')">
         <span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span>
       </div>
@@ -250,6 +253,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-maxopen-display">8</span> trades. Range: 1 to 20. Changes take effect immediately.</div>
       <button class="settings-save" onclick="saveMaxOpen()">SAVE MAX TRADES</button>
       <div class="settings-status" id="status-maxopen"></div>
+    </div>
+
+    <!-- Sub: Fund Stop Loss -->
+    <div class="settings-sub" id="sub-fundloss">
+      <button class="settings-back" onclick="closeSub('sub-fundloss')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">FUND STOP LOSS</div>
+      <div class="settings-lbl">FUND LOSS LIMIT %</div>
+      <input class="settings-input" id="input-fundloss" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10" />
+      <div class="settings-hint">Current: <span id="current-fundloss-display">10</span>%. Bot stops accepting new trades when fund drops by this amount. Open trades close naturally. Warning shown at 70% of limit.</div>
+      <button class="settings-save" onclick="saveFundLoss()">SAVE FUND STOP LOSS</button>
+      <div class="settings-status" id="status-fundloss"></div>
     </div>
 
     <!-- Sub: Wallets -->
@@ -548,6 +562,22 @@ async function saveMaxOpen() {
   } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
 
+async function saveFundLoss() {
+  var val = document.getElementById('input-fundloss').value.trim();
+  var el = document.getElementById('status-fundloss');
+  if (!val) { el.textContent = 'Please enter a percentage'; el.style.color = 'var(--red)'; return; }
+  var n = parseFloat(val);
+  if (isNaN(n) || n < 1 || n > 100) { el.textContent = 'Enter a value between 1 and 100'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fundStopLossPct: n })
+    });
+    if (res.ok) { el.textContent = '✅ Fund stop loss set to ' + n + '%'; el.style.color = 'var(--green)'; }
+    else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
 // ── LOG ───────────────────────────────────────────────────────
 function setFilter(f) {
   logFilter = f;
@@ -610,9 +640,20 @@ async function fetchState() {
     }
 
     // Status
-    document.getElementById('status').textContent = data.running
-      ? 'RUNNING · ' + data.poolSize + ' TOKENS · ' + data.scanCount + ' SCANNED'
-      : 'STANDBY · READY';
+    var statusEl = document.getElementById('status');
+    if (data.windingDown) {
+      statusEl.textContent = '10% FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
+      statusEl.style.color = 'var(--red)';
+    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 10) * 0.70) {
+      statusEl.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 10) + '% FUND LOSS LIMIT';
+      statusEl.style.color = 'var(--yellow)';
+    } else if (data.running) {
+      statusEl.textContent = 'RUNNING · ' + data.poolSize + ' TOKENS · ' + data.scanCount + ' SCANNED';
+      statusEl.style.color = 'var(--dim)';
+    } else {
+      statusEl.textContent = 'STANDBY · READY';
+      statusEl.style.color = 'var(--dim)';
+    }
 
     // Runtime
     if (data.startTime) startTimer(data.startTime);
@@ -720,6 +761,8 @@ async function fetchState() {
     if (fundDisp) fundDisp.textContent = '$' + f2(data.sessionFund || 100);
     var maxOpenDisp = document.getElementById('current-maxopen-display');
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
+    var fundLossDisp = document.getElementById('current-fundloss-display');
+    if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 10;
 
     // Open trades
     var openTrades = (data.openTrades || []);
