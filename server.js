@@ -87,6 +87,8 @@ const S = {
   stopLossPct: 10,
   totalFees: 0,
   maxOpen: 8,
+  fundStopLossPct: 10,
+  windingDown: false,
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -583,9 +585,22 @@ function closeTradeReal(id, reason) {
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 5min after win', 'info');
   }
 
-  if (S.fund < S.dayStartFund * (1 - CFG.LOSS_LIM)) {
-    log('Daily loss limit hit — bot stopped', 'rug');
-    stopBot();
+  // Check fund loss limits
+  var lossLimit = S.fundStopLossPct / 100;
+  var warningLimit = lossLimit * 0.70;
+  var currentLoss = (S.dayStartFund - S.fund) / S.dayStartFund;
+
+  if (currentLoss >= lossLimit && !S.windingDown) {
+    S.windingDown = true;
+    log('FUND LOSS LIMIT HIT — ' + S.fundStopLossPct + '% reached — closing open trades, no new entries', 'rug');
+    // Auto stop when all trades close
+    var windDownCheck = setInterval(function() {
+      if (S.open.length === 0) {
+        clearInterval(windDownCheck);
+        log('All trades closed — bot fully stopped', 'info');
+        stopBot();
+      }
+    }, 2000);
   }
 }
 
@@ -632,6 +647,7 @@ function checkExitCriteria() {
 // ── GRADUATION SNIPER ─────────────────────────────────────────
 async function runGradSniper() {
   if (!S.running || S.fund < 1) return;
+  if (S.windingDown) return;
   var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
   if (openGrads >= Math.max(Math.floor(S.maxOpen * 0.25), 1)) return;
 
@@ -685,6 +701,7 @@ var scanIdx = 0;
 
 async function runScan() {
   if (!S.running || S.tokens.size === 0) return;
+  if (S.windingDown) return;
   if (S.fund < 1) { stopBot(); return; }
   if (S.open.length >= S.maxOpen) return;
 
@@ -799,6 +816,7 @@ function startBot() {
   S.dscKey = 0;
   S.bestTrade = null;
   S.totalFees = 0;
+  S.windingDown = false;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
@@ -868,6 +886,9 @@ app.get('/api/state', function(req, res) {
     stopLossPct: S.stopLossPct,
     totalFees: S.totalFees,
     maxOpen: S.maxOpen,
+    fundStopLossPct: S.fundStopLossPct,
+    windingDown: S.windingDown,
+    currentLossPct: S.dayStartFund > 0 ? parseFloat(((S.dayStartFund - S.fund) / S.dayStartFund * 100).toFixed(2)) : 0,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -917,6 +938,13 @@ app.post('/api/settings', function(req, res) {
     if (!isNaN(mo) && mo >= 1 && mo <= 20) {
       S.maxOpen = mo;
       log('Max open trades: ' + S.maxOpen, 'info');
+    }
+  }
+  if (req.body.fundStopLossPct !== undefined) {
+    var fl = parseFloat(req.body.fundStopLossPct);
+    if (!isNaN(fl) && fl >= 1 && fl <= 100) {
+      S.fundStopLossPct = parseFloat(fl.toFixed(1));
+      log('Fund stop loss: ' + S.fundStopLossPct + '%', 'info');
     }
   }
   log('Settings updated | Trading: ' + (TRADING_WALLET || 'not set') + ' | Savings: ' + (SAVINGS_WALLET || 'not set'), 'info');
