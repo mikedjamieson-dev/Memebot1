@@ -239,28 +239,42 @@ async function getDSPrice(mint, pairAddress, chain) {
 }
 
 // ── DEXSCREENER TOKEN DISCOVERY ─────────────────────────────
-// Rotating keyword search every 5 minutes — covers Solana and Base
-// Both chains feed into the same pool with chain field stamped on each token
+// Uses token-profiles/latest/v1 endpoint — no keyword search
+// Returns newest tokens appearing on DexScreener across all chains
+// Filtered by chainId — no name guessing, catches any token regardless of name
+// Both Solana and Base feed into the same pool with chain field stamped on each token
 
-var SOL_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
-var BASE_QUERIES = ['base meme', 'base dog', 'base cat', 'brett base', 'toshi base', 'degen base', 'moon base', 'pepe base'];
-var solQueryIdx = 0;
-var baseQueryIdx = 0;
-
-async function fetchDSChain(query, chainId) {
+async function fetchDSChain(chainId) {
   var now = Date.now();
   var added = 0;
   try {
-    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
+    var res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1', { timeout: 10000 });
     if (!res.ok) return 0;
-    var data = await res.json();
-    var pairs = (data.pairs || []).filter(function(p) { return p.chainId === chainId; });
-    for (var k = 0; k < pairs.length; k++) {
-      var pair = pairs[k];
-      var mint = pair.baseToken && pair.baseToken.address;
+    var profiles = await res.json();
+    if (!Array.isArray(profiles)) return 0;
+
+    // Filter to target chain only
+    var chainProfiles = profiles.filter(function(p) { return p.chainId === chainId; });
+
+    for (var k = 0; k < chainProfiles.length; k++) {
+      var profile = chainProfiles[k];
+      var mint = profile.tokenAddress;
       if (!mint) continue;
       if (isBanned(mint)) continue;
       if (S.tokens.has(mint)) continue;
+
+      // Fetch pair data for this token to get price, liquidity, volume etc
+      var pairRes = await fetch('https://api.dexscreener.com/tokens/v1/' + chainId + '/' + mint, { timeout: 8000 });
+      if (!pairRes.ok) continue;
+      var pairData = await pairRes.json();
+      var pairs = Array.isArray(pairData) ? pairData : (pairData.pairs || []);
+      if (pairs.length === 0) continue;
+
+      // Use the most liquid pair
+      var pair = pairs.sort(function(a, b) {
+        return parseFloat((b.liquidity && b.liquidity.usd) || 0) - parseFloat((a.liquidity && a.liquidity.usd) || 0);
+      })[0];
+
       var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
       var mcap = parseFloat(pair.fdv || 0);
       var price = parseFloat(pair.priceUsd || 0);
@@ -268,6 +282,7 @@ async function fetchDSChain(query, chainId) {
       var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
       var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
       var age = pair.pairCreatedAt ? (now - pair.pairCreatedAt) / 3600000 : 24;
+
       if (liq < CFG.MIN_LIQ_USD) continue;
       if (mcap > CFG.MAX_MCAP_USD) continue;
       if (buys < 3) continue;
@@ -288,7 +303,7 @@ async function fetchDSChain(query, chainId) {
 
       S.tokens.set(mint, {
         mint, price,
-        n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
+        n: (profile.header || pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
         src: 'DSC',
         chain: chainId,
         liq, mcap, vol1h, buys, sells, age,
@@ -303,24 +318,16 @@ async function fetchDSChain(query, chainId) {
 }
 
 async function fetchDSTokens() {
-  var totalAdded = 0;
-
-  // Solana discovery
+  // Solana discovery — no keywords, pure chain filter
   if (S.solEnabled) {
-    var solQuery = SOL_QUERIES[solQueryIdx % SOL_QUERIES.length];
-    solQueryIdx++;
-    var solAdded = await fetchDSChain(solQuery, 'solana');
-    totalAdded += solAdded;
-    if (solAdded > 0) log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
+    var solAdded = await fetchDSChain('solana');
+    if (solAdded > 0) log('DS SOL: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
   }
 
-  // Base discovery
+  // Base discovery — no keywords, pure chain filter
   if (S.baseEnabled) {
-    var baseQuery = BASE_QUERIES[baseQueryIdx % BASE_QUERIES.length];
-    baseQueryIdx++;
-    var baseAdded = await fetchDSChain(baseQuery, 'base');
-    totalAdded += baseAdded;
-    if (baseAdded > 0) log('DS BASE [' + baseQuery + ']: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
+    var baseAdded = await fetchDSChain('base');
+    if (baseAdded > 0) log('DS BASE: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
   }
 
   S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
