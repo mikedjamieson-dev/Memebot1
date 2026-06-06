@@ -89,6 +89,9 @@ const S = {
   maxOpen: 8,
   fundStopLossPct: 10,
   windingDown: false,
+  solEnabled: true,
+  baseEnabled: true,
+  chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
 };
 
 // ── LOGGING ───────────────────────────────────────────────────
@@ -197,12 +200,33 @@ async function checkHoneypot(mint) {
   }
 }
 
-// ── DEXSCREENER PRICE ─────────────────────────────────────────
-async function getDSPrice(mint, pairAddress) {
+// ── BASE HONEYPOT CHECK ──────────────────────────────────────
+// Uses honeypot.is API — free, supports Base chain
+// Returns true if token is a honeypot risk
+async function checkBaseHoneypot(address) {
   try {
+    var res = await fetch(
+      'https://api.honeypot.is/v2/IsHoneypot?address=' + address + '&chainID=8453',
+      { timeout: 8000 }
+    );
+    if (!res.ok) return false; // If check fails be permissive — dont block token
+    var data = await res.json();
+    // Risk level 60+ means high risk — reject
+    if (data && data.honeypotResult && data.honeypotResult.isHoneypot) return true;
+    if (data && data.riskLevel !== undefined && data.riskLevel >= 60) return true;
+    return false;
+  } catch(e) {
+    return false; // If check fails be permissive
+  }
+}
+
+// ── DEXSCREENER PRICE ─────────────────────────────────────────
+async function getDSPrice(mint, pairAddress, chain) {
+  try {
+    var chainId = chain || 'solana';
     var url = pairAddress
-      ? 'https://api.dexscreener.com/latest/dex/pairs/solana/' + pairAddress
-      : 'https://api.dexscreener.com/tokens/v1/solana/' + mint;
+      ? 'https://api.dexscreener.com/latest/dex/pairs/' + chainId + '/' + pairAddress
+      : 'https://api.dexscreener.com/tokens/v1/' + chainId + '/' + mint;
     var res = await fetch(url, { timeout: 5000 });
     if (!res.ok) return null;
     var data = await res.json();
@@ -215,62 +239,89 @@ async function getDSPrice(mint, pairAddress) {
 }
 
 // ── DEXSCREENER TOKEN DISCOVERY ─────────────────────────────
-// Rotating keyword search every 5 minutes
-// Feeds into the pool with the same safety checklist
+// Rotating keyword search every 5 minutes — covers Solana and Base
+// Both chains feed into the same pool with chain field stamped on each token
 
-var DS_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
-var dsQueryIdx = 0;
+var SOL_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
+var BASE_QUERIES = ['base meme', 'base dog', 'base cat', 'brett base', 'toshi base', 'degen base', 'moon base', 'pepe base'];
+var solQueryIdx = 0;
+var baseQueryIdx = 0;
 
-async function fetchDSTokens() {
+async function fetchDSChain(query, chainId) {
   var now = Date.now();
-  var query = DS_QUERIES[dsQueryIdx % DS_QUERIES.length];
-  dsQueryIdx++;
+  var added = 0;
   try {
     var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
-    if (res.ok) {
-      var data = await res.json();
-      var pairs = (data.pairs || []).filter(function(p) { return p.chainId === 'solana'; });
-      var added = 0;
-      for (var k = 0; k < pairs.length; k++) {
-        var pair = pairs[k];
-        var mint = pair.baseToken && pair.baseToken.address;
-        if (!mint) continue;
-        if (isBanned(mint)) continue;
-        if (S.tokens.has(mint)) continue;
-        var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
-        var mcap = parseFloat(pair.fdv || 0);
-        var price = parseFloat(pair.priceUsd || 0);
-        var vol1h = parseFloat((pair.volume && pair.volume.h1) || 0);
-        var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
-        var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
-        var age = pair.pairCreatedAt ? (now - pair.pairCreatedAt) / 3600000 : 24;
-        if (liq < CFG.MIN_LIQ_USD) continue;
-        if (mcap > CFG.MAX_MCAP_USD) continue;
-        if (buys < 3) continue;
-        if (buys / Math.max(sells, 1) < 1.0) continue;
-        var tokenData = {
-          mintAuthority: null,
-          freezeAuthority: null,
-          lpBurn: undefined,
-          dev: undefined,
-        };
+    if (!res.ok) return 0;
+    var data = await res.json();
+    var pairs = (data.pairs || []).filter(function(p) { return p.chainId === chainId; });
+    for (var k = 0; k < pairs.length; k++) {
+      var pair = pairs[k];
+      var mint = pair.baseToken && pair.baseToken.address;
+      if (!mint) continue;
+      if (isBanned(mint)) continue;
+      if (S.tokens.has(mint)) continue;
+      var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
+      var mcap = parseFloat(pair.fdv || 0);
+      var price = parseFloat(pair.priceUsd || 0);
+      var vol1h = parseFloat((pair.volume && pair.volume.h1) || 0);
+      var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
+      var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
+      var age = pair.pairCreatedAt ? (now - pair.pairCreatedAt) / 3600000 : 24;
+      if (liq < CFG.MIN_LIQ_USD) continue;
+      if (mcap > CFG.MAX_MCAP_USD) continue;
+      if (buys < 3) continue;
+      if (buys / Math.max(sells, 1) < 1.0) continue;
+
+      // Safety check — Base uses honeypot.is, Solana uses existing checklist
+      if (chainId === 'base') {
+        var isHp = await checkBaseHoneypot(mint);
+        if (isHp) {
+          permanentBan(mint, 'Base honeypot detected');
+          continue;
+        }
+      } else {
+        var tokenData = { mintAuthority: null, freezeAuthority: null, lpBurn: undefined, dev: undefined };
         var safe = await runSafetyChecklist(mint, tokenData, true);
         if (!safe) continue;
-        S.tokens.set(mint, {
-          mint, price,
-          n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
-          src: 'DSC',
-          liq, mcap, vol1h, buys, sells,
-          age,
-          pairAddress: pair.pairAddress || null,
-          addedAt: Date.now(),
-        });
-        added++;
-        S.dscKey++;
       }
-      if (added > 0) log('DS Keyword [' + query + ']: ' + added + ' added | Pool: ' + S.tokens.size, 'info');
+
+      S.tokens.set(mint, {
+        mint, price,
+        n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
+        src: 'DSC',
+        chain: chainId,
+        liq, mcap, vol1h, buys, sells, age,
+        pairAddress: pair.pairAddress || null,
+        addedAt: Date.now(),
+      });
+      added++;
+      S.dscKey++;
     }
   } catch(e) {}
+  return added;
+}
+
+async function fetchDSTokens() {
+  var totalAdded = 0;
+
+  // Solana discovery
+  if (S.solEnabled) {
+    var solQuery = SOL_QUERIES[solQueryIdx % SOL_QUERIES.length];
+    solQueryIdx++;
+    var solAdded = await fetchDSChain(solQuery, 'solana');
+    totalAdded += solAdded;
+    if (solAdded > 0) log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
+  }
+
+  // Base discovery
+  if (S.baseEnabled) {
+    var baseQuery = BASE_QUERIES[baseQueryIdx % BASE_QUERIES.length];
+    baseQueryIdx++;
+    var baseAdded = await fetchDSChain(baseQuery, 'base');
+    totalAdded += baseAdded;
+    if (baseAdded > 0) log('DS BASE [' + baseQuery + ']: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
+  }
 
   S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
   S.sources['DSC'] = 'live:' + S.tokens.size;
@@ -350,6 +401,7 @@ function connectPump() {
             mint, price,
             n: name,
             src: 'PUMP',
+            chain: 'solana',
             liq: parseFloat(d.initialBuy || 0) * SOL_PRICE_USD,
             mcap: parseFloat(d.marketCapSol || 0) * SOL_PRICE_USD,
             vol1h: 0,
@@ -443,7 +495,7 @@ async function updateOpenTradePrices() {
 
   for (var i = 0; i < trades.length; i++) {
     var trade = trades[i];
-    var price = await getDSPrice(trade.mint, trade.pairAddress);
+    var price = await getDSPrice(trade.mint, trade.pairAddress, trade.chain);
     if (!price || price <= 0) continue;
 
     if (trade.currentPrice && trade.currentPrice > 0) {
@@ -528,16 +580,19 @@ function closeTradeReal(id, reason) {
     log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' | saved $' + savings.toFixed(2) + ' | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
+    if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else if (pnl > 0) {
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
     log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' (below split min) | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
+    if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else {
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
     log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' -$' + Math.abs(pnl).toFixed(2) + ' | ' + closeReason, 'loss');
     S.stats.l++;
     if (tr.isGrad) S.stats.gl++;
+    if (tr.chain === 'base') S.chainStats.baseL++; else S.chainStats.solL++;
   }
 
   S.stats.t++;
@@ -553,6 +608,7 @@ function closeTradeReal(id, reason) {
     openedAt: tr.openedAt,
     closedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     src: tr.src || (tr.tok && tr.tok.src) || 'unknown',
+    chain: tr.chain || 'solana',
     isGrad: tr.isGrad || false,
   });
   if (S.closed.length > 200) S.closed.pop();
@@ -719,6 +775,11 @@ async function runScan() {
     return;
   }
 
+  // Skip token if its chain is disabled
+  if (tok.chain === 'base' && !S.baseEnabled) return;
+  if (tok.chain === 'solana' && !S.solEnabled) return;
+  if (!tok.chain && !S.solEnabled) return; // legacy tokens without chain default to solana
+
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
   if (bsr < 0.8) {
     S.rejectCount++;
@@ -761,6 +822,7 @@ async function runScan() {
     sl: S.stopLossPct / 100,
     slip, mint: tok.mint,
     src: tok.src,
+    chain: tok.chain || 'solana',
     pairAddress: tok.pairAddress || null,
     entryPrice,
     currentPrice: entryPrice,
@@ -817,6 +879,7 @@ function startBot() {
   S.bestTrade = null;
   S.totalFees = 0;
   S.windingDown = false;
+  S.chainStats = { solW: 0, solL: 0, baseW: 0, baseL: 0 };
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
@@ -863,7 +926,7 @@ app.get('/api/state', function(req, res) {
     stCredits: S.stCredits,
     openTrades: S.open.map(function(t) {
       return {
-        id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, tpPct: t.tpPct, sl: t.sl,
+        id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, tpPct: t.tpPct, sl: t.sl, chain: t.chain || "solana",
         slip: t.slip, mint: t.mint, src: t.src,
         entryPrice: t.entryPrice, currentPrice: t.currentPrice,
         peakPrice: t.peakPrice, realPnl: t.realPnl, realPnlPct: t.realPnlPct,
@@ -889,6 +952,9 @@ app.get('/api/state', function(req, res) {
     fundStopLossPct: S.fundStopLossPct,
     windingDown: S.windingDown,
     currentLossPct: S.dayStartFund > 0 ? parseFloat(((S.dayStartFund - S.fund) / S.dayStartFund * 100).toFixed(2)) : 0,
+    chainStats: S.chainStats,
+    solEnabled: S.solEnabled,
+    baseEnabled: S.baseEnabled,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -946,6 +1012,14 @@ app.post('/api/settings', function(req, res) {
       S.fundStopLossPct = parseFloat(fl.toFixed(1));
       log('Fund stop loss: ' + S.fundStopLossPct + '%', 'info');
     }
+  }
+  if (req.body.solEnabled !== undefined) {
+    S.solEnabled = req.body.solEnabled === true || req.body.solEnabled === 'true';
+    log('Solana discovery: ' + (S.solEnabled ? 'ENABLED' : 'DISABLED'), 'info');
+  }
+  if (req.body.baseEnabled !== undefined) {
+    S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
+    log('Base discovery: ' + (S.baseEnabled ? 'ENABLED' : 'DISABLED'), 'info');
   }
   log('Settings updated | Trading: ' + (TRADING_WALLET || 'not set') + ' | Savings: ' + (SAVINGS_WALLET || 'not set'), 'info');
   res.json({ success: true });
