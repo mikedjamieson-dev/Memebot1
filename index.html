@@ -198,6 +198,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')">
         <span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span>
       </div>
+      <div class="settings-menu-item" onclick="openSub('sub-chains')">
+        <span>⛓ CHAIN TOGGLES</span><span class="settings-menu-arrow">›</span>
+      </div>
       <div class="settings-menu-item" onclick="openSub('sub-wallets')">
         <span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span>
       </div>
@@ -264,6 +267,25 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-fundloss-display">10</span>%. Bot stops accepting new trades when fund drops by this amount. Open trades close naturally. Warning shown at 70% of limit.</div>
       <button class="settings-save" onclick="saveFundLoss()">SAVE FUND STOP LOSS</button>
       <div class="settings-status" id="status-fundloss"></div>
+    </div>
+
+    <!-- Sub: Chain Toggles -->
+    <div class="settings-sub" id="sub-chains">
+      <button class="settings-back" onclick="closeSub('sub-chains')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">CHAIN TOGGLES</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Enable or disable discovery and trading on each chain. Open trades finish naturally when a chain is turned off.</div>
+      <div class="settings-lbl">SOLANA</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-sol-on" onclick="setChain('sol', true)">● ON</button>
+        <button class="tp-btn" id="btn-sol-off" onclick="setChain('sol', false)">○ OFF</button>
+      </div>
+      <div class="settings-lbl" style="margin-top:10px;">BASE</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-base-on" onclick="setChain('base', true)">● ON</button>
+        <button class="tp-btn" id="btn-base-off" onclick="setChain('base', false)">○ OFF</button>
+      </div>
+      <button class="settings-save" onclick="saveChains()">SAVE CHAIN SETTINGS</button>
+      <div class="settings-status" id="status-chains"></div>
     </div>
 
     <!-- Sub: Wallets -->
@@ -406,7 +428,42 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     </div>
   </div>
 
-  <div class="foot">MEMEBOT V15 · SNIPER BOT · REAL DATA · 24/7</div>
+  <!-- Chain Performance -->
+  <div class="card" style="margin-bottom:8px;" id="chain-perf-card">
+    <div class="card-lbl">CHAIN PERFORMANCE</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
+      <div style="background:rgba(153,102,255,0.08);border:1px solid rgba(153,102,255,0.3);border-radius:8px;padding:10px;">
+        <div style="font-size:11px;letter-spacing:2px;color:#9966ff;margin-bottom:8px;">◎ SOLANA <span id="sol-status" style="font-size:10px;color:var(--green)">● ON</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;">
+            <div style="font-size:11px;color:var(--dim);">WINS</div>
+            <div class="ss-val" id="sol-wins" style="color:var(--green)">0</div>
+          </div>
+          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;">
+            <div style="font-size:11px;color:var(--dim);">LOSSES</div>
+            <div class="ss-val" id="sol-losses" style="color:var(--red)">0</div>
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:6px;font-family:'Orbitron',monospace;font-size:13px;" id="sol-wr">0%</div>
+      </div>
+      <div style="background:rgba(0,100,255,0.08);border:1px solid rgba(0,100,255,0.3);border-radius:8px;padding:10px;">
+        <div style="font-size:11px;letter-spacing:2px;color:#0064ff;margin-bottom:8px;">🔵 BASE <span id="base-status" style="font-size:10px;color:var(--green)">● ON</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;">
+            <div style="font-size:11px;color:var(--dim);">WINS</div>
+            <div class="ss-val" id="base-wins" style="color:var(--green)">0</div>
+          </div>
+          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;">
+            <div style="font-size:11px;color:var(--dim);">LOSSES</div>
+            <div class="ss-val" id="base-losses" style="color:var(--red)">0</div>
+          </div>
+        </div>
+        <div style="text-align:center;margin-top:6px;font-family:'Orbitron',monospace;font-size:13px;" id="base-wr">0%</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">MEMEBOT V15 · SNIPER BOT · SOLANA + BASE · 24/7</div>
 </div>
 
 <script>
@@ -559,6 +616,35 @@ async function saveMaxOpen() {
     });
     if (res.ok) { el.textContent = '✅ Max trades set to ' + n; el.style.color = 'var(--green)'; }
     else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+var currentSolEnabled = true;
+var currentBaseEnabled = true;
+
+function setChain(chain, enabled) {
+  if (chain === 'sol') {
+    currentSolEnabled = enabled;
+    document.getElementById('btn-sol-on').classList.toggle('active', enabled);
+    document.getElementById('btn-sol-off').classList.toggle('active', !enabled);
+  } else {
+    currentBaseEnabled = enabled;
+    document.getElementById('btn-base-on').classList.toggle('active', enabled);
+    document.getElementById('btn-base-off').classList.toggle('active', !enabled);
+  }
+}
+
+async function saveChains() {
+  var el = document.getElementById('status-chains');
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ solEnabled: currentSolEnabled, baseEnabled: currentBaseEnabled })
+    });
+    if (res.ok) {
+      var msg = 'SOL: ' + (currentSolEnabled ? 'ON' : 'OFF') + ' | BASE: ' + (currentBaseEnabled ? 'ON' : 'OFF');
+      el.textContent = '✅ ' + msg; el.style.color = 'var(--green)';
+    } else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
   } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
 
@@ -824,7 +910,7 @@ async function fetchState() {
             '<div class="trade-name">' + t.tok.n + '<span class="real-badge">REAL</span></div>' +
             '<button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button>' +
           '</div>' +
-          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · [' + t.tok.src + '] · ' + tpDisplay + '</div>' +
+          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · [' + t.tok.src + '] · ' + (t.chain === 'base' ? '🔵BASE' : '◎SOL') + ' · ' + tpDisplay + '</div>' +
           '<div class="pnl-row">' +
             '<div class="pnl-item"><div class="pnl-lbl">STOP LOSS</div><div class="pnl-val" style="color:var(--red)">-' + slDisplay + '%</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">REAL P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
@@ -864,7 +950,7 @@ async function fetchState() {
           '<div class="ctrade-g3">' +
             '<div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val">$' + f2(t.size) + '</div></div>' +
             '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
-            '<div class="ctrade-cell"><div class="ctrade-lbl">SOURCE</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src || '?') + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">SOURCE</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src || '?') + ' ' + (t.chain === 'base' ? '🔵' : '◎') + '</div></div>' +
           '</div>' +
           '<div class="ctrade-g2">' +
             '<div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
@@ -890,6 +976,41 @@ async function fetchState() {
     document.getElementById('ss-skip').textContent = data.rejectCount || 0;
     document.getElementById('ss-fund').textContent = '$' + f2(data.sessionFund || 100);
     document.getElementById('ss-maxopen').textContent = data.maxOpen || 8;
+
+    // Chain performance
+    var cs = data.chainStats || { solW: 0, solL: 0, baseW: 0, baseL: 0 };
+    document.getElementById('sol-wins').textContent = cs.solW || 0;
+    document.getElementById('sol-losses').textContent = cs.solL || 0;
+    var solTotal = (cs.solW || 0) + (cs.solL || 0);
+    var solWR = solTotal > 0 ? ((cs.solW / solTotal) * 100).toFixed(1) + '%' : '0%';
+    document.getElementById('sol-wr').textContent = solWR;
+    document.getElementById('sol-wr').style.color = parseFloat(solWR) >= 50 ? 'var(--green)' : 'var(--red)';
+
+    document.getElementById('base-wins').textContent = cs.baseW || 0;
+    document.getElementById('base-losses').textContent = cs.baseL || 0;
+    var baseTotal = (cs.baseW || 0) + (cs.baseL || 0);
+    var baseWR = baseTotal > 0 ? ((cs.baseW / baseTotal) * 100).toFixed(1) + '%' : '0%';
+    document.getElementById('base-wr').textContent = baseWR;
+    document.getElementById('base-wr').style.color = parseFloat(baseWR) >= 50 ? 'var(--green)' : 'var(--red)';
+
+    // Chain toggle status display
+    var solOn = data.solEnabled !== false;
+    var baseOn = data.baseEnabled !== false;
+    document.getElementById('sol-status').textContent = solOn ? '● ON' : '○ OFF';
+    document.getElementById('sol-status').style.color = solOn ? 'var(--green)' : 'var(--red)';
+    document.getElementById('base-status').textContent = baseOn ? '● ON' : '○ OFF';
+    document.getElementById('base-status').style.color = baseOn ? 'var(--green)' : 'var(--red)';
+
+    // Sync chain toggle buttons when settings panel is closed
+    var settingsOpenNow = document.getElementById('settings-panel').classList.contains('open');
+    if (!settingsOpenNow) {
+      currentSolEnabled = solOn;
+      currentBaseEnabled = baseOn;
+      document.getElementById('btn-sol-on').classList.toggle('active', solOn);
+      document.getElementById('btn-sol-off').classList.toggle('active', !solOn);
+      document.getElementById('btn-base-on').classList.toggle('active', baseOn);
+      document.getElementById('btn-base-off').classList.toggle('active', !baseOn);
+    }
 
     // Best Trade card
     var bt = data.bestTrade;
