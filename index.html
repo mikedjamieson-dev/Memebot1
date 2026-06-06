@@ -321,7 +321,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <!-- DSC stats -->
   <div class="g2" style="margin-bottom:8px;">
-    <div class="stat"><div class="stat-lbl">DSC POOL</div><div class="stat-val" id="dsc-pool" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">SOL POOL</div><div class="stat-val" id="sol-pool" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">BASE POOL</div><div class="stat-val" id="base-pool" style="color:#0064ff">0</div></div>
     <div class="stat"><div class="stat-lbl">DSC KEYWORD</div><div class="stat-val" id="dsc-key" style="color:var(--blue)">0</div></div>
   </div>
 
@@ -758,7 +759,8 @@ async function fetchState() {
     document.getElementById('pool').textContent = data.poolSize;
     document.getElementById('scanned').textContent = data.scanCount;
     document.getElementById('pump-cnt').textContent = data.pumpCount;
-    document.getElementById('dsc-pool').textContent = data.dscPool || 0;
+    document.getElementById('sol-pool').textContent = data.solPool || 0;
+    document.getElementById('base-pool').textContent = data.basePool || 0;
     document.getElementById('dsc-key').textContent = data.dscKey || 0;
     document.getElementById('perm-bans').textContent = data.permanentBans || 0;
     document.getElementById('temp-bans').textContent = data.tempBans || 0;
