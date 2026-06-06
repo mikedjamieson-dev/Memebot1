@@ -79,6 +79,8 @@ const S = {
   tempBans: new Map(),
   cooldowns: new Map(),
   dscPool: 0,
+  solPool: 0,
+  basePool: 0,
   dscKey: 0,
   bestTrade: null,
   sessionFund: 100,
@@ -331,6 +333,8 @@ async function fetchDSTokens() {
   }
 
   S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
+  S.solPool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'solana'; }).length;
+  S.basePool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'base'; }).length;
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
@@ -882,6 +886,8 @@ function startBot() {
   S.running = true;
   S.startTime = Date.now();
   S.dscPool = 0;
+  S.solPool = 0;
+  S.basePool = 0;
   S.dscKey = 0;
   S.bestTrade = null;
   S.totalFees = 0;
@@ -948,6 +954,8 @@ app.get('/api/state', function(req, res) {
     permanentBans: S.permanentBans.size,
     tempBans: S.tempBans.size,
     dscPool: S.dscPool,
+    solPool: S.solPool,
+    basePool: S.basePool,
     dscKey: S.dscKey,
     bestTrade: S.bestTrade,
     sessionFund: S.sessionFund,
