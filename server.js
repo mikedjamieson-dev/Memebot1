@@ -247,35 +247,24 @@ async function getDSPrice(mint, pairAddress, chain) {
 // Both Solana and Base feed into the same pool with chain field stamped on each token
 
 async function fetchDSChain(chainId) {
+  // Single API call — broad search filtered by chain
+  // Returns pairs with all data needed — no second fetch required
+  // 'sol' catches Solana tokens, 'base' catches Base tokens via chainId filter
   var now = Date.now();
   var added = 0;
+  var query = chainId === 'base' ? 'base' : 'sol';
   try {
-    var res = await fetch('https://api.dexscreener.com/token-profiles/latest/v1', { timeout: 10000 });
+    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + query, { timeout: 10000 });
     if (!res.ok) return 0;
-    var profiles = await res.json();
-    if (!Array.isArray(profiles)) return 0;
+    var data = await res.json();
+    var pairs = (data.pairs || []).filter(function(p) { return p.chainId === chainId; });
 
-    // Filter to target chain only
-    var chainProfiles = profiles.filter(function(p) { return p.chainId === chainId; });
-
-    for (var k = 0; k < chainProfiles.length; k++) {
-      var profile = chainProfiles[k];
-      var mint = profile.tokenAddress;
+    for (var k = 0; k < pairs.length; k++) {
+      var pair = pairs[k];
+      var mint = pair.baseToken && pair.baseToken.address;
       if (!mint) continue;
       if (isBanned(mint)) continue;
       if (S.tokens.has(mint)) continue;
-
-      // Fetch pair data for this token to get price, liquidity, volume etc
-      var pairRes = await fetch('https://api.dexscreener.com/tokens/v1/' + chainId + '/' + mint, { timeout: 8000 });
-      if (!pairRes.ok) continue;
-      var pairData = await pairRes.json();
-      var pairs = Array.isArray(pairData) ? pairData : (pairData.pairs || []);
-      if (pairs.length === 0) continue;
-
-      // Use the most liquid pair
-      var pair = pairs.sort(function(a, b) {
-        return parseFloat((b.liquidity && b.liquidity.usd) || 0) - parseFloat((a.liquidity && a.liquidity.usd) || 0);
-      })[0];
 
       var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
       var mcap = parseFloat(pair.fdv || 0);
@@ -305,7 +294,7 @@ async function fetchDSChain(chainId) {
 
       S.tokens.set(mint, {
         mint, price,
-        n: (profile.header || pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
+        n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
         src: 'DSC',
         chain: chainId,
         liq, mcap, vol1h, buys, sells, age,
