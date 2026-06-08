@@ -628,6 +628,7 @@ function closeTradeReal(id, reason) {
       size: tr.size || 0,
       pnl: parseFloat(pnl.toFixed(4)),
       pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+      closeReason: closeReason,
     };
   }
 
