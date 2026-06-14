@@ -165,6 +165,53 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .ss-val{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;}
 
 .foot{text-align:center;font-size:11px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
+
+/* Navigation */
+.nav-bar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.nav-btn{padding:10px;border-radius:8px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:'Orbitron',monospace;letter-spacing:2px;text-align:center;}
+.nav-btn.active{border-color:var(--green);background:rgba(0,255,136,0.08);color:var(--green);}
+.nav-btn.running{animation:pulse 1.5s infinite;}
+
+/* Portfolio page */
+.port-page{display:none;}
+.port-page.active{display:block;}
+.live-page{display:block;}
+.live-page.hidden{display:none;}
+
+/* Portfolio stats grid */
+.port-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
+.port-stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.port-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:4px;}
+.port-val{font-family:'Orbitron',monospace;font-size:16px;font-weight:700;}
+
+/* Search and filter bar */
+.search-bar{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;}
+.search-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:14px;padding:8px 12px;margin-bottom:8px;}
+.filter-row{display:flex;gap:6px;flex-wrap:wrap;}
+.filter-btn{padding:4px 10px;border-radius:4px;border:1px solid var(--bb);cursor:pointer;font-size:11px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);}
+.filter-btn.active{background:var(--bb);color:var(--text);}
+
+/* Trade history table */
+.trade-table{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;}
+.trade-row{padding:8px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;}
+.trade-row:last-child{border-bottom:none;}
+.trade-row-name{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
+.trade-row-meta{font-size:11px;color:var(--dim);margin-top:2px;}
+.trade-row-pnl{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;text-align:right;}
+.trade-row-reason{font-size:10px;color:var(--dim);text-align:right;margin-top:2px;}
+
+/* Session list */
+.session-row{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;}
+.session-date{font-size:13px;color:var(--text);font-weight:bold;}
+.session-meta{font-size:11px;color:var(--dim);margin-top:2px;}
+.session-pnl{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;text-align:right;}
+.session-wr{font-size:11px;color:var(--dim);text-align:right;margin-top:2px;}
+
+/* Pagination */
+.page-row{display:flex;justify-content:space-between;align-items:center;margin-top:10px;}
+.page-btn{padding:6px 14px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;}
+.page-btn:disabled{opacity:0.3;cursor:default;}
+.page-info{font-size:11px;color:var(--dim);}
 </style>
 </head>
 <body>
@@ -174,6 +221,14 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <div class="hdr">
     <div class="htitle">BunkerBuster.io</div>
   </div>
+
+  <!-- Navigation -->
+  <div class="nav-bar">
+    <button class="nav-btn active" id="nav-live" onclick="showPage('live')">▶ LIVE</button>
+    <button class="nav-btn" id="nav-port" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
+  </div>
+
+  <div class="live-page" id="live-page">
 
   <!-- Settings toggle — top of page -->
   <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
@@ -460,6 +515,88 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
         </div>
         <div style="text-align:center;margin-top:6px;font-family:'Orbitron',monospace;font-size:13px;" id="base-wr">0%</div>
       </div>
+    </div>
+  </div>
+
+  <div class="foot">BunkerBuster.io</div>
+</div><!-- end live-page -->
+
+<!-- Portfolio Page -->
+<div class="wrap port-page" id="port-page">
+
+  <!-- Navigation -->
+  <div class="nav-bar">
+    <button class="nav-btn" id="nav-live-p" onclick="showPage('live')">▶ LIVE</button>
+    <button class="nav-btn active" id="nav-port-p" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
+  </div>
+
+  <!-- All Time Stats -->
+  <div class="card" style="margin-bottom:8px;">
+    <div class="card-lbl">ALL TIME PERFORMANCE</div>
+    <div class="port-grid" style="margin-top:8px;">
+      <div class="port-stat"><div class="port-lbl">TOTAL TRADES</div><div class="port-val" id="pt-total" style="color:var(--blue)">0</div></div>
+      <div class="port-stat"><div class="port-lbl">WIN RATE</div><div class="port-val" id="pt-wr" style="color:var(--green)">0%</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL P&L</div><div class="port-val" id="pt-pnl" style="color:var(--green)">$0.00</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL FEES</div><div class="port-val" id="pt-fees" style="color:var(--red)">$0.00</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL WINS</div><div class="port-val" id="pt-wins" style="color:var(--green)">0</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL LOSSES</div><div class="port-val" id="pt-losses" style="color:var(--red)">0</div></div>
+    </div>
+  </div>
+
+  <!-- Best and Worst Trade Ever -->
+  <div class="g2" style="margin-bottom:8px;">
+    <div class="card">
+      <div class="card-lbl">BEST TRADE EVER</div>
+      <div class="port-val" id="pt-best-name" style="color:var(--green);font-size:14px;margin:6px 0;">—</div>
+      <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:var(--green);" id="pt-best-pnl">$0.00</div>
+      <div style="font-size:11px;color:var(--dim);margin-top:4px;" id="pt-best-reason">—</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">WORST TRADE EVER</div>
+      <div class="port-val" id="pt-worst-name" style="color:var(--red);font-size:14px;margin:6px 0;">—</div>
+      <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:var(--red);" id="pt-worst-pnl">$0.00</div>
+      <div style="font-size:11px;color:var(--dim);margin-top:4px;" id="pt-worst-reason">—</div>
+    </div>
+  </div>
+
+  <!-- Session History -->
+  <div class="card" style="margin-bottom:8px;">
+    <div class="card-lbl" style="margin-bottom:8px;">SESSION HISTORY <span id="pt-session-count" style="color:var(--dim);font-size:11px;"></span></div>
+    <div id="pt-sessions"><div style="font-size:13px;color:var(--dim);">No sessions recorded yet.</div></div>
+  </div>
+
+  <!-- Search and Filter -->
+  <div class="search-bar">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;">SEARCH TRADE HISTORY</div>
+    <input class="search-input" id="pt-search-token" placeholder="Search by token name..." oninput="searchTrades()" />
+    <input class="search-input" id="pt-search-date" placeholder="Filter by date (e.g. 6/13/2026)..." oninput="searchTrades()" />
+    <div class="filter-row">
+      <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
+      <button class="filter-btn" onclick="setFilter2('chain','solana',this)">◎ SOL</button>
+      <button class="filter-btn" onclick="setFilter2('chain','base',this)">🔵 BASE</button>
+    </div>
+    <div class="filter-row" style="margin-top:6px;">
+      <button class="filter-btn active" onclick="setFilter2('result','all',this)">ALL</button>
+      <button class="filter-btn" onclick="setFilter2('result','win',this)">WINS</button>
+      <button class="filter-btn" onclick="setFilter2('result','loss',this)">LOSSES</button>
+    </div>
+    <div class="filter-row" style="margin-top:6px;">
+      <button class="filter-btn active" onclick="setFilter2('exit','all',this)">ALL EXITS</button>
+      <button class="filter-btn" onclick="setFilter2('exit','trail',this)">TRAIL</button>
+      <button class="filter-btn" onclick="setFilter2('exit','stale',this)">STALE</button>
+      <button class="filter-btn" onclick="setFilter2('exit','stop loss',this)">SL</button>
+      <button class="filter-btn" onclick="setFilter2('exit','manual',this)">MANUAL</button>
+    </div>
+  </div>
+
+  <!-- Trade History -->
+  <div class="trade-table">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;">TRADE HISTORY <span id="pt-trade-count" style="color:var(--dim);"></span></div>
+    <div id="pt-trades"><div style="font-size:13px;color:var(--dim);">No trades recorded yet.</div></div>
+    <div class="page-row">
+      <button class="page-btn" id="pt-prev" onclick="changePage(-1)" disabled>← PREV</button>
+      <div class="page-info" id="pt-page-info"></div>
+      <button class="page-btn" id="pt-next" onclick="changePage(1)" disabled>NEXT →</button>
     </div>
   </div>
 
@@ -1031,6 +1168,177 @@ async function fetchState() {
 
   } catch(e) {
     document.getElementById('status').textContent = 'ERROR: ' + e.message;
+  }
+}
+
+// ── PAGE NAVIGATION ───────────────────────────────────────────
+function showPage(page) {
+  var livePage = document.getElementById('live-page');
+  var portPage = document.getElementById('port-page');
+  var navLive = document.getElementById('nav-live');
+  var navPort = document.getElementById('nav-port');
+
+  if (page === 'live') {
+    livePage.style.display = 'block';
+    portPage.style.display = 'none';
+    navLive.classList.add('active');
+    navPort.classList.remove('active');
+  } else {
+    livePage.style.display = 'none';
+    portPage.style.display = 'block';
+    navLive.classList.remove('active');
+    navPort.classList.add('active');
+    loadPortfolioPage();
+  }
+}
+
+// ── PORTFOLIO PAGE ────────────────────────────────────────────
+var ptFilters = { chain: 'all', result: 'all', exit: 'all' };
+var ptPage = 0;
+
+function setFilter2(type, val, btn) {
+  ptFilters[type] = val;
+  // Update button states for this filter group
+  var allBtns = btn.parentElement.querySelectorAll('.filter-btn');
+  allBtns.forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  ptPage = 0;
+  loadTrades();
+}
+
+function searchTrades() {
+  ptPage = 0;
+  loadTrades();
+}
+
+function changePage(dir) {
+  ptPage += dir;
+  loadTrades();
+}
+
+async function loadPortfolioPage() {
+  try {
+    // Load all time stats
+    var res = await fetch(BASE + '/api/portfolio');
+    if (!res.ok) return;
+    var data = await res.json();
+
+    // All time stats
+    var at = data.allTime || {};
+    var total = at.t || 0;
+    var wr = total > 0 ? ((at.w / total) * 100).toFixed(1) : '0.0';
+    document.getElementById('pt-total').textContent = total;
+    var wrEl = document.getElementById('pt-wr');
+    wrEl.textContent = wr + '%';
+    wrEl.style.color = parseFloat(wr) >= 50 ? 'var(--green)' : 'var(--red)';
+    var pnlEl = document.getElementById('pt-pnl');
+    pnlEl.textContent = pSign(at.totalPnl || 0) + '$' + f2(at.totalPnl || 0);
+    pnlEl.style.color = (at.totalPnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('pt-fees').textContent = '$' + f2(at.totalFees || 0);
+    document.getElementById('pt-wins').textContent = at.w || 0;
+    document.getElementById('pt-losses').textContent = at.l || 0;
+
+    // Best trade
+    if (data.bestTrade) {
+      document.getElementById('pt-best-name').textContent = data.bestTrade.name || '?';
+      document.getElementById('pt-best-pnl').textContent = '+$' + f2(data.bestTrade.pnl);
+      document.getElementById('pt-best-reason').textContent = data.bestTrade.closeReason || '?';
+    }
+
+    // Worst trade
+    if (data.worstTrade) {
+      document.getElementById('pt-worst-name').textContent = data.worstTrade.name || '?';
+      document.getElementById('pt-worst-pnl').textContent = '-$' + f2(Math.abs(data.worstTrade.pnl));
+      document.getElementById('pt-worst-reason').textContent = data.worstTrade.closeReason || '?';
+    }
+
+    // Sessions
+    var sessEl = document.getElementById('pt-sessions');
+    var sessions = data.sessions || [];
+    document.getElementById('pt-session-count').textContent = '(' + (data.totalSessions || 0) + ' sessions)';
+    if (sessions.length === 0) {
+      sessEl.innerHTML = '<div style="font-size:13px;color:var(--dim);">No sessions recorded yet.</div>';
+    } else {
+      sessEl.innerHTML = '';
+      sessions.slice(0, 10).forEach(function(s) {
+        var pnlColor = (s.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+        var d = document.createElement('div');
+        d.className = 'session-row';
+        d.innerHTML =
+          '<div>' +
+            '<div class="session-date">' + (s.date || '?') + '</div>' +
+            '<div class="session-meta">' + (s.trades || 0) + ' trades · ' + (s.winRate || 0) + '% WR · Fees $' + f2(s.totalFees || 0) + '</div>' +
+          '</div>' +
+          '<div>' +
+            '<div class="session-pnl" style="color:' + pnlColor + '">' + pSign(s.pnl || 0) + '$' + f2(s.pnl || 0) + '</div>' +
+            '<div class="session-wr">' + (s.wins || 0) + 'W / ' + (s.losses || 0) + 'L</div>' +
+          '</div>';
+        sessEl.appendChild(d);
+      });
+    }
+
+    // Load trades
+    loadTrades();
+
+  } catch(e) {
+    console.error('Portfolio load error:', e);
+  }
+}
+
+async function loadTrades() {
+  try {
+    var params = new URLSearchParams({
+      page: ptPage,
+      chain: ptFilters.chain,
+      result: ptFilters.result,
+      exit: ptFilters.exit,
+    });
+    var tokenSearch = document.getElementById('pt-search-token').value.trim();
+    var dateSearch = document.getElementById('pt-search-date').value.trim();
+    if (tokenSearch) params.set('token', tokenSearch);
+    if (dateSearch) params.set('date', dateSearch);
+
+    var res = await fetch(BASE + '/api/portfolio/trades?' + params.toString());
+    if (!res.ok) return;
+    var data = await res.json();
+
+    var tradesEl = document.getElementById('pt-trades');
+    document.getElementById('pt-trade-count').textContent = '(' + (data.total || 0) + ' trades)';
+
+    if (!data.trades || data.trades.length === 0) {
+      tradesEl.innerHTML = '<div style="font-size:13px;color:var(--dim);">No trades found.</div>';
+      document.getElementById('pt-page-info').textContent = '';
+      document.getElementById('pt-prev').disabled = true;
+      document.getElementById('pt-next').disabled = true;
+      return;
+    }
+
+    tradesEl.innerHTML = '';
+    data.trades.forEach(function(t) {
+      var pnlColor = (t.pnl || 0) > 0 ? 'var(--green)' : 'var(--red)';
+      var chainIcon = t.chain === 'base' ? '🔵' : '◎';
+      var d = document.createElement('div');
+      d.className = 'trade-row';
+      d.innerHTML =
+        '<div>' +
+          '<div class="trade-row-name" style="color:' + pnlColor + '">' + chainIcon + ' ' + (t.name || '?') + '</div>' +
+          '<div class="trade-row-meta">$' + f2(t.size) + ' · ' + (t.closedDate || '') + ' ' + (t.closedTime || '') + ' · ' + (t.src || '') + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;">' +
+          '<div class="trade-row-pnl" style="color:' + pnlColor + '">' + pSign(t.pnl || 0) + '$' + f2(t.pnl || 0) + '</div>' +
+          '<div class="trade-row-reason">' + (t.closeReason || '?') + '</div>' +
+        '</div>';
+      tradesEl.appendChild(d);
+    });
+
+    // Pagination
+    var pages = data.pages || 1;
+    document.getElementById('pt-page-info').textContent = 'Page ' + (ptPage + 1) + ' of ' + pages;
+    document.getElementById('pt-prev').disabled = ptPage <= 0;
+    document.getElementById('pt-next').disabled = ptPage >= pages - 1;
+
+  } catch(e) {
+    console.error('Trade load error:', e);
   }
 }
 </script>
