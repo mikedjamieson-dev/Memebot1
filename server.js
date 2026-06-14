@@ -3,6 +3,8 @@ const express = require('express');
 const WebSocket = require('ws');
 const fetch = require('node-fetch');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors({ origin: '*' }));
@@ -54,6 +56,43 @@ const CFG = {
   DS_INTERVAL: 300000,
   WIN_COOLDOWN_MS: 300000,
 };
+
+// ── PORTFOLIO DATA ───────────────────────────────────────────
+// Persists across sessions when saved to disk
+// Requires Render $25 persistent disk — until then resets on restart
+const PORTFOLIO_FILE = path.join(__dirname, 'data', 'portfolio.json');
+
+var P = {
+  allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 },
+  bestTrade: null,
+  worstTrade: null,
+  trades: [],  // Full trade history — every trade ever
+  sessions: [], // Session summaries
+};
+
+// Load portfolio from disk if exists
+function loadPortfolio() {
+  try {
+    if (fs.existsSync(PORTFOLIO_FILE)) {
+      var raw = fs.readFileSync(PORTFOLIO_FILE, 'utf8');
+      P = JSON.parse(raw);
+      log('Portfolio loaded — ' + P.trades.length + ' trades in history', 'info');
+    }
+  } catch(e) {
+    log('Portfolio file not found — starting fresh', 'info');
+  }
+}
+
+// Save portfolio to disk
+function savePortfolio() {
+  try {
+    var dir = path.dirname(PORTFOLIO_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PORTFOLIO_FILE, JSON.stringify(P, null, 2));
+  } catch(e) {
+    // File save fails silently on free tier — expected until Render $25
+  }
+}
 
 // ── STATE ─────────────────────────────────────────────────────
 const S = {
@@ -619,6 +658,48 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
+  // ── PORTFOLIO RECORDING ───────────────────────────────────────
+  // Record every trade to all time portfolio history
+  var portfolioTrade = {
+    id: tr.id,
+    name: tr.tok && tr.tok.n ? tr.tok.n : '?',
+    mint: tr.mint || '',
+    chain: tr.chain || 'solana',
+    src: tr.src || 'unknown',
+    entryPrice: tr.entryPrice || 0,
+    exitPrice: tr.currentPrice || 0,
+    size: tr.size || 0,
+    pnl: parseFloat(pnl.toFixed(4)),
+    pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+    closeReason: closeReason,
+    isGrad: tr.isGrad || false,
+    openedAt: tr.openedAt || '',
+    closedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
+    closedDate: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
+    closedTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+    slip: tr.slip || 0,
+    fees: parseFloat(feePaid.toFixed(4)),
+  };
+
+  // Add to front of history — most recent first
+  P.trades.unshift(portfolioTrade);
+
+  // Update all time stats
+  P.allTime.t++;
+  P.allTime.totalPnl = parseFloat((P.allTime.totalPnl + pnl).toFixed(4));
+  P.allTime.totalFees = parseFloat((P.allTime.totalFees + feePaid).toFixed(4));
+  if (pnl > 0) P.allTime.w++;
+  else P.allTime.l++;
+  if (pnl > P.allTime.bestPnl) P.allTime.bestPnl = parseFloat(pnl.toFixed(4));
+  if (pnl < P.allTime.worstPnl) P.allTime.worstPnl = parseFloat(pnl.toFixed(4));
+
+  // Update best and worst trade ever
+  if (!P.bestTrade || pnl > P.bestTrade.pnl) P.bestTrade = portfolioTrade;
+  if (!P.worstTrade || pnl < P.worstTrade.pnl) P.worstTrade = portfolioTrade;
+
+  // Save to disk every 10 trades
+  if (P.allTime.t % 10 === 0) savePortfolio();
+
   // Track best trade of session — never resets
   if (!S.bestTrade || pnl > S.bestTrade.pnl) {
     S.bestTrade = {
@@ -916,6 +997,27 @@ function stopBot() {
   if (dsI) clearInterval(dsI);
   if (cleanI) clearInterval(cleanI);
   if (solPriceI) clearInterval(solPriceI);
+
+  // Save session summary to portfolio
+  if (S.stats.t > 0) {
+    var session = {
+      date: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
+      startTime: S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
+      endTime: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
+      trades: S.stats.t,
+      wins: S.stats.w,
+      losses: S.stats.l,
+      winRate: S.stats.t > 0 ? parseFloat((S.stats.w / S.stats.t * 100).toFixed(1)) : 0,
+      startFund: S.sessionFund,
+      endFund: parseFloat(S.fund.toFixed(2)),
+      savings: parseFloat(S.savings.toFixed(2)),
+      pnl: parseFloat((S.fund + S.savings - S.sessionFund).toFixed(2)),
+      totalFees: parseFloat(S.totalFees.toFixed(4)),
+    };
+    P.sessions.unshift(session);
+    savePortfolio();
+  }
+
   log('Bot stopped | Trades: ' + S.stats.t + ' | W: ' + S.stats.w + ' L: ' + S.stats.l + ' | Fund: $' + S.fund.toFixed(2) + ' | Savings: $' + S.savings.toFixed(2), 'info');
 }
 
@@ -1035,6 +1137,64 @@ app.post('/api/settings', function(req, res) {
   res.json({ success: true });
 });
 
+// ── PORTFOLIO API ROUTES ─────────────────────────────────────
+app.get('/api/portfolio', function(req, res) {
+  res.json({
+    allTime: P.allTime,
+    bestTrade: P.bestTrade,
+    worstTrade: P.worstTrade,
+    sessions: P.sessions.slice(0, 50),
+    totalSessions: P.sessions.length,
+    totalTrades: P.trades.length,
+  });
+});
+
+// Trade history with search and filter
+app.get('/api/portfolio/trades', function(req, res) {
+  var trades = P.trades;
+  var q = req.query;
+
+  // Filter by date
+  if (q.date) {
+    trades = trades.filter(function(t) { return t.closedDate === q.date; });
+  }
+
+  // Filter by token name
+  if (q.token) {
+    var tok = q.token.toUpperCase();
+    trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; });
+  }
+
+  // Filter by chain
+  if (q.chain && q.chain !== 'all') {
+    trades = trades.filter(function(t) { return t.chain === q.chain; });
+  }
+
+  // Filter by result
+  if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl > 0; });
+  if (q.result === 'loss') trades = trades.filter(function(t) { return t.pnl <= 0; });
+
+  // Filter by exit reason
+  if (q.exit && q.exit !== 'all') {
+    trades = trades.filter(function(t) { return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0; });
+  }
+
+  // Pagination
+  var page = parseInt(q.page) || 0;
+  var limit = 50;
+  var total = trades.length;
+  trades = trades.slice(page * limit, (page + 1) * limit);
+
+  res.json({ trades: trades, total: total, page: page, pages: Math.ceil(total / limit) });
+});
+
+// Clear portfolio data
+app.post('/api/portfolio/clear', function(req, res) {
+  P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [] };
+  savePortfolio();
+  res.json({ success: true });
+});
+
 app.get('/health', function(req, res) {
   res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount, fund: S.fund });
 });
@@ -1043,7 +1203,8 @@ app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
 
 // ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, function() {
-  console.log('MemeBot V15 — Sniper Bot — running on port ' + PORT);
+  console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
+  loadPortfolio();
   connectPump();
   fetchDSTokens();
   updateSolPrice();
