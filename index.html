@@ -524,12 +524,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 <!-- Portfolio Page -->
 <div class="wrap port-page" id="port-page">
 
-  <!-- Navigation -->
-  <div class="nav-bar">
-    <button class="nav-btn" id="nav-live-p" onclick="showPage('live')">▶ LIVE</button>
-    <button class="nav-btn active" id="nav-port-p" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
-  </div>
-
   <!-- All Time Stats -->
   <div class="card" style="margin-bottom:8px;">
     <div class="card-lbl">ALL TIME PERFORMANCE</div>
@@ -569,7 +563,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <div class="search-bar">
     <div style="font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;">SEARCH TRADE HISTORY</div>
     <input class="search-input" id="pt-search-token" placeholder="Search by token name..." oninput="searchTrades()" />
-    <input class="search-input" id="pt-search-date" placeholder="Filter by date (e.g. 6/13/2026)..." oninput="searchTrades()" />
+    <div style="font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:6px;">FILTER BY DATE</div>
+    <input class="search-input" id="pt-search-date" type="date" oninput="searchTrades()" style="color-scheme:dark;" />
     <div class="filter-row">
       <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
       <button class="filter-btn" onclick="setFilter2('chain','solana',this)">◎ SOL</button>
@@ -591,7 +586,15 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <!-- Trade History -->
   <div class="trade-table">
-    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;">TRADE HISTORY <span id="pt-trade-count" style="color:var(--dim);"></span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);">TRADE HISTORY <span id="pt-trade-count" style="color:var(--dim);"></span></div>
+      <select id="pt-per-page" onchange="changePerPage()" style="background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:11px;padding:4px 8px;">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="99999">ALL</option>
+      </select>
+    </div>
     <div id="pt-trades"><div style="font-size:13px;color:var(--dim);">No trades recorded yet.</div></div>
     <div class="page-row">
       <button class="page-btn" id="pt-prev" onclick="changePage(-1)" disabled>← PREV</button>
@@ -1195,6 +1198,7 @@ function showPage(page) {
 // ── PORTFOLIO PAGE ────────────────────────────────────────────
 var ptFilters = { chain: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
+var ptLimit = 50;
 
 function setFilter2(type, val, btn) {
   ptFilters[type] = val;
@@ -1213,6 +1217,12 @@ function searchTrades() {
 
 function changePage(dir) {
   ptPage += dir;
+  loadTrades();
+}
+
+function changePerPage() {
+  ptLimit = parseInt(document.getElementById('pt-per-page').value);
+  ptPage = 0;
   loadTrades();
 }
 
@@ -1289,12 +1299,19 @@ async function loadTrades() {
   try {
     var params = new URLSearchParams({
       page: ptPage,
+      limit: ptLimit,
       chain: ptFilters.chain,
       result: ptFilters.result,
       exit: ptFilters.exit,
     });
     var tokenSearch = document.getElementById('pt-search-token').value.trim();
-    var dateSearch = document.getElementById('pt-search-date').value.trim();
+    var dateRaw = document.getElementById('pt-search-date').value.trim();
+    // Convert YYYY-MM-DD from date picker to M/D/YYYY for matching stored dates
+    var dateSearch = '';
+    if (dateRaw) {
+      var dp = dateRaw.split('-');
+      if (dp.length === 3) dateSearch = parseInt(dp[1]) + '/' + parseInt(dp[2]) + '/' + dp[0];
+    }
     if (tokenSearch) params.set('token', tokenSearch);
     if (dateSearch) params.set('date', dateSearch);
 
