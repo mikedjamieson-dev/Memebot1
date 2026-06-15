@@ -1181,7 +1181,8 @@ app.get('/api/portfolio/trades', function(req, res) {
 
   // Pagination
   var page = parseInt(q.page) || 0;
-  var limit = 50;
+  var limit = parseInt(q.limit) || 50;
+  if (limit > 99999) limit = trades.length; // ALL
   var total = trades.length;
   trades = trades.slice(page * limit, (page + 1) * limit);
 
