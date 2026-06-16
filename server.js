@@ -130,6 +130,7 @@ const S = {
   maxOpen: 8,
   fundStopLossPct: 10,
   windingDown: false,
+  maxPool: 10000,
   solEnabled: true,
   baseEnabled: true,
   chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
@@ -414,7 +415,7 @@ function connectPump() {
           if (isBanned(mint)) return;
           if (S.tokens.has(mint)) return;
 
-          if (S.tokens.size >= CFG.MAX_POOL) {
+          if (S.tokens.size >= S.maxPool) {
             var worstKey = null;
             var worstBSR = Infinity;
             S.tokens.forEach(function(tok, key) {
@@ -1067,6 +1068,7 @@ app.get('/api/state', function(req, res) {
     chainStats: S.chainStats,
     solEnabled: S.solEnabled,
     baseEnabled: S.baseEnabled,
+    maxPool: S.maxPool,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -1123,6 +1125,13 @@ app.post('/api/settings', function(req, res) {
     if (!isNaN(fl) && fl >= 1 && fl <= 100) {
       S.fundStopLossPct = parseFloat(fl.toFixed(1));
       log('Fund stop loss: ' + S.fundStopLossPct + '%', 'info');
+    }
+  }
+  if (req.body.maxPool !== undefined) {
+    var mp = parseInt(req.body.maxPool);
+    if (!isNaN(mp) && mp >= 1000 && mp <= 50000) {
+      S.maxPool = mp;
+      log('Max pool size: ' + S.maxPool, 'info');
     }
   }
   if (req.body.solEnabled !== undefined) {
