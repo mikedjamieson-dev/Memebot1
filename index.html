@@ -166,6 +166,11 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
 .foot{text-align:center;font-size:11px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
 
+/* Pool Info panel */
+.pool-info-btn{width:100%;padding:7px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:11px;font-family:'Share Tech Mono',monospace;margin-bottom:8px;text-align:center;letter-spacing:1px;}
+.pool-info-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;display:none;}
+.pool-info-panel.open{display:block;}
+
 /* Navigation */
 .nav-bar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
 .nav-btn{padding:10px;border-radius:8px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:'Orbitron',monospace;letter-spacing:2px;text-align:center;}
@@ -251,6 +256,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')">
         <span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span>
       </div>
+      <div class="settings-menu-item" onclick="openSub('sub-poolsize')">
+        <span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span>
+      </div>
       <div class="settings-menu-item" onclick="openSub('sub-chains')">
         <span>⛓ CHAIN TOGGLES</span><span class="settings-menu-arrow">›</span>
       </div>
@@ -322,17 +330,28 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-status" id="status-fundloss"></div>
     </div>
 
+    <!-- Sub: Pool Size -->
+    <div class="settings-sub" id="sub-poolsize">
+      <button class="settings-back" onclick="closeSub('sub-poolsize')">← BACK TO SETTINGS</button>
+      <div class="settings-sub-title">POOL SIZE</div>
+      <div class="settings-lbl">MAXIMUM POOL SIZE</div>
+      <input class="settings-input" id="input-poolsize" type="number" min="1000" max="50000" step="1000" placeholder="e.g. 10000" />
+      <div class="settings-hint">Current: <span id="current-poolsize-display">10000</span> tokens. Default: 10,000. Range: 1,000 to 50,000. Smaller pool = more selective. Larger pool = more opportunities.</div>
+      <button class="settings-save" onclick="savePoolSize()">SAVE POOL SIZE</button>
+      <div class="settings-status" id="status-poolsize"></div>
+    </div>
+
     <!-- Sub: Chain Toggles -->
     <div class="settings-sub" id="sub-chains">
       <button class="settings-back" onclick="closeSub('sub-chains')">← BACK TO SETTINGS</button>
       <div class="settings-sub-title">CHAIN TOGGLES</div>
       <div class="settings-hint" style="margin-bottom:12px;">Enable or disable discovery and trading on each chain. Open trades finish naturally when a chain is turned off.</div>
-      <div class="settings-lbl">SOLANA</div>
+      <div class="settings-lbl"><img src="https://cryptologos.cc/logos/solana-sol-logo.png" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;border-radius:50%;">SOLANA</div>
       <div class="tp-mode-row">
         <button class="tp-btn" id="btn-sol-on" onclick="setChain('sol', true)">● ON</button>
         <button class="tp-btn" id="btn-sol-off" onclick="setChain('sol', false)">○ OFF</button>
       </div>
-      <div class="settings-lbl" style="margin-top:10px;">BASE</div>
+      <div class="settings-lbl" style="margin-top:10px;">🔵 BASE</div>
       <div class="tp-mode-row">
         <button class="tp-btn" id="btn-base-on" onclick="setChain('base', true)">● ON</button>
         <button class="tp-btn" id="btn-base-off" onclick="setChain('base', false)">○ OFF</button>
@@ -362,31 +381,31 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="tbox"><div class="tlbl">RUNTIME</div><div class="tval" id="runtime">00:00:00</div></div>
   </div>
 
-  <!-- Pump.fun bar -->
-  <div class="wsbar" id="wsbar">⚡ PUMP.FUN WEBSOCKET: CONNECTING...</div>
-
-  <!-- Pool stats -->
-  <div class="g3" style="margin-bottom:8px;">
-    <div class="stat"><div class="stat-lbl">POOL</div><div class="stat-val" id="pool" style="color:var(--blue)">0</div></div>
-    <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim)">0</div></div>
-    <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow)">0</div></div>
+  <!-- Pool Size + Pool Info -->
+  <div class="stat" style="margin-bottom:6px;">
+    <div class="stat-lbl">POOL SIZE</div>
+    <div class="stat-val" id="pool" style="color:var(--blue)">0</div>
   </div>
 
-  <!-- DSC stats -->
-  <div class="g2" style="margin-bottom:8px;">
-    <div class="stat"><div class="stat-lbl">SOL POOL</div><div class="stat-val" id="sol-pool" style="color:var(--green)">0</div></div>
-    <div class="stat"><div class="stat-lbl">BASE POOL</div><div class="stat-val" id="base-pool" style="color:#0064ff">0</div></div>
-    <div class="stat"><div class="stat-lbl">DSC KEYWORD</div><div class="stat-val" id="dsc-key" style="color:var(--blue)">0</div></div>
+  <!-- Pool Info button -->
+  <button class="pool-info-btn" onclick="togglePoolInfo()">ℹ POOL INFO</button>
+  <div class="pool-info-panel" id="pool-info-panel">
+    <div class="g3" style="margin-bottom:8px;">
+      <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">DSC FOUND</div><div class="stat-val" id="dsc-key" style="color:var(--blue);font-size:14px;">0</div></div>
+    </div>
+    <div class="g2" style="margin-bottom:8px;">
+      <div class="stat"><div class="stat-lbl">◎ SOL POOL</div><div class="stat-val" id="sol-pool" style="color:var(--green);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">🔵 BASE POOL</div><div class="stat-val" id="base-pool" style="color:#0064ff;font-size:14px;">0</div></div>
+    </div>
+    <div class="g2" style="margin-bottom:6px;">
+      <div class="stat"><div class="stat-lbl">PERM BANS</div><div class="stat-val" id="perm-bans" style="color:var(--red);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">TEMP BANS</div><div class="stat-val" id="temp-bans" style="color:var(--yellow);font-size:14px;">0</div></div>
+    </div>
+    <div class="wsbar" id="wsbar" style="margin-bottom:0;">⚡ PUMP.FUN WEBSOCKET: CONNECTING...</div>
+    <div class="srcrow" id="srcrow" style="margin-top:8px;margin-bottom:0;"></div>
   </div>
-
-  <!-- Ban stats -->
-  <div class="g2" style="margin-bottom:8px;">
-    <div class="stat"><div class="stat-lbl">PERM BANS</div><div class="stat-val" id="perm-bans" style="color:var(--red)">0</div></div>
-    <div class="stat"><div class="stat-lbl">TEMP BANS</div><div class="stat-val" id="temp-bans" style="color:var(--yellow)">0</div></div>
-  </div>
-
-  <!-- Source badges -->
-  <div class="srcrow" id="srcrow"></div>
 
   <!-- Fund + Savings -->
   <div class="g2" style="margin-bottom:8px;">
@@ -567,7 +586,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <input class="search-input" id="pt-search-date" type="date" oninput="searchTrades()" style="color-scheme:dark;" />
     <div class="filter-row">
       <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
-      <button class="filter-btn" onclick="setFilter2('chain','solana',this)">◎ SOL</button>
+      <button class="filter-btn" onclick="setFilter2('chain','solana',this)"><img src="https://cryptologos.cc/logos/solana-sol-logo.png" style="width:12px;height:12px;vertical-align:middle;margin-right:3px;border-radius:50%;">SOL</button>
       <button class="filter-btn" onclick="setFilter2('chain','base',this)">🔵 BASE</button>
     </div>
     <div class="filter-row" style="margin-top:6px;">
@@ -755,6 +774,22 @@ async function saveMaxOpen() {
       body: JSON.stringify({ maxOpen: n })
     });
     if (res.ok) { el.textContent = '✅ Max trades set to ' + n; el.style.color = 'var(--green)'; }
+    else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function savePoolSize() {
+  var val = document.getElementById('input-poolsize').value.trim();
+  var el = document.getElementById('status-poolsize');
+  if (!val) { el.textContent = 'Please enter a size'; el.style.color = 'var(--red)'; return; }
+  var n = parseInt(val);
+  if (isNaN(n) || n < 1000 || n > 50000) { el.textContent = 'Enter a value between 1000 and 50000'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxPool: n })
+    });
+    if (res.ok) { el.textContent = '✅ Pool size set to ' + n; el.style.color = 'var(--green)'; }
     else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
   } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
@@ -990,6 +1025,8 @@ async function fetchState() {
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
     var fundLossDisp = document.getElementById('current-fundloss-display');
     if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 10;
+    var poolSizeDisp = document.getElementById('current-poolsize-display');
+    if (poolSizeDisp) poolSizeDisp.textContent = data.maxPool || 10000;
 
     // Open trades
     var openTrades = (data.openTrades || []);
@@ -1172,6 +1209,11 @@ async function fetchState() {
   } catch(e) {
     document.getElementById('status').textContent = 'ERROR: ' + e.message;
   }
+}
+
+// ── POOL INFO TOGGLE ─────────────────────────────────────────
+function togglePoolInfo() {
+  document.getElementById('pool-info-panel').classList.toggle('open');
 }
 
 // ── PAGE NAVIGATION ───────────────────────────────────────────
