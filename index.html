@@ -346,7 +346,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <button class="settings-back" onclick="closeSub('sub-chains')">← BACK TO SETTINGS</button>
       <div class="settings-sub-title">CHAIN TOGGLES</div>
       <div class="settings-hint" style="margin-bottom:12px;">Enable or disable discovery and trading on each chain. Open trades finish naturally when a chain is turned off.</div>
-      <div class="settings-lbl"><img src="https://cryptologos.cc/logos/solana-sol-logo.png" style="width:14px;height:14px;vertical-align:middle;margin-right:4px;border-radius:50%;">SOLANA</div>
+      <div class="settings-lbl"><svg width="14" height="14" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sg1)"/></svg>SOLANA</div>
       <div class="tp-mode-row">
         <button class="tp-btn" id="btn-sol-on" onclick="setChain('sol', true)">● ON</button>
         <button class="tp-btn" id="btn-sol-off" onclick="setChain('sol', false)">○ OFF</button>
@@ -364,34 +364,52 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="settings-sub" id="sub-wallets">
       <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK TO SETTINGS</button>
       <div class="settings-sub-title">WALLET ADDRESSES</div>
-      <div class="settings-lbl">TRADING WALLET</div>
-      <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..." />
-      <div class="settings-lbl">SAVINGS WALLET</div>
-      <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..." />
-      <button class="settings-save" onclick="saveWallets()">SAVE WALLETS</button>
+      <div class="settings-hint" style="margin-bottom:12px;">Select a chain to enter wallet addresses. Each chain has its own trading and savings wallet.</div>
+
+      <!-- Solana wallets -->
+      <div class="settings-menu-item" onclick="toggleWalletChain('sol')" style="margin-bottom:8px;">
+        <span><svg width="14" height="14" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sg1)"/></svg> SOLANA WALLETS</span><span class="settings-menu-arrow" id="sol-wallet-arrow">›</span>
+      </div>
+      <div id="sol-wallet-panel" style="display:none;margin-bottom:12px;">
+        <div class="settings-lbl">TRADING WALLET</div>
+        <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..." />
+        <div class="settings-lbl">SAVINGS WALLET</div>
+        <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..." />
+        <button class="settings-save" onclick="saveWallets()" style="margin-top:6px;">SAVE SOLANA WALLETS</button>
+        <div class="wallet-display" id="wallet-display" style="margin-top:6px;"></div>
+      </div>
+
+      <!-- Base wallets -->
+      <div class="settings-menu-item" onclick="toggleWalletChain('base')" style="margin-bottom:8px;">
+        <span>🔵 BASE WALLETS</span><span class="settings-menu-arrow" id="base-wallet-arrow">›</span>
+      </div>
+      <div id="base-wallet-panel" style="display:none;margin-bottom:12px;">
+        <div class="settings-lbl">TRADING WALLET</div>
+        <input class="settings-input" id="base-trading-wallet" placeholder="Base trading wallet address..." />
+        <div class="settings-lbl">SAVINGS WALLET</div>
+        <input class="settings-input" id="base-savings-wallet" placeholder="Base savings wallet address..." />
+        <button class="settings-save" onclick="saveBaseWallets()" style="margin-top:6px;">SAVE BASE WALLETS</button>
+        <div class="wallet-display" id="base-wallet-display" style="margin-top:6px;"></div>
+      </div>
+
       <div class="settings-status" id="status-wallets"></div>
-      <div class="wallet-display" id="wallet-display"></div>
     </div>
 
   </div>
 
-  <!-- Status + Runtime -->
-  <div class="topbar">
-    <div class="sbar" id="status">CONNECTING...</div>
-    <div class="tbox"><div class="tlbl">RUNTIME</div><div class="tval" id="runtime">00:00:00</div></div>
-  </div>
-
-  <!-- Pool Size + Pool Info -->
-  <div class="stat" style="margin-bottom:6px;">
-    <div class="stat-lbl">POOL SIZE</div>
-    <div class="stat-val" id="pool" style="color:var(--blue)">0</div>
+  <!-- Top Stats — Pool Size, Tokens Scanned, Runtime -->
+  <div class="g3" style="margin-bottom:6px;">
+    <div class="stat"><div class="stat-lbl">POOL SIZE</div><div class="stat-val" id="pool" style="color:var(--blue)">0</div></div>
+    <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim)">0</div></div>
+    <div class="tbox" style="border-radius:6px;background:var(--panel);border:1px solid var(--border);padding:8px;text-align:center;"><div class="stat-lbl">RUNTIME</div><div class="tval" id="runtime">00:00:00</div></div>
   </div>
 
   <!-- Pool Info button -->
   <button class="pool-info-btn" onclick="togglePoolInfo()">ℹ POOL INFO</button>
   <div class="pool-info-panel" id="pool-info-panel">
+    <!-- Status -->
+    <div class="sbar" id="status" style="margin-bottom:8px;border-radius:6px;">CONNECTING...</div>
     <div class="g3" style="margin-bottom:8px;">
-      <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim);font-size:14px;">0</div></div>
       <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow);font-size:14px;">0</div></div>
       <div class="stat"><div class="stat-lbl">DSC FOUND</div><div class="stat-val" id="dsc-key" style="color:var(--blue);font-size:14px;">0</div></div>
     </div>
@@ -586,7 +604,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <input class="search-input" id="pt-search-date" type="date" oninput="searchTrades()" style="color-scheme:dark;" />
     <div class="filter-row">
       <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
-      <button class="filter-btn" onclick="setFilter2('chain','solana',this)"><img src="https://cryptologos.cc/logos/solana-sol-logo.png" style="width:12px;height:12px;vertical-align:middle;margin-right:3px;border-radius:50%;">SOL</button>
+      <button class="filter-btn" onclick="setFilter2('chain','solana',this)"><svg width="12" height="12" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:3px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sg2" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sg2)"/></svg>SOL</button>
       <button class="filter-btn" onclick="setFilter2('chain','base',this)">🔵 BASE</button>
     </div>
     <div class="filter-row" style="margin-top:6px;">
@@ -900,19 +918,19 @@ async function fetchState() {
       btn.textContent = '▶ START BOT';
     }
 
-    // Status
+    // Status — now lives inside Pool Info panel
     var statusEl = document.getElementById('status');
     if (data.windingDown) {
-      statusEl.textContent = '10% FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
+      statusEl.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
       statusEl.style.color = 'var(--red)';
     } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 10) * 0.70) {
       statusEl.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 10) + '% FUND LOSS LIMIT';
       statusEl.style.color = 'var(--yellow)';
     } else if (data.running) {
-      statusEl.textContent = 'RUNNING · ' + data.poolSize + ' TOKENS · ' + data.scanCount + ' SCANNED';
-      statusEl.style.color = 'var(--dim)';
+      statusEl.textContent = '● RUNNING';
+      statusEl.style.color = 'var(--green)';
     } else {
-      statusEl.textContent = 'STANDBY · READY';
+      statusEl.textContent = '○ STANDBY · READY';
       statusEl.style.color = 'var(--dim)';
     }
 
@@ -1214,6 +1232,33 @@ async function fetchState() {
 // ── POOL INFO TOGGLE ─────────────────────────────────────────
 function togglePoolInfo() {
   document.getElementById('pool-info-panel').classList.toggle('open');
+}
+
+// ── WALLET CHAIN TOGGLE ───────────────────────────────────────
+function toggleWalletChain(chain) {
+  var panel = document.getElementById(chain + '-wallet-panel');
+  var arrow = document.getElementById(chain + '-wallet-arrow');
+  var isOpen = panel.style.display !== 'none';
+  panel.style.display = isOpen ? 'none' : 'block';
+  arrow.textContent = isOpen ? '›' : '∨';
+}
+
+async function saveBaseWallets() {
+  var trading = document.getElementById('base-trading-wallet').value.trim();
+  var savings = document.getElementById('base-savings-wallet').value.trim();
+  var el = document.getElementById('status-wallets');
+  if (!trading && !savings) { el.textContent = 'Please enter at least one wallet'; el.style.color = 'var(--red)'; return; }
+  try {
+    var res = await fetch(BASE + '/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseTradingWallet: trading, baseSavingsWallet: savings })
+    });
+    if (res.ok) {
+      el.textContent = '✅ Base wallets saved';
+      el.style.color = 'var(--green)';
+      document.getElementById('base-wallet-display').textContent = 'Trading: ' + (trading ? trading.slice(0,8) + '...' : 'not set') + ' | Savings: ' + (savings ? savings.slice(0,8) + '...' : 'not set');
+    } else { el.textContent = '❌ Failed to save'; el.style.color = 'var(--red)'; }
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
 
 // ── PAGE NAVIGATION ───────────────────────────────────────────
