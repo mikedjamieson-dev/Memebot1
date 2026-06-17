@@ -17,6 +17,8 @@ const ST_URL = 'https://data.solanatracker.io';
 
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
+var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
+var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 
 // ── BOT CONFIGURATION ─────────────────────────────────────────
 const CFG = {
@@ -1075,6 +1077,8 @@ app.get('/api/state', function(req, res) {
     wallets: {
       trading: TRADING_WALLET ? TRADING_WALLET.slice(0,8) + '...' : 'not set',
       savings: SAVINGS_WALLET ? SAVINGS_WALLET.slice(0,8) + '...' : 'not set',
+      baseTrading: BASE_TRADING_WALLET ? BASE_TRADING_WALLET.slice(0,8) + '...' : 'not set',
+      baseSavings: BASE_SAVINGS_WALLET ? BASE_SAVINGS_WALLET.slice(0,8) + '...' : 'not set',
     }
   });
 });
@@ -1088,6 +1092,8 @@ app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Ma
 app.post('/api/settings', function(req, res) {
   if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
   if (req.body.savingsWallet) SAVINGS_WALLET = req.body.savingsWallet;
+  if (req.body.baseTradingWallet) BASE_TRADING_WALLET = req.body.baseTradingWallet;
+  if (req.body.baseSavingsWallet) BASE_SAVINGS_WALLET = req.body.baseSavingsWallet;
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
     if (!isNaN(sf) && sf > 0) {
