@@ -368,7 +368,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
       <!-- Solana wallets -->
       <div class="settings-menu-item" onclick="toggleWalletChain('sol')" style="margin-bottom:8px;">
-        <span><svg width="14" height="14" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sg1)"/></svg> SOLANA WALLETS</span><span class="settings-menu-arrow" id="sol-wallet-arrow">›</span>
+        <span><svg width="14" height="14" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sga" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sga)"/></svg> SOLANA WALLETS</span><span class="settings-menu-arrow" id="sol-wallet-arrow">›</span>
       </div>
       <div id="sol-wallet-panel" style="display:none;margin-bottom:12px;">
         <div class="settings-lbl">TRADING WALLET</div>
@@ -454,6 +454,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="trail-desc" id="tp-mode-desc">📈 Trail: activates at 4% gain — exits on 2% pullback from peak | SL: 10%</div>
   </div>
 
+  <!-- Fund Loss Warning Bar — hidden unless approaching or hit limit -->
+  <div id="fund-warning-bar" style="display:none;padding:10px 14px;border-radius:8px;margin-bottom:10px;font-size:13px;text-align:center;letter-spacing:1px;font-family:'Share Tech Mono',monospace;"></div>
+
   <!-- Start/Stop button -->
   <button class="main-btn btn-start" id="main-btn" onclick="toggleBot()">▶ START BOT</button>
 
@@ -525,7 +528,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="card-lbl">CHAIN PERFORMANCE</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
       <div style="background:rgba(153,102,255,0.08);border:1px solid rgba(153,102,255,0.3);border-radius:8px;padding:10px;">
-        <div style="font-size:11px;letter-spacing:2px;color:#9966ff;margin-bottom:8px;">◎ SOLANA <span id="sol-status" style="font-size:10px;color:var(--green)">● ON</span></div>
+        <div style="font-size:11px;letter-spacing:2px;color:#9966ff;margin-bottom:8px;"><svg width="11" height="11" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sgc" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sgc)"/></svg>SOLANA <span id="sol-status" style="font-size:10px;color:var(--green)">● ON</span></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
           <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;">
             <div style="font-size:11px;color:var(--dim);">WINS</div>
@@ -918,7 +921,7 @@ async function fetchState() {
       btn.textContent = '▶ START BOT';
     }
 
-    // Status — now lives inside Pool Info panel
+    // Status — inside Pool Info panel
     var statusEl = document.getElementById('status');
     if (data.windingDown) {
       statusEl.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
@@ -932,6 +935,24 @@ async function fetchState() {
     } else {
       statusEl.textContent = '○ STANDBY · READY';
       statusEl.style.color = 'var(--dim)';
+    }
+
+    // Fund loss warning bar — visible on main dashboard
+    var warnBar = document.getElementById('fund-warning-bar');
+    if (data.windingDown) {
+      warnBar.style.display = 'block';
+      warnBar.style.background = 'rgba(255,61,90,0.15)';
+      warnBar.style.border = '1px solid var(--red)';
+      warnBar.style.color = 'var(--red)';
+      warnBar.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
+    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 10) * 0.70) {
+      warnBar.style.display = 'block';
+      warnBar.style.background = 'rgba(255,194,51,0.15)';
+      warnBar.style.border = '1px solid var(--yellow)';
+      warnBar.style.color = 'var(--yellow)';
+      warnBar.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 10) + '% FUND LOSS LIMIT — ' + (data.currentLossPct || 0).toFixed(1) + '% lost';
+    } else {
+      warnBar.style.display = 'none';
     }
 
     // Runtime
