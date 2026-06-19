@@ -972,6 +972,7 @@ function startBot() {
   S.totalFees = 0;
   S.windingDown = false;
   S.chainStats = { solW: 0, solL: 0, baseW: 0, baseL: 0 };
+  S.solEnabled = true; // Solana always resets to ON — primary chain, must never be off
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
@@ -1141,8 +1142,14 @@ app.post('/api/settings', function(req, res) {
     }
   }
   if (req.body.solEnabled !== undefined) {
-    S.solEnabled = req.body.solEnabled === true || req.body.solEnabled === 'true';
-    log('Solana discovery: ' + (S.solEnabled ? 'ENABLED' : 'DISABLED'), 'info');
+    // Safety — Solana is primary chain, warn if attempting to disable
+    var solVal = req.body.solEnabled === true || req.body.solEnabled === 'true';
+    if (!solVal) {
+      log('WARNING: Attempt to disable Solana — ignored. Solana is primary chain.', 'warn');
+    } else {
+      S.solEnabled = true;
+      log('Solana discovery: ENABLED', 'info');
+    }
   }
   if (req.body.baseEnabled !== undefined) {
     S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
