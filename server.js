@@ -11,7 +11,6 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
-// ── API KEYS & CONFIG FROM ENV ────────────────────────────────
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
 const ST_URL = 'https://data.solanatracker.io';
 
@@ -20,59 +19,46 @@ var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
 var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 
-// ── BOT CONFIGURATION ─────────────────────────────────────────
 const CFG = {
   MAX_POS: 0.05,
   MAX_OPEN: 8,
   MAX_GRAD: 2,
   SOL_GAS: 0.001,
-
-  // Trail stop — NEVER CHANGE THESE TWO VALUES
   TRAIL_ACT: 0.04,
   TRAIL_PB: 0.02,
-
   STOP_LOSS: 0.10,
   STALE_TIME: 120000,
   NO_PRICE_TIMEOUT: 180000,
   LOSS_LIM: 0.10,
-
   MIN_SPLIT_WIN: 0.05,
   SAVINGS_PCT: 0.20,
-
   MIN_LIQ_USD: 5000,
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 1000,
-
   GRAD_ENTRY_SOL: 100,
   GRAD_MAX_SOL: 480,
   GRAD_TARGET: 500,
   GRAD_POS: 0.10,
   GRAD_MIN_BSR: 1.2,
   GRAD_MIN_TXNS: 3,
-
   MAX_POOL: 10000,
   POOL_AGE_MS: 14400000,
   COOLDOWN_MS: 1800000,
   BAN_TEMP_MS: 43200000,
-
   DS_INTERVAL: 300000,
   WIN_COOLDOWN_MS: 300000,
 };
 
-// ── PORTFOLIO DATA ───────────────────────────────────────────
-// Persists across sessions when saved to disk
-// Requires Render $25 persistent disk — until then resets on restart
 const PORTFOLIO_FILE = path.join(__dirname, 'data', 'portfolio.json');
 
 var P = {
   allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 },
   bestTrade: null,
   worstTrade: null,
-  trades: [],  // Full trade history — every trade ever
-  sessions: [], // Session summaries
+  trades: [],
+  sessions: [],
 };
 
-// Load portfolio from disk if exists
 function loadPortfolio() {
   try {
     if (fs.existsSync(PORTFOLIO_FILE)) {
@@ -85,18 +71,14 @@ function loadPortfolio() {
   }
 }
 
-// Save portfolio to disk
 function savePortfolio() {
   try {
     var dir = path.dirname(PORTFOLIO_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(PORTFOLIO_FILE, JSON.stringify(P, null, 2));
-  } catch(e) {
-    // File save fails silently on free tier — expected until Render $25
-  }
+  } catch(e) {}
 }
 
-// ── STATE ─────────────────────────────────────────────────────
 const S = {
   tokens: new Map(),
   open: [],
@@ -138,7 +120,6 @@ const S = {
   chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
 };
 
-// ── LOGGING ───────────────────────────────────────────────────
 function log(msg, type) {
   type = type || 'info';
   var entry = { msg, type, time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) };
@@ -147,7 +128,6 @@ function log(msg, type) {
   console.log('[' + type.toUpperCase() + '] ' + msg);
 }
 
-// ── SOL PRICE ─────────────────────────────────────────────────
 var SOL_PRICE_USD = 150;
 async function updateSolPrice() {
   try {
@@ -161,7 +141,6 @@ async function updateSolPrice() {
   } catch(e) {}
 }
 
-// ── BAN SYSTEM ────────────────────────────────────────────────
 function permanentBan(mint, reason) {
   S.permanentBans.set(mint, reason);
   log('PERMANENT BAN ' + mint.slice(0,8) + '... | ' + reason, 'warn');
@@ -193,28 +172,23 @@ function recheckExpiredBans() {
   });
 }
 
-// ── SAFETY CHECKLIST ─────────────────────────────────────────
 async function runSafetyChecklist(mint, tokenData, isPumpFun) {
   if (tokenData.mintAuthority && tokenData.mintAuthority !== 'null' && tokenData.mintAuthority !== '') {
     tempBan(mint, 'Mint authority not renounced');
     return false;
   }
-
   if (tokenData.freezeAuthority && tokenData.freezeAuthority !== 'null' && tokenData.freezeAuthority !== '') {
     permanentBan(mint, 'Freeze authority retained — honeypot');
     return false;
   }
-
   if (tokenData.lpBurn !== undefined && tokenData.lpBurn !== null && tokenData.lpBurn < 80) {
     tempBan(mint, 'LP burn too low: ' + tokenData.lpBurn + '%');
     return false;
   }
-
   if (tokenData.dev !== undefined && tokenData.dev !== null && tokenData.dev > 5) {
     tempBan(mint, 'Dev holding too high: ' + tokenData.dev + '%');
     return false;
   }
-
   if (!isPumpFun) {
     var isHoneypot = await checkHoneypot(mint);
     if (isHoneypot) {
@@ -222,11 +196,9 @@ async function runSafetyChecklist(mint, tokenData, isPumpFun) {
       return false;
     }
   }
-
   return true;
 }
 
-// ── HONEYPOT CHECK ────────────────────────────────────────────
 async function checkHoneypot(mint) {
   try {
     var res = await fetch(
@@ -244,27 +216,22 @@ async function checkHoneypot(mint) {
   }
 }
 
-// ── BASE HONEYPOT CHECK ──────────────────────────────────────
-// Uses honeypot.is API — free, supports Base chain
-// Returns true if token is a honeypot risk
 async function checkBaseHoneypot(address) {
   try {
     var res = await fetch(
       'https://api.honeypot.is/v2/IsHoneypot?address=' + address + '&chainID=8453',
       { timeout: 8000 }
     );
-    if (!res.ok) return false; // If check fails be permissive — dont block token
+    if (!res.ok) return false;
     var data = await res.json();
-    // Risk level 60+ means high risk — reject
     if (data && data.honeypotResult && data.honeypotResult.isHoneypot) return true;
     if (data && data.riskLevel !== undefined && data.riskLevel >= 60) return true;
     return false;
   } catch(e) {
-    return false; // If check fails be permissive
+    return false;
   }
 }
 
-// ── DEXSCREENER PRICE ─────────────────────────────────────────
 async function getDSPrice(mint, pairAddress, chain) {
   try {
     var chainId = chain || 'solana';
@@ -282,12 +249,6 @@ async function getDSPrice(mint, pairAddress, chain) {
   } catch(e) { return null; }
 }
 
-// ── DEXSCREENER TOKEN DISCOVERY ─────────────────────────────
-// Rotating keyword search every 5 minutes — proven working approach
-// Keywords act as triggers to get active Solana/Base pairs from DexScreener
-// Actual filtering done by liquidity, mcap, buys and BSR checks
-// Chain field stamped on every token for per-chain tracking
-
 var SOL_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
 var BASE_QUERIES = ['base meme', 'base coin', 'base dog', 'base cat', 'brett', 'toshi', 'degen base', 'pepe base'];
 var solQueryIdx = 0;
@@ -301,14 +262,12 @@ async function fetchDSChain(query, chainId) {
     if (!res.ok) return 0;
     var data = await res.json();
     var pairs = (data.pairs || []).filter(function(p) { return p.chainId === chainId; });
-
     for (var k = 0; k < pairs.length; k++) {
       var pair = pairs[k];
       var mint = pair.baseToken && pair.baseToken.address;
       if (!mint) continue;
       if (isBanned(mint)) continue;
       if (S.tokens.has(mint)) continue;
-
       var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
       var mcap = parseFloat(pair.fdv || 0);
       var price = parseFloat(pair.priceUsd || 0);
@@ -316,25 +275,18 @@ async function fetchDSChain(query, chainId) {
       var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
       var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
       var age = pair.pairCreatedAt ? (now - pair.pairCreatedAt) / 3600000 : 24;
-
       if (liq < CFG.MIN_LIQ_USD) continue;
       if (mcap > CFG.MAX_MCAP_USD) continue;
       if (buys < 3) continue;
       if (buys / Math.max(sells, 1) < 1.0) continue;
-
-      // Safety check — Base uses honeypot.is, Solana uses existing checklist
       if (chainId === 'base') {
         var isHp = await checkBaseHoneypot(mint);
-        if (isHp) {
-          permanentBan(mint, 'Base honeypot detected');
-          continue;
-        }
+        if (isHp) { permanentBan(mint, 'Base honeypot detected'); continue; }
       } else {
         var tokenData = { mintAuthority: null, freezeAuthority: null, lpBurn: undefined, dev: undefined };
         var safe = await runSafetyChecklist(mint, tokenData, true);
         if (!safe) continue;
       }
-
       S.tokens.set(mint, {
         mint, price,
         n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
@@ -352,29 +304,24 @@ async function fetchDSChain(query, chainId) {
 }
 
 async function fetchDSTokens() {
-  // Solana — rotating keyword search
   if (S.solEnabled) {
     var solQuery = SOL_QUERIES[solQueryIdx % SOL_QUERIES.length];
     solQueryIdx++;
     var solAdded = await fetchDSChain(solQuery, 'solana');
     if (solAdded > 0) log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
   }
-
-  // Base — rotating keyword search (only when enabled)
   if (S.baseEnabled) {
     var baseQuery = BASE_QUERIES[baseQueryIdx % BASE_QUERIES.length];
     baseQueryIdx++;
     var baseAdded = await fetchDSChain(baseQuery, 'base');
     if (baseAdded > 0) log('DS BASE [' + baseQuery + ']: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
   }
-
   S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
   S.solPool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'solana'; }).length;
   S.basePool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'base'; }).length;
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
-// ── PUMP.FUN PRICE CALCULATION ────────────────────────────────
 function calcPumpPrice(d) {
   var vSol = parseFloat(d.vSolInBondingCurve) || 0;
   var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
@@ -384,7 +331,6 @@ function calcPumpPrice(d) {
   return null;
 }
 
-// ── PUMP.FUN WEBSOCKET ────────────────────────────────────────
 var pumpPrices = {};
 var pumpWs = null;
 
@@ -403,8 +349,6 @@ function connectPump() {
     pumpWs.on('message', async function(raw) {
       try {
         var d = JSON.parse(raw.toString());
-
-        // ── NEW TOKEN LAUNCH ──────────────────────────────────
         var isNewToken = d.mint && (d.symbol || d.name) &&
                          d.txType !== 'buy' && d.txType !== 'sell';
         if (isNewToken) {
@@ -413,37 +357,28 @@ function connectPump() {
           S.pumpCount++;
           S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
           if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
-
           if (isBanned(mint)) return;
           if (S.tokens.has(mint)) return;
-
           if (S.tokens.size >= S.maxPool) {
             var worstKey = null;
             var worstBSR = Infinity;
             S.tokens.forEach(function(tok, key) {
               if (S.open.find(function(t) { return t.mint === key; })) return;
               var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-              if (bsr < worstBSR) {
-                worstBSR = bsr;
-                worstKey = key;
-              }
+              if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
             });
             if (worstKey) S.tokens.delete(worstKey);
           }
-
           var tokenData = {
             mintAuthority: null,
             freezeAuthority: d.freezeAuthority || null,
             lpBurn: undefined,
             dev: undefined,
           };
-
           var safe = await runSafetyChecklist(mint, tokenData, true);
           if (!safe) return;
-
           var price = calcPumpPrice(d);
           if (price) pumpPrices[mint] = { price, solInCurve: 0, ts: Date.now() };
-
           S.tokens.set(mint, {
             mint, price,
             n: name,
@@ -461,23 +396,17 @@ function connectPump() {
           log('NEW TOKEN ' + name + ' | $' + (price ? price.toFixed(8) : 'pending') + ' | Added to pool', 'info');
         }
 
-        // ── TRADE EVENT — price + graduation tracking ─────────
         if ((d.txType === 'buy' || d.txType === 'sell') && d.mint) {
           var mint2 = d.mint;
           var price2 = calcPumpPrice(d);
           var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
-
-          if (price2) {
-            pumpPrices[mint2] = { price: price2, solInCurve, ts: Date.now() };
-          }
-
+          if (price2) { pumpPrices[mint2] = { price: price2, solInCurve, ts: Date.now() }; }
           var poolTok = S.tokens.get(mint2);
           if (poolTok && price2) {
             poolTok.price = price2;
             if (d.txType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
             else poolTok.sells = (poolTok.sells || 0) + 1;
           }
-
           S.open.forEach(function(trade) {
             if (trade.mint === mint2 && trade.src === 'PUMP') {
               trade.currentPrice = price2 || trade.currentPrice;
@@ -492,8 +421,6 @@ function connectPump() {
               }
             }
           });
-
-          // ── GRADUATION SNIPER TRACKING ────────────────────
           var name2 = ((d.symbol || d.name || '') + '').toUpperCase().slice(0, 12);
           if (solInCurve > 0) {
             var existing = S.gradCandidates.get(mint2) || {
@@ -534,17 +461,13 @@ function connectPump() {
   } catch(e) { setTimeout(connectPump, 15000); }
 }
 
-// ── PRICE TRACKING FOR OPEN TRADES ───────────────────────────
-// Polls DexScreener every 2 seconds for non-Pump.fun trades
 async function updateOpenTradePrices() {
   var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.mint; });
   if (trades.length === 0) return;
-
   for (var i = 0; i < trades.length; i++) {
     var trade = trades[i];
     var price = await getDSPrice(trade.mint, trade.pairAddress, trade.chain);
     if (!price || price <= 0) continue;
-
     if (trade.currentPrice && trade.currentPrice > 0) {
       var change = Math.abs(price - trade.currentPrice) / trade.currentPrice;
       if (change > 0.90) {
@@ -552,33 +475,26 @@ async function updateOpenTradePrices() {
         continue;
       }
     }
-
     trade.currentPrice = price;
     if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
       trade.lastPriceChange = Date.now();
       trade.lastPrice = price;
     }
-
     if (!trade.entryPrice || trade.entryPrice <= 0) {
       trade.entryPrice = price;
       trade.peakPrice = price;
       log('PRICE SET ' + trade.tok.n + ' $' + price.toFixed(8), 'info');
       continue;
     }
-
     var pct = (price - trade.entryPrice) / trade.entryPrice;
     trade.realPnlPct = pct;
     trade.realPnl = trade.size * pct;
     if (price > (trade.peakPrice || 0)) trade.peakPrice = price;
-
-    // Fixed take profit check
     if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
       log('TP HIT ' + trade.tok.n + ' | +' + (pct*100).toFixed(1) + '% | Target ' + trade.tpPct + '%', 'win');
       closeTradeReal(trade.id, 'Take profit hit');
       continue;
     }
-
-    // Trail stop check
     if (trade.tpl === 'TRAIL' && trade.peakPrice && trade.entryPrice) {
       var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
@@ -590,8 +506,6 @@ async function updateOpenTradePrices() {
         }
       }
     }
-
-    // Stop loss — uses trade's own sl set at entry
     if (pct <= -(trade.sl || 0.10)) {
       log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
       closeTradeReal(trade.id, 'Stop loss hit');
@@ -599,13 +513,11 @@ async function updateOpenTradePrices() {
   }
 }
 
-// ── CLOSE TRADE ───────────────────────────────────────────────
 function closeTradeReal(id, reason) {
   var i = S.open.findIndex(function(t) { return t.id === id; });
   if (i === -1) return;
   var tr = S.open[i];
   var closeReason = reason || 'Manual sell';
-
   var pnl = 0;
   if (tr.entryPrice && tr.currentPrice && tr.entryPrice > 0) {
     var pricePct = (tr.currentPrice - tr.entryPrice) / tr.entryPrice;
@@ -614,8 +526,6 @@ function closeTradeReal(id, reason) {
     pnl = -CFG.SOL_GAS;
     closeReason = reason + ' (no price data)';
   }
-
-  // Track total fees paid this session
   var feePaid = tr.size * (tr.slip || 0.005) + CFG.SOL_GAS;
   S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
 
@@ -661,8 +571,6 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
-  // ── PORTFOLIO RECORDING ───────────────────────────────────────
-  // Record every trade to all time portfolio history
   var portfolioTrade = {
     id: tr.id,
     name: tr.tok && tr.tok.n ? tr.tok.n : '?',
@@ -683,11 +591,7 @@ function closeTradeReal(id, reason) {
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
   };
-
-  // Add to front of history — most recent first
   P.trades.unshift(portfolioTrade);
-
-  // Update all time stats
   P.allTime.t++;
   P.allTime.totalPnl = parseFloat((P.allTime.totalPnl + pnl).toFixed(4));
   P.allTime.totalFees = parseFloat((P.allTime.totalFees + feePaid).toFixed(4));
@@ -695,15 +599,10 @@ function closeTradeReal(id, reason) {
   else P.allTime.l++;
   if (pnl > P.allTime.bestPnl) P.allTime.bestPnl = parseFloat(pnl.toFixed(4));
   if (pnl < P.allTime.worstPnl) P.allTime.worstPnl = parseFloat(pnl.toFixed(4));
-
-  // Update best and worst trade ever
   if (!P.bestTrade || pnl > P.bestTrade.pnl) P.bestTrade = portfolioTrade;
   if (!P.worstTrade || pnl < P.worstTrade.pnl) P.worstTrade = portfolioTrade;
-
-  // Save to disk every 10 trades
   if (P.allTime.t % 10 === 0) savePortfolio();
 
-  // Track best trade of session — never resets
   if (!S.bestTrade || pnl > S.bestTrade.pnl) {
     S.bestTrade = {
       name: tr.tok && tr.tok.n ? tr.tok.n : "?",
@@ -717,29 +616,20 @@ function closeTradeReal(id, reason) {
   }
 
   var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
-
-  // Loss cooldown — 30 minutes full block
   if (pnl < 0) {
     S.cooldowns.set(cooldownKey, Date.now());
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 30min after loss', 'warn');
   }
-
-  // Win cooldown — 5 minutes only
-  // Store timestamp offset so the 30min check expires after 5min
   if (pnl > 0) {
     S.cooldowns.set(cooldownKey, Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS));
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 5min after win', 'info');
   }
 
-  // Check fund loss limits
   var lossLimit = S.fundStopLossPct / 100;
-  var warningLimit = lossLimit * 0.70;
   var currentLoss = (S.dayStartFund - S.fund) / S.dayStartFund;
-
   if (currentLoss >= lossLimit && !S.windingDown) {
     S.windingDown = true;
     log('FUND LOSS LIMIT HIT — ' + S.fundStopLossPct + '% reached — closing open trades, no new entries', 'rug');
-    // Auto stop when all trades close
     var windDownCheck = setInterval(function() {
       if (S.open.length === 0) {
         clearInterval(windDownCheck);
@@ -750,27 +640,22 @@ function closeTradeReal(id, reason) {
   }
 }
 
-// ── EXIT CRITERIA CHECKER ─────────────────────────────────────
 function checkExitCriteria() {
   var now = Date.now();
   S.open.slice().forEach(function(t) {
     var age = now - t.startTime;
-
     if (!t.entryPrice && age > CFG.NO_PRICE_TIMEOUT) {
       log('TIMEOUT ' + t.tok.n + ' — no price after 3min', 'warn');
       closeTradeReal(t.id, 'Timeout — no price data');
       return;
     }
-
     if (!t.entryPrice || !t.currentPrice) return;
-
     var lastMove = t.lastPriceChange || t.startTime;
     if ((now - lastMove) > CFG.STALE_TIME && age > 30000) {
       log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
       closeTradeReal(t.id, 'Token went stale');
       return;
     }
-
     if (t.isGrad && t.tok && t.tpl === 'TRAIL' && t.entryPrice > 0 && t.currentPrice > 0) {
       var peakGain = (t.peakPrice - t.entryPrice) / t.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
@@ -790,13 +675,11 @@ function checkExitCriteria() {
   });
 }
 
-// ── GRADUATION SNIPER ─────────────────────────────────────────
 async function runGradSniper() {
   if (!S.running || S.fund < 1) return;
   if (S.windingDown) return;
   var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
   if (openGrads >= Math.max(Math.floor(S.maxOpen * 0.25), 1)) return;
-
   for (var entry of S.gradCandidates.entries()) {
     var mint = entry[0];
     var cand = entry[1];
@@ -807,14 +690,11 @@ async function runGradSniper() {
     var totalTxns = (cand.buys || 0) + (cand.sells || 0);
     if (totalTxns < CFG.GRAD_MIN_TXNS) continue;
     if (cand.bsr < CFG.GRAD_MIN_BSR) continue;
-
     var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, 0.10)).toFixed(4));
     if (size < 0.50) continue;
-
     var slip = 0.008;
     S.fund = parseFloat((S.fund - size * slip).toFixed(4));
     var pct = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
-
     var trade = {
       id: Math.random().toString(36).substr(2, 9),
       tok: { n: cand.name || mint.slice(0,8), src: 'GRAD', liq: cand.solInCurve * SOL_PRICE_USD },
@@ -833,7 +713,6 @@ async function runGradSniper() {
       startTime: Date.now(),
       lastPriceChange: Date.now(),
     };
-
     S.open.push(trade);
     S.gradCount++;
     log('🎓 GRAD ENTER ' + trade.tok.n + ' | ' + pct + '% to grad | ' + cand.solInCurve.toFixed(0) + ' SOL | BSR ' + cand.bsr.toFixed(1) + 'x | $' + size.toFixed(2) + ' | Entry $' + cand.price.toFixed(8), 'entry');
@@ -841,7 +720,6 @@ async function runGradSniper() {
   }
 }
 
-// ── MAIN SNIPER SCAN ──────────────────────────────────────────
 var scanI = null;
 var scanIdx = 0;
 
@@ -865,16 +743,12 @@ async function runScan() {
     return;
   }
 
-  // Skip token if its chain is disabled
   if (tok.chain === 'base' && !S.baseEnabled) return;
   if (tok.chain === 'solana' && !S.solEnabled) return;
-  if (!tok.chain && !S.solEnabled) return; // legacy tokens without chain default to solana
+  if (!tok.chain && !S.solEnabled) return;
 
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-  if (bsr < 0.8) {
-    S.rejectCount++;
-    return;
-  }
+  if (bsr < 0.8) { S.rejectCount++; return; }
 
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
@@ -894,10 +768,7 @@ async function runScan() {
     entryPrice = await getDSPrice(tok.mint, tok.pairAddress);
   }
 
-  if (!entryPrice || entryPrice <= 0) {
-    S.rejectCount++;
-    return;
-  }
+  if (!entryPrice || entryPrice <= 0) { S.rejectCount++; return; }
 
   var slip = parseFloat(Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4));
   S.fund = parseFloat((S.fund - size * slip).toFixed(4));
@@ -929,7 +800,6 @@ async function runScan() {
   log('ENTER ' + tok.n + ' [' + tok.src + '] | MCap $' + ((tok.mcap || 0)/1000).toFixed(0) + 'k | Liq $' + ((tok.liq || 0)/1000).toFixed(0) + 'k | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
 }
 
-// ── POOL CLEANUP ──────────────────────────────────────────────
 function cleanPool() {
   var now = Date.now();
   var removed = 0;
@@ -942,7 +812,6 @@ function cleanPool() {
   S.cooldowns.forEach(function(ts, key) {
     if (now - ts > CFG.COOLDOWN_MS) S.cooldowns.delete(key);
   });
-  // Clean stale grad candidates older than 4 hours
   var gradRemoved = 0;
   S.gradCandidates.forEach(function(cand, mint) {
     if (!S.open.find(function(t) { return t.mint === mint; })) {
@@ -957,7 +826,6 @@ function cleanPool() {
   if (gradRemoved > 0) log('Grad candidates cleaned: ' + gradRemoved + ' removed | Remaining: ' + S.gradCandidates.size, 'info');
 }
 
-// ── BOT CONTROL ───────────────────────────────────────────────
 var gradI = null, exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
 
 function startBot() {
@@ -972,7 +840,7 @@ function startBot() {
   S.totalFees = 0;
   S.windingDown = false;
   S.chainStats = { solW: 0, solL: 0, baseW: 0, baseL: 0 };
-  S.solEnabled = true; // Solana always resets to ON — primary chain, must never be off
+  S.solEnabled = true;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
@@ -988,7 +856,7 @@ function startBot() {
   cleanI = setInterval(cleanPool, 3600000);
   solPriceI = setInterval(updateSolPrice, 600000);
 
-  log('🚀 MemeBot V15 STARTED | Sniper Bot | Pump.fun WebSocket LIVE | Graduation Sniper ACTIVE', 'info');
+  log('🚀 BunkerBuster STARTED | Sniper Bot | Pump.fun WebSocket LIVE | Graduation Sniper ACTIVE', 'info');
   log('Settings: ' + CFG.MAX_POS*100 + '% position | ' + S.stopLossPct + '% SL | Trail ' + CFG.TRAIL_ACT*100 + '%/' + CFG.TRAIL_PB*100 + '% | ' + S.maxOpen + ' max trades', 'info');
 }
 
@@ -1002,7 +870,6 @@ function stopBot() {
   if (cleanI) clearInterval(cleanI);
   if (solPriceI) clearInterval(solPriceI);
 
-  // Save session summary to portfolio
   if (S.stats.t > 0) {
     var session = {
       date: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
@@ -1025,7 +892,6 @@ function stopBot() {
   log('Bot stopped | Trades: ' + S.stats.t + ' | W: ' + S.stats.w + ' L: ' + S.stats.l + ' | Fund: $' + S.fund.toFixed(2) + ' | Savings: $' + S.savings.toFixed(2), 'info');
 }
 
-// ── API ROUTES ────────────────────────────────────────────────
 app.get('/api/state', function(req, res) {
   res.json({
     fund: S.fund,
@@ -1142,14 +1008,8 @@ app.post('/api/settings', function(req, res) {
     }
   }
   if (req.body.solEnabled !== undefined) {
-    // Safety — Solana is primary chain, warn if attempting to disable
-    var solVal = req.body.solEnabled === true || req.body.solEnabled === 'true';
-    if (!solVal) {
-      log('WARNING: Attempt to disable Solana — ignored. Solana is primary chain.', 'warn');
-    } else {
-      S.solEnabled = true;
-      log('Solana discovery: ENABLED', 'info');
-    }
+    S.solEnabled = req.body.solEnabled === true || req.body.solEnabled === 'true';
+    log('Solana discovery: ' + (S.solEnabled ? 'ENABLED' : 'DISABLED'), 'info');
   }
   if (req.body.baseEnabled !== undefined) {
     S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
@@ -1159,7 +1019,6 @@ app.post('/api/settings', function(req, res) {
   res.json({ success: true });
 });
 
-// ── PORTFOLIO API ROUTES ─────────────────────────────────────
 app.get('/api/portfolio', function(req, res) {
   res.json({
     allTime: P.allTime,
@@ -1171,47 +1030,28 @@ app.get('/api/portfolio', function(req, res) {
   });
 });
 
-// Trade history with search and filter
 app.get('/api/portfolio/trades', function(req, res) {
   var trades = P.trades;
   var q = req.query;
-
-  // Filter by date
-  if (q.date) {
-    trades = trades.filter(function(t) { return t.closedDate === q.date; });
-  }
-
-  // Filter by token name
+  if (q.date) trades = trades.filter(function(t) { return t.closedDate === q.date; });
   if (q.token) {
     var tok = q.token.toUpperCase();
     trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; });
   }
-
-  // Filter by chain
-  if (q.chain && q.chain !== 'all') {
-    trades = trades.filter(function(t) { return t.chain === q.chain; });
-  }
-
-  // Filter by result
+  if (q.chain && q.chain !== 'all') trades = trades.filter(function(t) { return t.chain === q.chain; });
   if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl > 0; });
   if (q.result === 'loss') trades = trades.filter(function(t) { return t.pnl <= 0; });
-
-  // Filter by exit reason
   if (q.exit && q.exit !== 'all') {
     trades = trades.filter(function(t) { return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0; });
   }
-
-  // Pagination
   var page = parseInt(q.page) || 0;
   var limit = parseInt(q.limit) || 50;
-  if (limit > 99999) limit = trades.length; // ALL
+  if (limit > 99999) limit = trades.length;
   var total = trades.length;
   trades = trades.slice(page * limit, (page + 1) * limit);
-
   res.json({ trades: trades, total: total, page: page, pages: Math.ceil(total / limit) });
 });
 
-// Clear portfolio data
 app.post('/api/portfolio/clear', function(req, res) {
   P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [] };
   savePortfolio();
@@ -1224,7 +1064,6 @@ app.get('/health', function(req, res) {
 
 app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
 
-// ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, function() {
   console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
   loadPortfolio();
