@@ -402,10 +402,10 @@ function connectPump() {
           var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
           if (price2) { pumpPrices[mint2] = { price: price2, solInCurve, ts: Date.now() }; }
           var poolTok = S.tokens.get(mint2);
-          if (poolTok && price2) {
-            poolTok.price = price2;
+          if (poolTok) {
             if (d.txType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
             else poolTok.sells = (poolTok.sells || 0) + 1;
+            if (price2) poolTok.price = price2;
           }
           S.open.forEach(function(trade) {
             if (trade.mint === mint2 && trade.src === 'PUMP') {
