@@ -11,44 +11,60 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
+// ── API KEYS ──────────────────────────────────────────────────
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
-const ST_URL = 'https://data.solanatracker.io';
-
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
 var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 
+// ── CONFIGURATION ─────────────────────────────────────────────
 const CFG = {
-  MAX_POS: 0.05,
-  MAX_OPEN: 8,
-  MAX_GRAD: 2,
-  SOL_GAS: 0.001,
-  TRAIL_ACT: 0.04,
-  TRAIL_PB: 0.02,
-  STOP_LOSS: 0.10,
-  STALE_TIME: 120000,
-  NO_PRICE_TIMEOUT: 180000,
-  LOSS_LIM: 0.10,
-  MIN_SPLIT_WIN: 0.05,
-  SAVINGS_PCT: 0.20,
-  MIN_LIQ_USD: 5000,
-  MAX_MCAP_USD: 25000000,
-  MIN_MCAP_USD: 1000,
-  GRAD_ENTRY_SOL: 100,
-  GRAD_MAX_SOL: 480,
-  GRAD_TARGET: 500,
-  GRAD_POS: 0.10,
-  GRAD_MIN_BSR: 1.2,
-  GRAD_MIN_TXNS: 3,
-  MAX_POOL: 10000,
-  POOL_AGE_MS: 14400000,
-  COOLDOWN_MS: 1800000,
-  BAN_TEMP_MS: 43200000,
-  DS_INTERVAL: 300000,
-  WIN_COOLDOWN_MS: 300000,
+  // Position sizing
+  MAX_POS: 0.05,        // 5% of fund per trade
+  MAX_OPEN: 8,          // default max open trades
+  MAX_GRAD: 2,          // max graduation trades
+  SOL_GAS: 0.001,       // gas cost per trade in USD
+
+  // Trail stop — NEVER CHANGE THESE TWO VALUES EVER
+  TRAIL_ACT: 0.04,      // activate trail at 4% gain
+  TRAIL_PB: 0.02,       // exit on 2% pullback from peak
+
+  // Stop loss
+  STOP_LOSS: 0.10,      // default 10% stop loss
+
+  // Exit timing
+  STALE_TIME: 120000,       // 2 minutes no price movement = stale
+  NO_PRICE_TIMEOUT: 180000, // 3 minutes no price = timeout
+
+  // Fund management
+  LOSS_LIM: 0.10,       // default 10% daily fund loss limit
+  MIN_SPLIT_WIN: 0.05,  // minimum win to trigger 80/20 split
+  SAVINGS_PCT: 0.20,    // 20% of wins to savings
+
+  // Token filters
+  MIN_LIQ_USD: 5000,    // minimum liquidity $5k
+  MAX_MCAP_USD: 25000000, // maximum market cap $25M
+  MIN_MCAP_USD: 1000,   // minimum market cap $1k
+
+  // Graduation sniper
+  GRAD_ENTRY_SOL: 100,  // enter when bonding curve hits 100 SOL
+  GRAD_MAX_SOL: 480,    // do not enter above 480 SOL
+  GRAD_TARGET: 500,     // graduation target SOL
+  GRAD_POS: 0.10,       // 10% position for graduation plays
+  GRAD_MIN_BSR: 1.2,    // minimum buy/sell ratio for grad entry
+  GRAD_MIN_TXNS: 3,     // minimum transactions before grad entry
+
+  // Pool management
+  MAX_POOL: 10000,      // default maximum pool size
+  POOL_AGE_MS: 14400000, // 4 hours before token removed from pool
+  COOLDOWN_MS: 1800000,  // 30 min cooldown after loss
+  BAN_TEMP_MS: 43200000, // 12 hour temp ban
+  DS_INTERVAL: 300000,   // DexScreener search every 5 minutes
+  WIN_COOLDOWN_MS: 300000, // 5 min cooldown after win
 };
 
+// ── PORTFOLIO DATA ────────────────────────────────────────────
 const PORTFOLIO_FILE = path.join(__dirname, 'data', 'portfolio.json');
 
 var P = {
@@ -76,9 +92,12 @@ function savePortfolio() {
     var dir = path.dirname(PORTFOLIO_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(PORTFOLIO_FILE, JSON.stringify(P, null, 2));
-  } catch(e) {}
+  } catch(e) {
+    // Silently fails on free tier — expected until Render $25
+  }
 }
 
+// ── STATE ─────────────────────────────────────────────────────
 const S = {
   tokens: new Map(),
   open: [],
@@ -91,7 +110,6 @@ const S = {
   pumpCount: 0,
   scanCount: 0,
   rejectCount: 0,
-  stCredits: 0,
   logs: [],
   sources: {},
   startTime: null,
@@ -101,13 +119,14 @@ const S = {
   permanentBans: new Map(),
   tempBans: new Map(),
   cooldowns: new Map(),
+  // Discovery stats
   dscPool: 0,
   solPool: 0,
   basePool: 0,
   dscKey: 0,
-  bestTrade: null,
+  // Session settings — all adjustable
   sessionFund: 100,
-  takeProfitMode: "TRAIL",
+  takeProfitMode: 'TRAIL',
   takeProfitPct: 5,
   stopLossPct: 10,
   totalFees: 0,
@@ -117,21 +136,33 @@ const S = {
   maxPool: 10000,
   solEnabled: true,
   baseEnabled: true,
+  // Chain performance stats
   chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
+  // Best trade this session
+  bestTrade: null,
 };
 
+// ── LOGGING ───────────────────────────────────────────────────
 function log(msg, type) {
   type = type || 'info';
-  var entry = { msg, type, time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) };
+  var entry = {
+    msg: msg,
+    type: type,
+    time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+  };
   S.logs.unshift(entry);
   if (S.logs.length > 500) S.logs.pop();
   console.log('[' + type.toUpperCase() + '] ' + msg);
 }
 
-var SOL_PRICE_USD = 150;
+// ── SOL PRICE ─────────────────────────────────────────────────
+var SOL_PRICE_USD = 170;
 async function updateSolPrice() {
   try {
-    var res = await fetch('https://api.dexscreener.com/latest/dex/pairs/solana/So11111111111111111111111111111111111111112', { timeout: 5000 });
+    var res = await fetch(
+      'https://api.dexscreener.com/latest/dex/pairs/solana/So11111111111111111111111111111111111111112',
+      { timeout: 5000 }
+    );
     if (!res.ok) return;
     var data = await res.json();
     var pairs = data.pairs || [];
@@ -141,14 +172,15 @@ async function updateSolPrice() {
   } catch(e) {}
 }
 
+// ── BAN SYSTEM ────────────────────────────────────────────────
 function permanentBan(mint, reason) {
   S.permanentBans.set(mint, reason);
-  log('PERMANENT BAN ' + mint.slice(0,8) + '... | ' + reason, 'warn');
+  log('PERMANENT BAN ' + mint.slice(0, 8) + '... | ' + reason, 'warn');
 }
 
 function tempBan(mint, reason) {
-  S.tempBans.set(mint, { bannedAt: Date.now(), reason });
-  log('12HR BAN ' + mint.slice(0,8) + '... | ' + reason, 'warn');
+  S.tempBans.set(mint, { bannedAt: Date.now(), reason: reason });
+  log('12HR BAN ' + mint.slice(0, 8) + '... | ' + reason, 'warn');
 }
 
 function isBanned(mint) {
@@ -167,28 +199,38 @@ function recheckExpiredBans() {
   S.tempBans.forEach(function(ban, mint) {
     if (now - ban.bannedAt >= CFG.BAN_TEMP_MS) {
       S.tempBans.delete(mint);
-      log('RECHECK ' + mint.slice(0,8) + '... — 12hr ban expired, reconsidering', 'info');
+      log('RECHECK ' + mint.slice(0, 8) + '... — 12hr ban expired', 'info');
     }
   });
 }
 
+// ── SAFETY CHECKLIST ──────────────────────────────────────────
 async function runSafetyChecklist(mint, tokenData, isPumpFun) {
-  if (tokenData.mintAuthority && tokenData.mintAuthority !== 'null' && tokenData.mintAuthority !== '') {
+  if (tokenData.mintAuthority &&
+      tokenData.mintAuthority !== 'null' &&
+      tokenData.mintAuthority !== '') {
     tempBan(mint, 'Mint authority not renounced');
     return false;
   }
-  if (tokenData.freezeAuthority && tokenData.freezeAuthority !== 'null' && tokenData.freezeAuthority !== '') {
+  if (tokenData.freezeAuthority &&
+      tokenData.freezeAuthority !== 'null' &&
+      tokenData.freezeAuthority !== '') {
     permanentBan(mint, 'Freeze authority retained — honeypot');
     return false;
   }
-  if (tokenData.lpBurn !== undefined && tokenData.lpBurn !== null && tokenData.lpBurn < 80) {
+  if (tokenData.lpBurn !== undefined &&
+      tokenData.lpBurn !== null &&
+      tokenData.lpBurn < 80) {
     tempBan(mint, 'LP burn too low: ' + tokenData.lpBurn + '%');
     return false;
   }
-  if (tokenData.dev !== undefined && tokenData.dev !== null && tokenData.dev > 5) {
+  if (tokenData.dev !== undefined &&
+      tokenData.dev !== null &&
+      tokenData.dev > 5) {
     tempBan(mint, 'Dev holding too high: ' + tokenData.dev + '%');
     return false;
   }
+  // Jupiter honeypot check — skip for Pump.fun tokens (no routing yet)
   if (!isPumpFun) {
     var isHoneypot = await checkHoneypot(mint);
     if (isHoneypot) {
@@ -199,6 +241,7 @@ async function runSafetyChecklist(mint, tokenData, isPumpFun) {
   return true;
 }
 
+// ── SOLANA HONEYPOT CHECK ─────────────────────────────────────
 async function checkHoneypot(mint) {
   try {
     var res = await fetch(
@@ -216,6 +259,7 @@ async function checkHoneypot(mint) {
   }
 }
 
+// ── BASE HONEYPOT CHECK ───────────────────────────────────────
 async function checkBaseHoneypot(address) {
   try {
     var res = await fetch(
@@ -232,6 +276,7 @@ async function checkBaseHoneypot(address) {
   }
 }
 
+// ── DEXSCREENER PRICE ─────────────────────────────────────────
 async function getDSPrice(mint, pairAddress, chain) {
   try {
     var chainId = chain || 'solana';
@@ -246,11 +291,24 @@ async function getDSPrice(mint, pairAddress, chain) {
       return parseFloat(pairs[0].priceUsd);
     }
     return null;
-  } catch(e) { return null; }
+  } catch(e) {
+    return null;
+  }
 }
 
-var SOL_QUERIES = ['solana meme', 'pump fun sol', 'pepe sol', 'dog sol', 'cat sol', 'moon sol', 'ai sol', 'degen sol'];
-var BASE_QUERIES = ['base meme', 'base coin', 'base dog', 'base cat', 'brett', 'toshi', 'degen base', 'pepe base'];
+// ── DEXSCREENER TOKEN DISCOVERY ───────────────────────────────
+// Rotating keyword search every 5 minutes
+// Keywords act as triggers to surface active pairs — not name filters
+// Every token stamped with chain field for per-chain tracking
+
+var SOL_QUERIES = [
+  'solana meme', 'pump fun sol', 'pepe sol', 'dog sol',
+  'cat sol', 'moon sol', 'ai sol', 'degen sol'
+];
+var BASE_QUERIES = [
+  'base meme', 'base coin', 'base dog', 'base cat',
+  'brett', 'toshi', 'degen base', 'pepe base'
+];
 var solQueryIdx = 0;
 var baseQueryIdx = 0;
 
@@ -258,16 +316,21 @@ async function fetchDSChain(query, chainId) {
   var now = Date.now();
   var added = 0;
   try {
-    var res = await fetch('https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query), { timeout: 10000 });
+    var res = await fetch(
+      'https://api.dexscreener.com/latest/dex/search?q=' + encodeURIComponent(query),
+      { timeout: 10000 }
+    );
     if (!res.ok) return 0;
     var data = await res.json();
     var pairs = (data.pairs || []).filter(function(p) { return p.chainId === chainId; });
+
     for (var k = 0; k < pairs.length; k++) {
       var pair = pairs[k];
       var mint = pair.baseToken && pair.baseToken.address;
       if (!mint) continue;
       if (isBanned(mint)) continue;
       if (S.tokens.has(mint)) continue;
+
       var liq = parseFloat((pair.liquidity && pair.liquidity.usd) || 0);
       var mcap = parseFloat(pair.fdv || 0);
       var price = parseFloat(pair.priceUsd || 0);
@@ -275,24 +338,42 @@ async function fetchDSChain(query, chainId) {
       var buys = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.buys) || 0);
       var sells = parseInt((pair.txns && pair.txns.h1 && pair.txns.h1.sells) || 1);
       var age = pair.pairCreatedAt ? (now - pair.pairCreatedAt) / 3600000 : 24;
+
       if (liq < CFG.MIN_LIQ_USD) continue;
       if (mcap > CFG.MAX_MCAP_USD) continue;
       if (buys < 3) continue;
       if (buys / Math.max(sells, 1) < 1.0) continue;
+
+      // Safety check
       if (chainId === 'base') {
         var isHp = await checkBaseHoneypot(mint);
-        if (isHp) { permanentBan(mint, 'Base honeypot detected'); continue; }
+        if (isHp) {
+          permanentBan(mint, 'Base honeypot detected');
+          continue;
+        }
       } else {
-        var tokenData = { mintAuthority: null, freezeAuthority: null, lpBurn: undefined, dev: undefined };
+        var tokenData = {
+          mintAuthority: null,
+          freezeAuthority: null,
+          lpBurn: undefined,
+          dev: undefined,
+        };
         var safe = await runSafetyChecklist(mint, tokenData, true);
         if (!safe) continue;
       }
+
       S.tokens.set(mint, {
-        mint, price,
+        mint: mint,
+        price: price,
         n: (pair.baseToken && pair.baseToken.symbol || '???').toUpperCase().slice(0, 12),
         src: 'DSC',
         chain: chainId,
-        liq, mcap, vol1h, buys, sells, age,
+        liq: liq,
+        mcap: mcap,
+        vol1h: vol1h,
+        buys: buys,
+        sells: sells,
+        age: age,
         pairAddress: pair.pairAddress || null,
         addedAt: Date.now(),
       });
@@ -304,24 +385,34 @@ async function fetchDSChain(query, chainId) {
 }
 
 async function fetchDSTokens() {
+  // Solana discovery
   if (S.solEnabled) {
     var solQuery = SOL_QUERIES[solQueryIdx % SOL_QUERIES.length];
     solQueryIdx++;
     var solAdded = await fetchDSChain(solQuery, 'solana');
-    if (solAdded > 0) log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
+    if (solAdded > 0) {
+      log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
+    }
   }
+
+  // Base discovery
   if (S.baseEnabled) {
     var baseQuery = BASE_QUERIES[baseQueryIdx % BASE_QUERIES.length];
     baseQueryIdx++;
     var baseAdded = await fetchDSChain(baseQuery, 'base');
-    if (baseAdded > 0) log('DS BASE [' + baseQuery + ']: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
+    if (baseAdded > 0) {
+      log('DS BASE [' + baseQuery + ']: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
+    }
   }
+
+  // Update pool counts
   S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
   S.solPool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'solana'; }).length;
   S.basePool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'base'; }).length;
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
+// ── PUMP.FUN PRICE CALCULATION ────────────────────────────────
 function calcPumpPrice(d) {
   var vSol = parseFloat(d.vSolInBondingCurve) || 0;
   var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
@@ -331,6 +422,10 @@ function calcPumpPrice(d) {
   return null;
 }
 
+// ── PUMP.FUN WEBSOCKET ────────────────────────────────────────
+// subscribeNewToken — free, no API key needed
+// Trade events come through subscribeNewToken stream for bonding curve tokens
+// Buy count updated on every trade event — DECOUPLED from price
 var pumpPrices = {};
 var pumpWs = null;
 
@@ -338,37 +433,53 @@ function connectPump() {
   if (pumpWs && pumpWs.readyState === WebSocket.OPEN) return;
   try {
     pumpWs = new WebSocket('wss://pumpportal.fun/api/data');
+
     pumpWs.on('open', function() {
       S.pumpLive = true;
       S.sources['PUMP.FUN'] = 'live:0';
+      // Subscribe to new token launches — free, no API key
       pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
-      pumpWs.send(JSON.stringify({ method: 'subscribeTokenTrade' }));
       log('Pump.fun WebSocket LIVE — Sniper + Graduation active', 'pump');
     });
 
     pumpWs.on('message', async function(raw) {
       try {
         var d = JSON.parse(raw.toString());
+
+        // ── NEW TOKEN EVENT ───────────────────────────────────
+        // txType is undefined or 'create' for new launches
         var isNewToken = d.mint && (d.symbol || d.name) &&
-                         d.txType !== 'buy' && d.txType !== 'sell';
+          d.txType !== 'buy' && d.txType !== 'sell';
+
         if (isNewToken) {
           var mint = d.mint;
           var name = ((d.symbol || d.name || 'NEW') + '').toUpperCase().slice(0, 12);
           S.pumpCount++;
           S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
-          if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+
+          if (S.pumpCount % 20 === 0) {
+            log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+          }
+
           if (isBanned(mint)) return;
           if (S.tokens.has(mint)) return;
+
+          // Evict worst token if pool is full
           if (S.tokens.size >= S.maxPool) {
             var worstKey = null;
             var worstBSR = Infinity;
             S.tokens.forEach(function(tok, key) {
               if (S.open.find(function(t) { return t.mint === key; })) return;
               var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-              if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
+              if (bsr < worstBSR) {
+                worstBSR = bsr;
+                worstKey = key;
+              }
             });
             if (worstKey) S.tokens.delete(worstKey);
           }
+
+          // Safety check for freeze authority
           var tokenData = {
             mintAuthority: null,
             freezeAuthority: d.freezeAuthority || null,
@@ -377,43 +488,60 @@ function connectPump() {
           };
           var safe = await runSafetyChecklist(mint, tokenData, true);
           if (!safe) return;
+
           var price = calcPumpPrice(d);
-          if (price) pumpPrices[mint] = { price, solInCurve: 0, ts: Date.now() };
+          if (price) pumpPrices[mint] = { price: price, solInCurve: 0, ts: Date.now() };
+
           S.tokens.set(mint, {
-            mint, price,
+            mint: mint,
+            price: price,
             n: name,
             src: 'PUMP',
             chain: 'solana',
             liq: parseFloat(d.initialBuy || 0) * SOL_PRICE_USD,
             mcap: parseFloat(d.marketCapSol || 0) * SOL_PRICE_USD,
             vol1h: 0,
-            buys: 1, sells: 0,
+            buys: 1,
+            sells: 0,
             age: 0,
             pairAddress: null,
             addedAt: Date.now(),
             isNew: true,
           });
+
           log('NEW TOKEN ' + name + ' | $' + (price ? price.toFixed(8) : 'pending') + ' | Added to pool', 'info');
         }
 
+        // ── TRADE EVENT — buy count update + price + graduation ──
+        // Buy count updated REGARDLESS of price availability — critical fix
         if ((d.txType === 'buy' || d.txType === 'sell') && d.mint) {
           var mint2 = d.mint;
           var price2 = calcPumpPrice(d);
           var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
-          if (price2) { pumpPrices[mint2] = { price: price2, solInCurve, ts: Date.now() }; }
+
+          // Update price cache if we have price data
+          if (price2) {
+            pumpPrices[mint2] = { price: price2, solInCurve: solInCurve, ts: Date.now() };
+          }
+
+          // Update pool token — buy count ALWAYS updates, price only if available
           var poolTok = S.tokens.get(mint2);
           if (poolTok) {
             if (d.txType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
             else poolTok.sells = (poolTok.sells || 0) + 1;
             if (price2) poolTok.price = price2;
           }
+
+          // Update open trade prices for Pump.fun trades
           S.open.forEach(function(trade) {
             if (trade.mint === mint2 && trade.src === 'PUMP') {
-              trade.currentPrice = price2 || trade.currentPrice;
-              if (price2 && trade.entryPrice > 0) {
+              if (price2) {
+                trade.currentPrice = price2;
                 if (price2 > (trade.peakPrice || 0)) trade.peakPrice = price2;
-                trade.realPnlPct = (price2 - trade.entryPrice) / trade.entryPrice;
-                trade.realPnl = trade.size * trade.realPnlPct;
+                if (trade.entryPrice > 0) {
+                  trade.realPnlPct = (price2 - trade.entryPrice) / trade.entryPrice;
+                  trade.realPnl = trade.size * trade.realPnlPct;
+                }
                 if (!trade.lastPrice || Math.abs(price2 - trade.lastPrice) / trade.lastPrice > 0.001) {
                   trade.lastPriceChange = Date.now();
                   trade.lastPrice = price2;
@@ -421,10 +549,12 @@ function connectPump() {
               }
             }
           });
+
+          // ── GRADUATION CANDIDATE TRACKING ─────────────────
           var name2 = ((d.symbol || d.name || '') + '').toUpperCase().slice(0, 12);
           if (solInCurve > 0) {
             var existing = S.gradCandidates.get(mint2) || {
-              name: name2, mint: mint2, firstSeen: Date.now(), buys: 0, sells: 0
+              name: name2, mint: mint2, firstSeen: Date.now(), buys: 0, sells: 0,
             };
             existing.solInCurve = solInCurve;
             existing.price = price2;
@@ -432,13 +562,16 @@ function connectPump() {
             if (d.txType === 'buy') existing.buys = (existing.buys || 0) + 1;
             else existing.sells = (existing.sells || 0) + 1;
             existing.bsr = existing.buys / Math.max(existing.sells, 1);
+
             if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
               existing.nearGrad = true;
               var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
               if (!existing.logged || existing.loggedPct !== pct) {
                 existing.logged = true;
                 existing.loggedPct = pct;
-                log('🎓 GRAD CANDIDATE ' + (name2 || mint2.slice(0,8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% to graduation | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
+                log('🎓 GRAD CANDIDATE ' + (name2 || mint2.slice(0, 8)) +
+                  ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% to graduation' +
+                  ' | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
               }
             } else {
               existing.nearGrad = false;
@@ -453,71 +586,97 @@ function connectPump() {
       S.pumpLive = false;
       S.sources['PUMP.FUN'] = 'dead';
     });
+
     pumpWs.on('close', function() {
       S.pumpLive = false;
       S.sources['PUMP.FUN'] = 'dead';
       setTimeout(connectPump, 10000);
     });
-  } catch(e) { setTimeout(connectPump, 15000); }
+
+  } catch(e) {
+    setTimeout(connectPump, 15000);
+  }
 }
 
+// ── OPEN TRADE PRICE TRACKING ─────────────────────────────────
+// Polls DexScreener every 2 seconds for DSC trades
+// Pump.fun trades get prices from WebSocket above
 async function updateOpenTradePrices() {
-  var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.mint; });
+  var trades = S.open.filter(function(t) {
+    return !t.isGrad && t.src !== 'PUMP' && t.mint;
+  });
   if (trades.length === 0) return;
+
   for (var i = 0; i < trades.length; i++) {
     var trade = trades[i];
     var price = await getDSPrice(trade.mint, trade.pairAddress, trade.chain);
     if (!price || price <= 0) continue;
+
+    // Sanity check — reject 90%+ price moves (data error)
     if (trade.currentPrice && trade.currentPrice > 0) {
       var change = Math.abs(price - trade.currentPrice) / trade.currentPrice;
       if (change > 0.90) {
-        log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (change*100).toFixed(0) + '% move — ignoring', 'warn');
+        log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (change * 100).toFixed(0) + '% move', 'warn');
         continue;
       }
     }
+
     trade.currentPrice = price;
     if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
       trade.lastPriceChange = Date.now();
       trade.lastPrice = price;
     }
+
+    // Set entry price if not yet set
     if (!trade.entryPrice || trade.entryPrice <= 0) {
       trade.entryPrice = price;
       trade.peakPrice = price;
       log('PRICE SET ' + trade.tok.n + ' $' + price.toFixed(8), 'info');
       continue;
     }
+
     var pct = (price - trade.entryPrice) / trade.entryPrice;
     trade.realPnlPct = pct;
     trade.realPnl = trade.size * pct;
     if (price > (trade.peakPrice || 0)) trade.peakPrice = price;
+
+    // Fixed take profit check
     if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
-      log('TP HIT ' + trade.tok.n + ' | +' + (pct*100).toFixed(1) + '% | Target ' + trade.tpPct + '%', 'win');
+      log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '% | Target ' + trade.tpPct + '%', 'win');
       closeTradeReal(trade.id, 'Take profit hit');
       continue;
     }
+
+    // Trail stop check — TRAIL_ACT and TRAIL_PB NEVER change
     if (trade.tpl === 'TRAIL' && trade.peakPrice && trade.entryPrice) {
       var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
         var pullback = (trade.peakPrice - price) / trade.peakPrice;
         if (pullback >= CFG.TRAIL_PB) {
-          log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+          log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '%' +
+            ' | Pullback -' + (pullback * 100).toFixed(1) + '%', 'win');
           closeTradeReal(trade.id, 'Trail exit');
           continue;
         }
       }
     }
+
+    // Stop loss check — uses trade's own sl set at entry
     if (pct <= -(trade.sl || 0.10)) {
-      log('SL HIT ' + trade.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
+      log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '%', 'loss');
       closeTradeReal(trade.id, 'Stop loss hit');
     }
   }
 }
 
+// ── CLOSE TRADE ───────────────────────────────────────────────
 function closeTradeReal(id, reason) {
   var i = S.open.findIndex(function(t) { return t.id === id; });
   if (i === -1) return;
   var tr = S.open[i];
   var closeReason = reason || 'Manual sell';
+
+  // Calculate P&L
   var pnl = 0;
   if (tr.entryPrice && tr.currentPrice && tr.entryPrice > 0) {
     var pricePct = (tr.currentPrice - tr.entryPrice) / tr.entryPrice;
@@ -526,38 +685,51 @@ function closeTradeReal(id, reason) {
     pnl = -CFG.SOL_GAS;
     closeReason = reason + ' (no price data)';
   }
+
+  // Track fees
   var feePaid = tr.size * (tr.slip || 0.005) + CFG.SOL_GAS;
   S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
 
+  // Update fund and stats
   if (pnl > CFG.MIN_SPLIT_WIN) {
     var savings = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
     var trading = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
     S.fund = parseFloat((S.fund + trading).toFixed(4));
     S.savings = parseFloat((S.savings + savings).toFixed(4));
-    log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' | saved $' + savings.toFixed(2) + ' | ' + closeReason, 'win');
+    log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) +
+      ' | saved $' + savings.toFixed(2) + ' | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
-    if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
+    if (tr.chain === 'base') S.chainStats.baseW++;
+    else S.chainStats.solW++;
   } else if (pnl > 0) {
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
-    log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' (below split min) | ' + closeReason, 'win');
+    log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) +
+      ' (below split min) | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
-    if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
+    if (tr.chain === 'base') S.chainStats.baseW++;
+    else S.chainStats.solW++;
   } else {
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
-    log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' -$' + Math.abs(pnl).toFixed(2) + ' | ' + closeReason, 'loss');
+    log((tr.isGrad ? '🎓 ' : '') + tr.tok.n + ' -$' + Math.abs(pnl).toFixed(2) +
+      ' | ' + closeReason, 'loss');
     S.stats.l++;
     if (tr.isGrad) S.stats.gl++;
-    if (tr.chain === 'base') S.chainStats.baseL++; else S.chainStats.solL++;
+    if (tr.chain === 'base') S.chainStats.baseL++;
+    else S.chainStats.solL++;
   }
 
   S.stats.t++;
+
+  // Add to closed trades list
   S.closed.unshift({
     tok: tr.tok,
     closeReason: closeReason,
     pnl: parseFloat(pnl.toFixed(4)),
-    pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+    pnlPct: tr.entryPrice && tr.currentPrice
+      ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2))
+      : 0,
     entryPrice: tr.entryPrice,
     exitPrice: tr.currentPrice,
     size: tr.size,
@@ -571,6 +743,7 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
+  // Record to portfolio
   var portfolioTrade = {
     id: tr.id,
     name: tr.tok && tr.tok.n ? tr.tok.n : '?',
@@ -581,7 +754,9 @@ function closeTradeReal(id, reason) {
     exitPrice: tr.currentPrice || 0,
     size: tr.size || 0,
     pnl: parseFloat(pnl.toFixed(4)),
-    pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+    pnlPct: tr.entryPrice && tr.currentPrice
+      ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2))
+      : 0,
     closeReason: closeReason,
     isGrad: tr.isGrad || false,
     openedAt: tr.openedAt || '',
@@ -591,6 +766,7 @@ function closeTradeReal(id, reason) {
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
   };
+
   P.trades.unshift(portfolioTrade);
   P.allTime.t++;
   P.allTime.totalPnl = parseFloat((P.allTime.totalPnl + pnl).toFixed(4));
@@ -603,33 +779,39 @@ function closeTradeReal(id, reason) {
   if (!P.worstTrade || pnl < P.worstTrade.pnl) P.worstTrade = portfolioTrade;
   if (P.allTime.t % 10 === 0) savePortfolio();
 
+  // Track best trade this session
   if (!S.bestTrade || pnl > S.bestTrade.pnl) {
     S.bestTrade = {
-      name: tr.tok && tr.tok.n ? tr.tok.n : "?",
+      name: tr.tok && tr.tok.n ? tr.tok.n : '?',
       entryPrice: tr.entryPrice || 0,
       exitPrice: tr.currentPrice || 0,
       size: tr.size || 0,
       pnl: parseFloat(pnl.toFixed(4)),
-      pnlPct: tr.entryPrice && tr.currentPrice ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+      pnlPct: tr.entryPrice && tr.currentPrice
+        ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2))
+        : 0,
       closeReason: closeReason,
     };
   }
 
+  // Apply cooldowns
   var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
   if (pnl < 0) {
     S.cooldowns.set(cooldownKey, Date.now());
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 30min after loss', 'warn');
   }
   if (pnl > 0) {
+    // Offset so cooldown expires after WIN_COOLDOWN_MS (5 min) not full 30 min
     S.cooldowns.set(cooldownKey, Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS));
     log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 5min after win', 'info');
   }
 
+  // Check fund loss limit
   var lossLimit = S.fundStopLossPct / 100;
   var currentLoss = (S.dayStartFund - S.fund) / S.dayStartFund;
   if (currentLoss >= lossLimit && !S.windingDown) {
     S.windingDown = true;
-    log('FUND LOSS LIMIT HIT — ' + S.fundStopLossPct + '% reached — closing open trades, no new entries', 'rug');
+    log('FUND LOSS LIMIT HIT — ' + S.fundStopLossPct + '% reached — no new entries', 'rug');
     var windDownCheck = setInterval(function() {
       if (S.open.length === 0) {
         clearInterval(windDownCheck);
@@ -640,46 +822,56 @@ function closeTradeReal(id, reason) {
   }
 }
 
+// ── EXIT CRITERIA ─────────────────────────────────────────────
 function checkExitCriteria() {
   var now = Date.now();
   S.open.slice().forEach(function(t) {
     var age = now - t.startTime;
+
+    // Timeout — no price after 3 minutes
     if (!t.entryPrice && age > CFG.NO_PRICE_TIMEOUT) {
       log('TIMEOUT ' + t.tok.n + ' — no price after 3min', 'warn');
       closeTradeReal(t.id, 'Timeout — no price data');
       return;
     }
+
     if (!t.entryPrice || !t.currentPrice) return;
+
+    // Stale exit — no price movement for 2 minutes
     var lastMove = t.lastPriceChange || t.startTime;
     if ((now - lastMove) > CFG.STALE_TIME && age > 30000) {
       log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
       closeTradeReal(t.id, 'Token went stale');
       return;
     }
-    if (t.isGrad && t.tok && t.tpl === 'TRAIL' && t.entryPrice > 0 && t.currentPrice > 0) {
+
+    // Graduation trade exits
+    if (t.isGrad && t.tpl === 'TRAIL' && t.entryPrice > 0 && t.currentPrice > 0) {
       var peakGain = (t.peakPrice - t.entryPrice) / t.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
         var pullback = (t.peakPrice - t.currentPrice) / t.peakPrice;
         if (pullback >= CFG.TRAIL_PB) {
-          log('TRAIL EXIT ' + t.tok.n + ' | Peak +' + (peakGain*100).toFixed(1) + '% | Pullback -' + (pullback*100).toFixed(1) + '%', 'win');
+          log('TRAIL EXIT ' + t.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '%', 'win');
           closeTradeReal(t.id, 'Trail exit');
           return;
         }
       }
       var pct = (t.currentPrice - t.entryPrice) / t.entryPrice;
       if (pct <= -(t.sl || 0.10)) {
-        log('SL HIT ' + t.tok.n + ' | ' + (pct*100).toFixed(1) + '%', 'loss');
+        log('SL HIT ' + t.tok.n + ' | ' + (pct * 100).toFixed(1) + '%', 'loss');
         closeTradeReal(t.id, 'Stop loss hit');
       }
     }
   });
 }
 
+// ── GRADUATION SNIPER ─────────────────────────────────────────
 async function runGradSniper() {
   if (!S.running || S.fund < 1) return;
   if (S.windingDown) return;
   var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
   if (openGrads >= Math.max(Math.floor(S.maxOpen * 0.25), 1)) return;
+
   for (var entry of S.gradCandidates.entries()) {
     var mint = entry[0];
     var cand = entry[1];
@@ -690,36 +882,49 @@ async function runGradSniper() {
     var totalTxns = (cand.buys || 0) + (cand.sells || 0);
     if (totalTxns < CFG.GRAD_MIN_TXNS) continue;
     if (cand.bsr < CFG.GRAD_MIN_BSR) continue;
+
     var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, 0.10)).toFixed(4));
     if (size < 0.50) continue;
+
     var slip = 0.008;
     S.fund = parseFloat((S.fund - size * slip).toFixed(4));
-    var pct = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
+    var pct2 = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
+
     var trade = {
       id: Math.random().toString(36).substr(2, 9),
-      tok: { n: cand.name || mint.slice(0,8), src: 'GRAD', liq: cand.solInCurve * SOL_PRICE_USD },
+      tok: { n: cand.name || mint.slice(0, 8), src: 'GRAD', liq: cand.solInCurve * SOL_PRICE_USD },
       sc: 90,
-      size, tpl: 'TRAIL',
-      sl: CFG.STOP_LOSS,
-      slip, mint,
+      size: size,
+      tpl: 'TRAIL',
+      tpPct: S.takeProfitPct,
+      sl: S.stopLossPct / 100,
+      slip: slip,
+      mint: mint,
       src: 'GRAD',
+      chain: 'solana',
       entryPrice: cand.price,
       currentPrice: cand.price,
       peakPrice: cand.price,
-      realPnl: 0, realPnlPct: 0,
+      lastPrice: cand.price,
+      lastPriceChange: Date.now(),
+      realPnl: 0,
+      realPnlPct: 0,
       isGrad: true,
       gradSolAtEntry: cand.solInCurve,
       openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
       startTime: Date.now(),
-      lastPriceChange: Date.now(),
     };
+
     S.open.push(trade);
     S.gradCount++;
-    log('🎓 GRAD ENTER ' + trade.tok.n + ' | ' + pct + '% to grad | ' + cand.solInCurve.toFixed(0) + ' SOL | BSR ' + cand.bsr.toFixed(1) + 'x | $' + size.toFixed(2) + ' | Entry $' + cand.price.toFixed(8), 'entry');
+    log('🎓 GRAD ENTER ' + trade.tok.n + ' | ' + pct2 + '% to grad | ' +
+      cand.solInCurve.toFixed(0) + ' SOL | BSR ' + cand.bsr.toFixed(1) + 'x | $' +
+      size.toFixed(2) + ' | Entry $' + cand.price.toFixed(8), 'entry');
     break;
   }
 }
 
+// ── MAIN SCANNER ──────────────────────────────────────────────
 var scanI = null;
 var scanIdx = 0;
 
@@ -738,41 +943,53 @@ async function runScan() {
 
   if (!tok || !tok.mint) return;
 
+  // Remove banned tokens from pool
   if (isBanned(tok.mint)) {
     S.tokens.delete(tok.mint);
     return;
   }
 
+  // Skip if chain is disabled
   if (tok.chain === 'base' && !S.baseEnabled) return;
   if (tok.chain === 'solana' && !S.solEnabled) return;
   if (!tok.chain && !S.solEnabled) return;
 
+  // Buy/sell ratio check
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
   if (bsr < 0.8) { S.rejectCount++; return; }
 
+  // Cooldown check
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
   if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) return;
 
+  // Already in open trade
   if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
 
+  // Minimum buys check
   if (tok.buys < 3) return;
 
+  // Position size check
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
   if (size < 0.50) { S.rejectCount++; return; }
 
+  // Get entry price
   var entryPrice = null;
   if (tok.src === 'PUMP' && pumpPrices[tok.mint]) {
     entryPrice = pumpPrices[tok.mint].price;
   } else {
-    entryPrice = await getDSPrice(tok.mint, tok.pairAddress);
+    entryPrice = await getDSPrice(tok.mint, tok.pairAddress, tok.chain);
   }
 
   if (!entryPrice || entryPrice <= 0) { S.rejectCount++; return; }
 
-  var slip = parseFloat(Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4));
+  // Calculate slippage
+  var slip = parseFloat(
+    Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
+  );
   S.fund = parseFloat((S.fund - size * slip).toFixed(4));
 
+  // Create trade
   var trade = {
     id: Math.random().toString(36).substr(2, 9),
     tok: Object.assign({}, tok),
@@ -781,37 +998,48 @@ async function runScan() {
     tpl: S.takeProfitMode,
     tpPct: S.takeProfitPct,
     sl: S.stopLossPct / 100,
-    slip, mint: tok.mint,
+    slip: slip,
+    mint: tok.mint,
     src: tok.src,
     chain: tok.chain || 'solana',
     pairAddress: tok.pairAddress || null,
-    entryPrice,
+    entryPrice: entryPrice,
     currentPrice: entryPrice,
     peakPrice: entryPrice,
     lastPrice: entryPrice,
     lastPriceChange: Date.now(),
-    realPnl: 0, realPnlPct: 0,
+    realPnl: 0,
+    realPnlPct: 0,
     isGrad: false,
     openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     startTime: Date.now(),
   };
 
   S.open.push(trade);
-  log('ENTER ' + tok.n + ' [' + tok.src + '] | MCap $' + ((tok.mcap || 0)/1000).toFixed(0) + 'k | Liq $' + ((tok.liq || 0)/1000).toFixed(0) + 'k | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+  log('ENTER ' + tok.n + ' [' + tok.src + '] | MCap $' + ((tok.mcap || 0) / 1000).toFixed(0) +
+    'k | Liq $' + ((tok.liq || 0) / 1000).toFixed(0) + 'k | $' + size.toFixed(2) +
+    ' | Entry $' + entryPrice.toFixed(8), 'entry');
 }
 
+// ── POOL CLEANUP ──────────────────────────────────────────────
 function cleanPool() {
   var now = Date.now();
   var removed = 0;
+
   S.tokens.forEach(function(tok, mint) {
-    if (tok.addedAt && (now - tok.addedAt) > CFG.POOL_AGE_MS && !S.open.find(function(t) { return t.mint === mint; })) {
+    if (tok.addedAt && (now - tok.addedAt) > CFG.POOL_AGE_MS &&
+        !S.open.find(function(t) { return t.mint === mint; })) {
       S.tokens.delete(mint);
       removed++;
     }
   });
+
+  // Clean expired cooldowns
   S.cooldowns.forEach(function(ts, key) {
     if (now - ts > CFG.COOLDOWN_MS) S.cooldowns.delete(key);
   });
+
+  // Clean stale grad candidates
   var gradRemoved = 0;
   S.gradCandidates.forEach(function(cand, mint) {
     if (!S.open.find(function(t) { return t.mint === mint; })) {
@@ -821,17 +1049,28 @@ function cleanPool() {
       }
     }
   });
+
   recheckExpiredBans();
-  if (removed > 0) log('Pool cleaned: ' + removed + ' old tokens removed | Pool: ' + S.tokens.size, 'info');
-  if (gradRemoved > 0) log('Grad candidates cleaned: ' + gradRemoved + ' removed | Remaining: ' + S.gradCandidates.size, 'info');
+
+  if (removed > 0) {
+    log('Pool cleaned: ' + removed + ' tokens removed | Pool: ' + S.tokens.size, 'info');
+  }
+  if (gradRemoved > 0) {
+    log('Grad candidates cleaned: ' + gradRemoved + ' removed', 'info');
+  }
 }
 
+// ── BOT CONTROL ───────────────────────────────────────────────
 var gradI = null, exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
 
 function startBot() {
   if (S.running) return;
   S.running = true;
   S.startTime = Date.now();
+
+  // Reset all session state
+  S.stats = { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 };
+  S.savings = 0;
   S.dscPool = 0;
   S.solPool = 0;
   S.basePool = 0;
@@ -840,7 +1079,11 @@ function startBot() {
   S.totalFees = 0;
   S.windingDown = false;
   S.chainStats = { solW: 0, solL: 0, baseW: 0, baseL: 0 };
-  S.solEnabled = true;
+  S.solEnabled = true;  // Always reset Solana to ON on start
+  S.scanCount = 0;
+  S.rejectCount = 0;
+  S.pumpCount = 0;
+  S.gradCount = 0;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
@@ -856,8 +1099,8 @@ function startBot() {
   cleanI = setInterval(cleanPool, 3600000);
   solPriceI = setInterval(updateSolPrice, 600000);
 
-  log('🚀 BunkerBuster STARTED | Sniper Bot | Pump.fun WebSocket LIVE | Graduation Sniper ACTIVE', 'info');
-  log('Settings: ' + CFG.MAX_POS*100 + '% position | ' + S.stopLossPct + '% SL | Trail ' + CFG.TRAIL_ACT*100 + '%/' + CFG.TRAIL_PB*100 + '% | ' + S.maxOpen + ' max trades', 'info');
+  log('🚀 BunkerBuster STARTED | Fund: $' + S.sessionFund + ' | SL: ' + S.stopLossPct +
+    '% | Max trades: ' + S.maxOpen, 'info');
 }
 
 function stopBot() {
@@ -870,15 +1113,20 @@ function stopBot() {
   if (cleanI) clearInterval(cleanI);
   if (solPriceI) clearInterval(solPriceI);
 
+  // Save session summary
   if (S.stats.t > 0) {
     var session = {
       date: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
-      startTime: S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
+      startTime: S.startTime
+        ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' })
+        : '',
       endTime: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
       trades: S.stats.t,
       wins: S.stats.w,
       losses: S.stats.l,
-      winRate: S.stats.t > 0 ? parseFloat((S.stats.w / S.stats.t * 100).toFixed(1)) : 0,
+      winRate: S.stats.t > 0
+        ? parseFloat((S.stats.w / S.stats.t * 100).toFixed(1))
+        : 0,
       startFund: S.sessionFund,
       endFund: parseFloat(S.fund.toFixed(2)),
       savings: parseFloat(S.savings.toFixed(2)),
@@ -889,9 +1137,11 @@ function stopBot() {
     savePortfolio();
   }
 
-  log('Bot stopped | Trades: ' + S.stats.t + ' | W: ' + S.stats.w + ' L: ' + S.stats.l + ' | Fund: $' + S.fund.toFixed(2) + ' | Savings: $' + S.savings.toFixed(2), 'info');
+  log('Bot stopped | Trades: ' + S.stats.t + ' | W: ' + S.stats.w + ' L: ' + S.stats.l +
+    ' | Fund: $' + S.fund.toFixed(2) + ' | Savings: $' + S.savings.toFixed(2), 'info');
 }
 
+// ── API ROUTES ────────────────────────────────────────────────
 app.get('/api/state', function(req, res) {
   res.json({
     fund: S.fund,
@@ -903,16 +1153,28 @@ app.get('/api/state', function(req, res) {
     poolSize: S.tokens.size,
     scanCount: S.scanCount,
     rejectCount: S.rejectCount,
-    stCredits: S.stCredits,
     openTrades: S.open.map(function(t) {
       return {
-        id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, tpPct: t.tpPct, sl: t.sl, chain: t.chain || "solana",
-        slip: t.slip, mint: t.mint, src: t.src,
-        entryPrice: t.entryPrice, currentPrice: t.currentPrice,
-        peakPrice: t.peakPrice, realPnl: t.realPnl, realPnlPct: t.realPnlPct,
-        isGrad: t.isGrad, gradSolAtEntry: t.gradSolAtEntry,
-        openedAt: t.openedAt, startTime: t.startTime,
-        tok: { n: t.tok.n, src: t.tok.src, liq: t.tok.liq }
+        id: t.id,
+        sc: t.sc,
+        size: t.size,
+        tpl: t.tpl,
+        tpPct: t.tpPct,
+        sl: t.sl,
+        chain: t.chain || 'solana',
+        slip: t.slip,
+        mint: t.mint,
+        src: t.src,
+        entryPrice: t.entryPrice,
+        currentPrice: t.currentPrice,
+        peakPrice: t.peakPrice,
+        realPnl: t.realPnl,
+        realPnlPct: t.realPnlPct,
+        isGrad: t.isGrad,
+        gradSolAtEntry: t.gradSolAtEntry,
+        openedAt: t.openedAt,
+        startTime: t.startTime,
+        tok: { n: t.tok.n, src: t.tok.src, liq: t.tok.liq },
       };
     }),
     closedTrades: S.closed.slice(0, 20),
@@ -933,7 +1195,9 @@ app.get('/api/state', function(req, res) {
     maxOpen: S.maxOpen,
     fundStopLossPct: S.fundStopLossPct,
     windingDown: S.windingDown,
-    currentLossPct: S.dayStartFund > 0 ? parseFloat(((S.dayStartFund - S.fund) / S.dayStartFund * 100).toFixed(2)) : 0,
+    currentLossPct: S.dayStartFund > 0
+      ? parseFloat(((S.dayStartFund - S.fund) / S.dayStartFund * 100).toFixed(2))
+      : 0,
     chainStats: S.chainStats,
     solEnabled: S.solEnabled,
     baseEnabled: S.baseEnabled,
@@ -942,11 +1206,11 @@ app.get('/api/state', function(req, res) {
     sources: S.sources,
     startTime: S.startTime,
     wallets: {
-      trading: TRADING_WALLET ? TRADING_WALLET.slice(0,8) + '...' : 'not set',
-      savings: SAVINGS_WALLET ? SAVINGS_WALLET.slice(0,8) + '...' : 'not set',
-      baseTrading: BASE_TRADING_WALLET ? BASE_TRADING_WALLET.slice(0,8) + '...' : 'not set',
-      baseSavings: BASE_SAVINGS_WALLET ? BASE_SAVINGS_WALLET.slice(0,8) + '...' : 'not set',
-    }
+      trading: TRADING_WALLET ? TRADING_WALLET.slice(0, 8) + '...' : 'not set',
+      savings: SAVINGS_WALLET ? SAVINGS_WALLET.slice(0, 8) + '...' : 'not set',
+      baseTrading: BASE_TRADING_WALLET ? BASE_TRADING_WALLET.slice(0, 8) + '...' : 'not set',
+      baseSavings: BASE_SAVINGS_WALLET ? BASE_SAVINGS_WALLET.slice(0, 8) + '...' : 'not set',
+    },
   });
 });
 
@@ -954,21 +1218,26 @@ app.post('/api/start', function(req, res) { startBot(); res.json({ success: true
 app.get('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
 app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.get('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
-app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
+app.post('/api/sell/:id', function(req, res) {
+  closeTradeReal(req.params.id, 'Manual sell');
+  res.json({ success: true });
+});
 
 app.post('/api/settings', function(req, res) {
   if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
   if (req.body.savingsWallet) SAVINGS_WALLET = req.body.savingsWallet;
   if (req.body.baseTradingWallet) BASE_TRADING_WALLET = req.body.baseTradingWallet;
   if (req.body.baseSavingsWallet) BASE_SAVINGS_WALLET = req.body.baseSavingsWallet;
+
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
     if (!isNaN(sf) && sf > 0) {
       S.sessionFund = parseFloat(sf.toFixed(2));
-      log('Session fund updated to ' + S.sessionFund, 'info');
+      log('Session fund updated to $' + S.sessionFund, 'info');
     }
   }
-  if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED')) {
+  if (req.body.takeProfitMode &&
+      (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED')) {
     S.takeProfitMode = req.body.takeProfitMode;
     log('Take profit mode: ' + S.takeProfitMode, 'info');
   }
@@ -1009,16 +1278,17 @@ app.post('/api/settings', function(req, res) {
   }
   if (req.body.solEnabled !== undefined) {
     S.solEnabled = req.body.solEnabled === true || req.body.solEnabled === 'true';
-    log('Solana discovery: ' + (S.solEnabled ? 'ENABLED' : 'DISABLED'), 'info');
+    log('Solana: ' + (S.solEnabled ? 'ENABLED' : 'DISABLED'), 'info');
   }
   if (req.body.baseEnabled !== undefined) {
     S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
-    log('Base discovery: ' + (S.baseEnabled ? 'ENABLED' : 'DISABLED'), 'info');
+    log('Base: ' + (S.baseEnabled ? 'ENABLED' : 'DISABLED'), 'info');
   }
-  log('Settings updated | Trading: ' + (TRADING_WALLET || 'not set') + ' | Savings: ' + (SAVINGS_WALLET || 'not set'), 'info');
+
   res.json({ success: true });
 });
 
+// ── PORTFOLIO ROUTES ──────────────────────────────────────────
 app.get('/api/portfolio', function(req, res) {
   res.json({
     allTime: P.allTime,
@@ -1033,27 +1303,44 @@ app.get('/api/portfolio', function(req, res) {
 app.get('/api/portfolio/trades', function(req, res) {
   var trades = P.trades;
   var q = req.query;
-  if (q.date) trades = trades.filter(function(t) { return t.closedDate === q.date; });
+
+  if (q.date) {
+    trades = trades.filter(function(t) { return t.closedDate === q.date; });
+  }
   if (q.token) {
     var tok = q.token.toUpperCase();
-    trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; });
+    trades = trades.filter(function(t) {
+      return t.name && t.name.toUpperCase().indexOf(tok) >= 0;
+    });
   }
-  if (q.chain && q.chain !== 'all') trades = trades.filter(function(t) { return t.chain === q.chain; });
+  if (q.chain && q.chain !== 'all') {
+    trades = trades.filter(function(t) { return t.chain === q.chain; });
+  }
   if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl > 0; });
   if (q.result === 'loss') trades = trades.filter(function(t) { return t.pnl <= 0; });
   if (q.exit && q.exit !== 'all') {
-    trades = trades.filter(function(t) { return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0; });
+    trades = trades.filter(function(t) {
+      return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0;
+    });
   }
+
   var page = parseInt(q.page) || 0;
   var limit = parseInt(q.limit) || 50;
   if (limit > 99999) limit = trades.length;
   var total = trades.length;
   trades = trades.slice(page * limit, (page + 1) * limit);
+
   res.json({ trades: trades, total: total, page: page, pages: Math.ceil(total / limit) });
 });
 
 app.post('/api/portfolio/clear', function(req, res) {
-  P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [] };
+  P = {
+    allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 },
+    bestTrade: null,
+    worstTrade: null,
+    trades: [],
+    sessions: [],
+  };
   savePortfolio();
   res.json({ success: true });
 });
@@ -1062,8 +1349,11 @@ app.get('/health', function(req, res) {
   res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount, fund: S.fund });
 });
 
-app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
+app.get('/', function(req, res) {
+  res.sendFile(__dirname + '/index.html');
+});
 
+// ── START SERVER ──────────────────────────────────────────────
 app.listen(PORT, function() {
   console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
   loadPortfolio();
