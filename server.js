@@ -448,6 +448,14 @@ function connectPump() {
             isNew: true,
           });
           log('NEW TOKEN ' + name + ' | $' + (price ? price.toFixed(8) : 'pending') + ' | Added to pool', 'info');
+
+          // Subscribe to trades for this specific token — free per token
+          if (pumpWs && pumpWs.readyState === WebSocket.OPEN) {
+            pumpWs.send(JSON.stringify({
+              method: 'subscribeTokenTrade',
+              keys: [mint]
+            }));
+          }
         }
 
         // Trade event — buy count ALWAYS updates regardless of price
