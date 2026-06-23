@@ -460,6 +460,10 @@ function connectPump() {
 
         // Trade event — buy count ALWAYS updates regardless of price
         if ((d.txType === 'buy' || d.txType === 'sell') && d.mint) {
+          // Log first 5 trade events to confirm they are arriving
+          if (!S._tradeEventCount) S._tradeEventCount = 0;
+          S._tradeEventCount++;
+          if (S._tradeEventCount <= 5) log('TRADE EVENT #' + S._tradeEventCount + ' | ' + d.txType + ' | ' + (d.symbol||d.mint||'?').slice(0,8), 'info');
           var mint2 = d.mint;
           var price2 = calcPumpPrice(d);
           var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
