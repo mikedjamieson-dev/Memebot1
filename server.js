@@ -489,6 +489,38 @@ function connectPump() {
                 trade.lastPriceChange = Date.now();
                 trade.lastPrice = price2;
               }
+
+              // Trail stop and stop loss checks for PUMP trades
+              if (trade.entryPrice > 0) {
+                var pct2 = (price2 - trade.entryPrice) / trade.entryPrice;
+
+                // Fixed take profit
+                if (trade.tpl === 'FIXED' && pct2 >= (trade.tpPct / 100)) {
+                  log('TP HIT ' + trade.tok.n + ' | +' + (pct2*100).toFixed(1) + '%', 'win');
+                  closeTradeReal(trade.id, 'Take profit hit');
+                  return;
+                }
+
+                // Trail stop — TRAIL_ACT 0.04, TRAIL_PB 0.02 locked forever
+                if (trade.tpl === 'TRAIL' && trade.peakPrice) {
+                  var peakGain2 = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+                  if (peakGain2 >= CFG.TRAIL_ACT) {
+                    var pullback2 = (trade.peakPrice - price2) / trade.peakPrice;
+                    if (pullback2 >= CFG.TRAIL_PB) {
+                      log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain2*100).toFixed(1) + '% | Pullback -' + (pullback2*100).toFixed(1) + '%', 'win');
+                      closeTradeReal(trade.id, 'Trail exit');
+                      return;
+                    }
+                  }
+                }
+
+                // Stop loss
+                if (pct2 <= -(trade.sl || 0.10)) {
+                  log('SL HIT ' + trade.tok.n + ' | ' + (pct2*100).toFixed(1) + '%', 'loss');
+                  closeTradeReal(trade.id, 'Stop loss hit');
+                  return;
+                }
+              }
             }
           });
 
