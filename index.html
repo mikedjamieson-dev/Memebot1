@@ -1170,8 +1170,9 @@ async function loadTrades() {
       var pnlColor=(t.pnl||0)>0?'var(--green)':'var(--red)';
       var chainIcon=t.chain==='base'?'🔵':'◎';
       var d=document.createElement('div'); d.className='trade-row';
+      var pctStr2 = t.pnlPct !== undefined ? pSign(t.pnlPct)+parseFloat(t.pnlPct).toFixed(2)+'%' : '';
       d.innerHTML='<div><div class="trade-row-name" style="color:'+pnlColor+'">'+chainIcon+' '+(t.name||'?')+'</div><div class="trade-row-meta">$'+f2(t.size)+' · '+(t.closedDate||'')+' · '+(t.src||'')+'</div></div>' +
-        '<div style="text-align:right;"><div class="trade-row-pnl" style="color:'+pnlColor+'">'+pSign(t.pnl||0)+'$'+f2(t.pnl||0)+'</div><div class="trade-row-reason">'+(t.closeReason||'?')+'</div></div>';
+        '<div style="text-align:right;"><div class="trade-row-pnl" style="color:'+pnlColor+'">'+pSign(t.pnl||0)+'$'+f2(t.pnl||0)+'</div><div class="trade-row-reason" style="color:'+pnlColor+'">'+(pctStr2||'')+'</div><div class="trade-row-reason">'+(t.closeReason||'?')+'</div></div>';
       tradesEl.appendChild(d);
     });
     var pages=data.pages||1;
