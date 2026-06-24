@@ -394,9 +394,9 @@ function connectPump() {
       try {
         var d = JSON.parse(raw.toString());
 
-        // New token launch
+        // New token launch — handles both PumpPortal (no txType) and pumpdev.io (txType: 'create')
         var isNewToken = d.mint && (d.symbol || d.name) &&
-          d.txType !== 'buy' && d.txType !== 'sell';
+          (d.txType === 'create' || (d.txType !== 'buy' && d.txType !== 'sell'));
 
         if (isNewToken) {
           var mint = d.mint;
@@ -449,12 +449,14 @@ function connectPump() {
           });
           log('NEW TOKEN ' + name + ' | $' + (price ? price.toFixed(8) : 'pending') + ' | Added to pool', 'info');
 
-          // Subscribe to trades for this specific token — free per token
+          // Subscribe to trades for this specific token — free on pumpdev.io
           if (pumpWs && pumpWs.readyState === WebSocket.OPEN) {
-            pumpWs.send(JSON.stringify({
-              method: 'subscribeTokenTrade',
-              keys: [mint]
-            }));
+            try {
+              pumpWs.send(JSON.stringify({
+                method: 'subscribeTokenTrade',
+                keys: [mint]
+              }));
+            } catch(e) {}
           }
         }
 
