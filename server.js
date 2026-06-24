@@ -381,7 +381,7 @@ var pumpWs = null;
 function connectPump() {
   if (pumpWs && pumpWs.readyState === WebSocket.OPEN) return;
   try {
-    pumpWs = new WebSocket('wss://pumpportal.fun/api/data');
+    pumpWs = new WebSocket('wss://pumpdev.io/ws');
 
     pumpWs.on('open', function() {
       S.pumpLive = true;
