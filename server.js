@@ -899,8 +899,17 @@ async function runScan() {
   if (size < 0.50) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
 
   var entryPrice = null;
-  if (tok.src === 'PUMP' && pumpPrices[tok.mint]) {
-    entryPrice = pumpPrices[tok.mint].price;
+  if (tok.src === 'PUMP') {
+    // Only enter on a FRESH price — under 1 second old
+    // Guarantees entry price is real AND token is actively trading right now
+    var cached = pumpPrices[tok.mint];
+    if (cached && (Date.now() - cached.ts) <= 1000) {
+      entryPrice = cached.price;
+    } else {
+      if(diag) log('DIAG '+tok.n+' | SKIP: price stale ('+(cached ? ((Date.now()-cached.ts)/1000).toFixed(1)+'s old' : 'no cache')+')', 'info');
+      S.rejectCount++;
+      return;
+    }
   } else {
     entryPrice = await getDSPrice(tok.mint, tok.pairAddress, tok.chain);
   }
