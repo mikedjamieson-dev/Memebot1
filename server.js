@@ -13,6 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 // ── API KEYS ──────────────────────────────────────────────────
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
+const SOLANA_STREAMING_KEY = process.env.SOLANA_STREAMING_KEY || '';
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
@@ -364,205 +365,311 @@ async function fetchDSTokens() {
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
-// ── PUMP.FUN PRICE CALCULATION ────────────────────────────────
-function calcPumpPrice(d) {
-  var vSol = parseFloat(d.vSolInBondingCurve) || 0;
-  var vTokens = parseFloat(d.vTokensInBondingCurve) || 0;
-  if (vSol > 0 && vTokens > 0) return (vSol / vTokens) * SOL_PRICE_USD;
-  var mcapSol = parseFloat(d.marketCapSol) || 0;
-  if (mcapSol > 0) return (mcapSol / 1000000000) * SOL_PRICE_USD;
-  return null;
-}
-
-// ── PUMP.FUN WEBSOCKET ────────────────────────────────────────
+// ── SOLANASTREAMING — REAL TIME DATA ─────────────────────────
+// One WebSocket connection: wss://api.solanastreaming.com
+// Auth via X-API-KEY header — key lives in Render environment only
+// newPairSubscribe: new Pump.fun launches with REAL authority data
+// swapSubscribe: every buy/sell on watched bonding curves — real prices
 var pumpPrices = {};
 var pumpWs = null;
+var ssSwapSubId = null;
+var ssLastSentFilter = '';
+var ssMsgId = 10;
+var ssSwapLogCount = 0;
+var ssPingI = null;
 
-function connectPump() {
-  if (pumpWs && pumpWs.readyState === WebSocket.OPEN) return;
+function connectSS() {
+  if (pumpWs && (pumpWs.readyState === WebSocket.OPEN || pumpWs.readyState === WebSocket.CONNECTING)) return;
+  if (!SOLANA_STREAMING_KEY) {
+    log('SOLANA_STREAMING_KEY missing — add it in Render Environment tab', 'rug');
+    return;
+  }
   try {
-    pumpWs = new WebSocket('wss://pumpdev.io/ws');
+    pumpWs = new WebSocket('wss://api.solanastreaming.com', {
+      headers: { 'X-API-KEY': SOLANA_STREAMING_KEY }
+    });
 
     pumpWs.on('open', function() {
       S.pumpLive = true;
-      S.sources['PUMP.FUN'] = 'live:0';
-      pumpWs.send(JSON.stringify({ method: 'subscribeNewToken' }));
-      log('Pump.fun WebSocket LIVE — Sniper + Graduation active', 'pump');
+      ssSwapSubId = null;
+      ssLastSentFilter = '';
+      S.sources['SOLSTREAM'] = 'live:0';
+      pumpWs.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'newPairSubscribe', params: { include_pumpfun: true } }));
+      log('SolanaStreaming LIVE — real time data connected', 'pump');
+      if (ssPingI) clearInterval(ssPingI);
+      ssPingI = setInterval(function() {
+        try { if (pumpWs && pumpWs.readyState === WebSocket.OPEN) pumpWs.ping(); } catch(e) {}
+      }, 30000);
     });
 
-    pumpWs.on('message', async function(raw) {
+    pumpWs.on('message', function(raw) {
       try {
-        var d = JSON.parse(raw.toString());
+        var msg = JSON.parse(raw.toString());
 
-        // New token launch — handles both PumpPortal (no txType) and pumpdev.io (txType: 'create')
-        var isNewToken = d.mint && (d.symbol || d.name) &&
-          (d.txType === 'create' || (d.txType !== 'buy' && d.txType !== 'sell'));
-
-        if (isNewToken) {
-          var mint = d.mint;
-          var name = ((d.symbol || d.name || 'NEW') + '').toUpperCase().slice(0, 12);
-          S.pumpCount++;
-          S.sources['PUMP.FUN'] = 'live:' + S.pumpCount;
-          if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
-
-          if (isBanned(mint)) return;
-          if (S.tokens.has(mint)) return;
-
-          if (S.tokens.size >= S.maxPool) {
-            var worstKey = null;
-            var worstBSR = Infinity;
-            S.tokens.forEach(function(tok, key) {
-              if (S.open.find(function(t) { return t.mint === key; })) return;
-              var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-              if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
-            });
-            if (worstKey) S.tokens.delete(worstKey);
-          }
-
-          var tokenData = {
-            mintAuthority: null,
-            freezeAuthority: d.freezeAuthority || null,
-            lpBurn: undefined,
-            dev: undefined,
-          };
-          var safe = await runSafetyChecklist(mint, tokenData, true);
-          if (!safe) return;
-
-          var price = calcPumpPrice(d);
-          if (price) pumpPrices[mint] = { price: price, solInCurve: 0, ts: Date.now() };
-
-          S.tokens.set(mint, {
-            mint: mint,
-            price: price,
-            n: name,
-            src: 'PUMP',
-            chain: 'solana',
-            liq: parseFloat(d.initialBuy || 0) * SOL_PRICE_USD,
-            mcap: parseFloat(d.marketCapSol || 0) * SOL_PRICE_USD,
-            vol1h: 0,
-            buys: 1,
-            sells: 0,
-            age: 0,
-            pairAddress: null,
-            addedAt: Date.now(),
-            isNew: true,
-          });
-          log('NEW TOKEN ' + name + ' | $' + (price ? price.toFixed(8) : 'pending') + ' | Added to pool', 'info');
-
-          // Subscribe to trades for this specific token — free on pumpdev.io
-          if (pumpWs && pumpWs.readyState === WebSocket.OPEN) {
-            try {
-              pumpWs.send(JSON.stringify({
-                method: 'subscribeTokenTrade',
-                keys: [mint]
-              }));
-            } catch(e) {}
-          }
+        if (msg.id === 2 && msg.result && msg.result.subscription_id !== undefined) {
+          ssSwapSubId = msg.result.subscription_id;
+          log('Swap stream active — subscription #' + ssSwapSubId, 'pump');
+          return;
         }
-
-        // Trade event — buy count ALWAYS updates regardless of price
-        if ((d.txType === 'buy' || d.txType === 'sell') && d.mint) {
-          // Log first 5 trade events to confirm they are arriving
-          if (!S._tradeEventCount) S._tradeEventCount = 0;
-          S._tradeEventCount++;
-          if (S._tradeEventCount <= 5) log('TRADE EVENT #' + S._tradeEventCount + ' | ' + d.txType + ' | ' + (d.symbol||d.mint||'?').slice(0,8), 'info');
-          var mint2 = d.mint;
-          var price2 = calcPumpPrice(d);
-          var solInCurve = parseFloat(d.vSolInBondingCurve) || 0;
-
-          if (price2) pumpPrices[mint2] = { price: price2, solInCurve: solInCurve, ts: Date.now() };
-
-          var poolTok = S.tokens.get(mint2);
-          if (poolTok) {
-            if (d.txType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
-            else poolTok.sells = (poolTok.sells || 0) + 1;
-            if (price2) poolTok.price = price2;
-          }
-
-          S.open.forEach(function(trade) {
-            if (trade.mint === mint2 && trade.src === 'PUMP' && price2) {
-              trade.currentPrice = price2;
-              if (price2 > (trade.peakPrice || 0)) trade.peakPrice = price2;
-              if (trade.entryPrice > 0) {
-                trade.realPnlPct = (price2 - trade.entryPrice) / trade.entryPrice;
-                trade.realPnl = trade.size * trade.realPnlPct;
-              }
-              if (!trade.lastPrice || Math.abs(price2 - trade.lastPrice) / trade.lastPrice > 0.001) {
-                trade.lastPriceChange = Date.now();
-                trade.lastPrice = price2;
-              }
-
-              // Trail stop and stop loss checks for PUMP trades
-              if (trade.entryPrice > 0) {
-                var pct2 = (price2 - trade.entryPrice) / trade.entryPrice;
-
-                // Fixed take profit
-                if (trade.tpl === 'FIXED' && pct2 >= (trade.tpPct / 100)) {
-                  log('TP HIT ' + trade.tok.n + ' | +' + (pct2*100).toFixed(1) + '%', 'win');
-                  closeTradeReal(trade.id, 'Take profit hit');
-                  return;
-                }
-
-                // Trail stop — TRAIL_ACT 0.04, TRAIL_PB 0.02 locked forever
-                if (trade.tpl === 'TRAIL' && trade.peakPrice) {
-                  var peakGain2 = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
-                  if (peakGain2 >= CFG.TRAIL_ACT) {
-                    var pullback2 = (trade.peakPrice - price2) / trade.peakPrice;
-                    if (pullback2 >= CFG.TRAIL_PB) {
-                      log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain2*100).toFixed(1) + '% | Pullback -' + (pullback2*100).toFixed(1) + '%', 'win');
-                      closeTradeReal(trade.id, 'Trail exit');
-                      return;
-                    }
-                  }
-                }
-
-                // Stop loss
-                if (pct2 <= -(trade.sl || 0.10)) {
-                  log('SL HIT ' + trade.tok.n + ' | ' + (pct2*100).toFixed(1) + '%', 'loss');
-                  closeTradeReal(trade.id, 'Stop loss hit');
-                  return;
-                }
-              }
-            }
-          });
-
-          // Graduation tracking
-          var name2 = ((d.symbol || d.name || '') + '').toUpperCase().slice(0, 12);
-          if (solInCurve > 0) {
-            var existing = S.gradCandidates.get(mint2) || {
-              name: name2, mint: mint2, firstSeen: Date.now(), buys: 0, sells: 0,
-            };
-            existing.solInCurve = solInCurve;
-            existing.price = price2;
-            existing.lastUpdate = Date.now();
-            if (d.txType === 'buy') existing.buys = (existing.buys || 0) + 1;
-            else existing.sells = (existing.sells || 0) + 1;
-            existing.bsr = existing.buys / Math.max(existing.sells, 1);
-            if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
-              existing.nearGrad = true;
-              var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
-              if (!existing.logged || existing.loggedPct !== pct) {
-                existing.logged = true;
-                existing.loggedPct = pct;
-                log('GRAD CANDIDATE ' + (name2 || mint2.slice(0, 8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% to graduation | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
-              }
-            } else {
-              existing.nearGrad = false;
-            }
-            S.gradCandidates.set(mint2, existing);
-          }
+        if (msg.error) {
+          log('SS ERROR: ' + JSON.stringify(msg.error).slice(0, 120), 'warn');
+          return;
         }
+        if (msg.params && msg.params.pair) { handleNewPair(msg.params); return; }
+        if (msg.params && msg.params.swap) { handleSwap(msg.params); return; }
       } catch(e) {}
     });
 
-    pumpWs.on('error', function() { S.pumpLive = false; S.sources['PUMP.FUN'] = 'dead'; });
+    pumpWs.on('error', function() { S.pumpLive = false; S.sources['SOLSTREAM'] = 'dead'; });
     pumpWs.on('close', function() {
       S.pumpLive = false;
-      S.sources['PUMP.FUN'] = 'dead';
-      setTimeout(connectPump, 10000);
+      S.sources['SOLSTREAM'] = 'dead';
+      if (ssPingI) clearInterval(ssPingI);
+      setTimeout(connectSS, 3000);
     });
-  } catch(e) { setTimeout(connectPump, 15000); }
+  } catch(e) { setTimeout(connectSS, 5000); }
 }
+
+async function handleNewPair(p) {
+  var pair = p.pair || {};
+
+  // Graduation — token migrated off the bonding curve to a DEX
+  if (pair.migration === 'pumpfun') {
+    var gmint = pair.baseToken && pair.baseToken.account;
+    if (gmint && S.gradCandidates.has(gmint)) {
+      log('GRADUATED ' + gmint.slice(0, 8) + '... — migrated to ' + (pair.sourceExchange || 'DEX'), 'pump');
+    }
+    return;
+  }
+
+  // Only Pump.fun launches feed the sniper pipeline
+  if (pair.sourceExchange !== 'pumpfun') return;
+
+  var mint = pair.baseToken && pair.baseToken.account;
+  var amm = pair.ammAccount;
+  if (!mint || !amm) return;
+
+  var info = (pair.baseToken && pair.baseToken.info) || {};
+  var meta = info.metadata || {};
+  var name = ((meta.symbol || meta.name || 'NEW') + '').toUpperCase().slice(0, 12);
+
+  S.pumpCount++;
+  S.sources['SOLSTREAM'] = 'live:' + S.pumpCount;
+  if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+
+  if (isBanned(mint)) return;
+  if (S.tokens.has(mint)) return;
+
+  // Pool cap eviction — unchanged behavior
+  if (S.tokens.size >= S.maxPool) {
+    var worstKey = null;
+    var worstBSR = Infinity;
+    S.tokens.forEach(function(tok, key) {
+      if (S.open.find(function(t) { return t.mint === key; })) return;
+      var bsr = tok.buys / Math.max(tok.sells || 1, 1);
+      if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
+    });
+    if (worstKey) S.tokens.delete(worstKey);
+  }
+
+  // Safety checklist — now fed with REAL on-chain authority data
+  var tokenData = {
+    mintAuthority: info.mintAuthority || null,
+    freezeAuthority: info.freezeAuthority || null,
+    lpBurn: undefined,
+    dev: undefined,
+  };
+  var safe = await runSafetyChecklist(mint, tokenData, true);
+  if (!safe) return;
+
+  var liqSol = parseInt(pair.quoteTokenLiquidityAdded || '0') / 1e9;
+
+  S.tokens.set(mint, {
+    mint: mint,
+    price: null,
+    n: name,
+    src: 'PUMP',
+    chain: 'solana',
+    ammAccount: amm,
+    liq: liqSol * SOL_PRICE_USD,
+    mcap: 0,
+    vol1h: 0,
+    buys: 1,
+    sells: 0,
+    age: 0,
+    pairAddress: null,
+    addedAt: Date.now(),
+    isNew: true,
+  });
+
+  log('NEW TOKEN ' + name + ' | ' + liqSol.toFixed(1) + ' SOL liq | Added to pool', 'info');
+}
+
+function handleSwap(p) {
+  var s = p.swap || {};
+  var mint = s.baseTokenMint;
+  if (!mint) return;
+
+  // Confirm the stream is flowing — first 3 swaps logged
+  ssSwapLogCount++;
+  if (ssSwapLogCount <= 3) log('SS SWAP #' + ssSwapLogCount + ' | ' + (s.swapType || '?') + ' | ' + mint.slice(0, 8) + '...', 'info');
+
+  // quotePrice is in wSOL — convert to USD
+  var priceUsd = null;
+  if (s.quotePrice && s.quotePrice !== '') {
+    var pSol = parseFloat(s.quotePrice);
+    if (!isNaN(pSol) && pSol > 0) priceUsd = pSol * SOL_PRICE_USD;
+  }
+
+  // Real SOL reserves in the bonding curve (beta field — may be empty)
+  var solInCurve = 0;
+  if (s.quoteTokenLiquidity && s.quoteTokenLiquidity !== '') {
+    solInCurve = parseInt(s.quoteTokenLiquidity) / 1e9;
+  }
+
+  // Buy count ALWAYS updates — fully decoupled from price
+  var poolTok = S.tokens.get(mint);
+  if (poolTok) {
+    if (s.swapType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
+    else if (s.swapType === 'sell') poolTok.sells = (poolTok.sells || 0) + 1;
+    if (priceUsd) poolTok.price = priceUsd;
+  }
+
+  if (priceUsd) {
+    pumpPrices[mint] = { price: priceUsd, solInCurve: solInCurve, ts: Date.now() };
+
+    // Open PUMP trades — price update + exit checks on EVERY swap
+    S.open.forEach(function(trade) {
+      if (trade.mint !== mint || trade.src !== 'PUMP') return;
+
+      // Sanity check — reject single-tick moves over 90% as data errors
+      if (trade.currentPrice && trade.currentPrice > 0) {
+        var change = Math.abs(priceUsd - trade.currentPrice) / trade.currentPrice;
+        if (change > 0.90) {
+          log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (change * 100).toFixed(0) + '% single tick', 'warn');
+          return;
+        }
+      }
+
+      trade.currentPrice = priceUsd;
+      if (priceUsd > (trade.peakPrice || 0)) trade.peakPrice = priceUsd;
+      if (trade.entryPrice > 0) {
+        trade.realPnlPct = (priceUsd - trade.entryPrice) / trade.entryPrice;
+        trade.realPnl = trade.size * trade.realPnlPct;
+      }
+      if (!trade.lastPrice || Math.abs(priceUsd - trade.lastPrice) / trade.lastPrice > 0.001) {
+        trade.lastPriceChange = Date.now();
+        trade.lastPrice = priceUsd;
+      }
+
+      if (trade.entryPrice > 0) {
+        var pct = (priceUsd - trade.entryPrice) / trade.entryPrice;
+
+        if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
+          log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '%', 'win');
+          closeTradeReal(trade.id, 'Take profit hit');
+          return;
+        }
+
+        if (trade.tpl === 'TRAIL' && trade.peakPrice) {
+          var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
+          if (peakGain >= CFG.TRAIL_ACT) {
+            var pullback = (trade.peakPrice - priceUsd) / trade.peakPrice;
+            if (pullback >= CFG.TRAIL_PB) {
+              log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | Pullback -' + (pullback * 100).toFixed(1) + '%', 'win');
+              closeTradeReal(trade.id, 'Trail exit');
+              return;
+            }
+          }
+        }
+
+        if (pct <= -(trade.sl || 0.10)) {
+          log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '%', 'loss');
+          closeTradeReal(trade.id, 'Stop loss hit');
+          return;
+        }
+      }
+    });
+  }
+
+  // Graduation candidate tracking — REAL SOL reserves now
+  if (solInCurve > 0) {
+    var pt = S.tokens.get(mint);
+    var existing = S.gradCandidates.get(mint) || {
+      name: pt ? pt.n : '', mint: mint, firstSeen: Date.now(), buys: 0, sells: 0,
+    };
+    existing.solInCurve = solInCurve;
+    existing.price = priceUsd || existing.price;
+    existing.lastUpdate = Date.now();
+    if (s.swapType === 'buy') existing.buys = (existing.buys || 0) + 1;
+    else if (s.swapType === 'sell') existing.sells = (existing.sells || 0) + 1;
+    existing.bsr = existing.buys / Math.max(existing.sells, 1);
+    if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
+      existing.nearGrad = true;
+      var gpct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
+      if (!existing.logged || existing.loggedPct !== gpct) {
+        existing.logged = true;
+        existing.loggedPct = gpct;
+        log('GRAD CANDIDATE ' + (existing.name || mint.slice(0, 8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + gpct + '% | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
+      }
+    } else {
+      existing.nearGrad = false;
+    }
+    S.gradCandidates.set(mint, existing);
+  }
+}
+
+// ── SWAP FILTER MANAGEMENT ────────────────────────────────────
+// Streams swaps for: every open PUMP trade + the newest bonding curves
+// Recomputed every 5 seconds — only sent when the list actually changes
+var SS_WATCH_CAP = 250;
+
+function updateSSFilter() {
+  if (!pumpWs || pumpWs.readyState !== WebSocket.OPEN) return;
+
+  var amms = [];
+  var seen = {};
+
+  // Open PUMP trades are ALWAYS watched — exits depend on it
+  S.open.forEach(function(t) {
+    if (t.src === 'PUMP' && t.ammAccount && !seen[t.ammAccount]) {
+      seen[t.ammAccount] = true;
+      amms.push(t.ammAccount);
+    }
+  });
+
+  // Newest PUMP pool tokens fill the rest, up to the cap
+  var pumpToks = [];
+  S.tokens.forEach(function(tok) {
+    if (tok.src === 'PUMP' && tok.ammAccount && !seen[tok.ammAccount]) pumpToks.push(tok);
+  });
+  pumpToks.sort(function(a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+  for (var i = 0; i < pumpToks.length && amms.length < SS_WATCH_CAP; i++) {
+    seen[pumpToks[i].ammAccount] = true;
+    amms.push(pumpToks[i].ammAccount);
+  }
+
+  if (amms.length === 0) return;
+
+  var fingerprint = amms.join(',');
+  if (fingerprint === ssLastSentFilter) return;
+
+  if (ssSwapSubId === null) {
+    pumpWs.send(JSON.stringify({
+      jsonrpc: '2.0', id: 2, method: 'swapSubscribe',
+      params: { include: { ammAccount: amms } }
+    }));
+  } else {
+    ssMsgId++;
+    pumpWs.send(JSON.stringify({
+      jsonrpc: '2.0', id: ssMsgId, method: 'updateSubscriptionParams',
+      params: { subscription_id: ssSwapSubId, update: { include: { ammAccount: amms } } }
+    }));
+  }
+  ssLastSentFilter = fingerprint;
+}
+
+var ssFilterI = setInterval(updateSSFilter, 5000);
 
 // ── OPEN TRADE PRICE TRACKING ─────────────────────────────────
 async function updateOpenTradePrices() {
@@ -933,6 +1040,7 @@ async function runScan() {
     mint: tok.mint,
     src: tok.src,
     chain: tok.chain || 'solana',
+    ammAccount: tok.ammAccount || null,
     pairAddress: tok.pairAddress || null,
     entryPrice: entryPrice,
     currentPrice: entryPrice,
@@ -1003,7 +1111,7 @@ function startBot() {
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
-  connectPump();
+  connectSS();
   fetchDSTokens();
   updateSolPrice();
 
@@ -1196,7 +1304,7 @@ app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
 app.listen(PORT, function() {
   console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
   loadPortfolio();
-  connectPump();
+  connectSS();
   fetchDSTokens();
   updateSolPrice();
 });
