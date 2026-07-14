@@ -373,6 +373,7 @@ async function fetchDSTokens() {
 var pumpPrices = {};
 var pumpWs = null;
 var ssSwapSubId = null;
+var ssSwapSubPending = false;
 var ssLastSentFilter = '';
 var ssMsgId = 10;
 var ssSwapLogCount = 0;
@@ -392,6 +393,7 @@ function connectSS() {
     pumpWs.on('open', function() {
       S.pumpLive = true;
       ssSwapSubId = null;
+      ssSwapSubPending = false;
       ssLastSentFilter = '';
       S.sources['SOLSTREAM'] = 'live:0';
       pumpWs.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'newPairSubscribe', params: { include_pumpfun: true } }));
@@ -408,11 +410,17 @@ function connectSS() {
 
         if (msg.id === 2 && msg.result && msg.result.subscription_id !== undefined) {
           ssSwapSubId = msg.result.subscription_id;
+          ssSwapSubPending = false;
           log('Swap stream active — subscription #' + ssSwapSubId, 'pump');
           return;
         }
+        if (msg.id >= 10 && msg.result === true) {
+          ssSwapSubPending = false;
+          return;
+        }
         if (msg.error) {
-          log('SS ERROR: ' + JSON.stringify(msg.error).slice(0, 120), 'warn');
+          ssSwapSubPending = false;
+          log('SS ERROR: ' + JSON.stringify(msg.error).slice(0, 200), 'warn');
           return;
         }
         if (msg.params && msg.params.pair) { handleNewPair(msg.params); return; }
@@ -649,17 +657,25 @@ function updateSSFilter() {
     amms.push(pumpToks[i].ammAccount);
   }
 
+  // Never send an empty or malformed filter — API rejects it as invalid params
   if (amms.length === 0) return;
+  if (!Array.isArray(amms) || amms.some(function(a) { return typeof a !== 'string' || !a; })) return;
 
   var fingerprint = amms.join(',');
   if (fingerprint === ssLastSentFilter) return;
 
   if (ssSwapSubId === null) {
+    // Prevent sending a second swapSubscribe before the first is confirmed —
+    // only 1 swap subscription is permitted per connection
+    if (ssSwapSubPending) return;
+    ssSwapSubPending = true;
     pumpWs.send(JSON.stringify({
       jsonrpc: '2.0', id: 2, method: 'swapSubscribe',
       params: { include: { ammAccount: amms } }
     }));
   } else {
+    if (ssSwapSubPending) return;
+    ssSwapSubPending = true;
     ssMsgId++;
     pumpWs.send(JSON.stringify({
       jsonrpc: '2.0', id: ssMsgId, method: 'updateSubscriptionParams',
