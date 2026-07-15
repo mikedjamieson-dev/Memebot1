@@ -374,6 +374,7 @@ var pumpPrices = {};
 var pumpWs = null;
 var ssSwapSubId = null;
 var ssSwapSubPending = false;
+var ssTooManyConn = false;
 var ssLastSentFilter = '';
 var ssMsgId = 10;
 var ssSwapLogCount = 0;
@@ -408,6 +409,10 @@ function connectSS() {
       try {
         var msg = JSON.parse(raw.toString());
 
+        if (msg.id === 1 && msg.result && msg.result.subscription_id !== undefined) {
+          log('New pair stream active — subscription #' + msg.result.subscription_id, 'pump');
+          return;
+        }
         if (msg.id === 2 && msg.result && msg.result.subscription_id !== undefined) {
           ssSwapSubId = msg.result.subscription_id;
           ssSwapSubPending = false;
@@ -421,6 +426,7 @@ function connectSS() {
         if (msg.error) {
           ssSwapSubPending = false;
           log('SS ERROR: ' + JSON.stringify(msg.error).slice(0, 200), 'warn');
+          if (msg.error.code === -32001) ssTooManyConn = true;
           return;
         }
         if (msg.params && msg.params.pair) { handleNewPair(msg.params); return; }
@@ -433,7 +439,9 @@ function connectSS() {
       S.pumpLive = false;
       S.sources['SOLSTREAM'] = 'dead';
       if (ssPingI) clearInterval(ssPingI);
-      setTimeout(connectSS, 3000);
+      var delay = ssTooManyConn ? 15000 : 3000;
+      ssTooManyConn = false;
+      setTimeout(connectSS, delay);
     });
   } catch(e) { setTimeout(connectSS, 5000); }
 }
