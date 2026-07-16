@@ -568,6 +568,7 @@ function handleSwap(p) {
       }
 
       trade.currentPrice = priceUsd;
+      trade.priceUpdates = (trade.priceUpdates || 0) + 1;
       if (priceUsd > (trade.peakPrice || 0)) trade.peakPrice = priceUsd;
       if (trade.entryPrice > 0) {
         trade.realPnlPct = (priceUsd - trade.entryPrice) / trade.entryPrice;
@@ -582,7 +583,7 @@ function handleSwap(p) {
         var pct = (priceUsd - trade.entryPrice) / trade.entryPrice;
 
         if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
-          log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '%', 'win');
+          log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
           closeTradeReal(trade.id, 'Take profit hit');
           return;
         }
@@ -592,7 +593,7 @@ function handleSwap(p) {
           if (peakGain >= CFG.TRAIL_ACT) {
             var pullback = (trade.peakPrice - priceUsd) / trade.peakPrice;
             if (pullback >= CFG.TRAIL_PB) {
-              log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | Pullback -' + (pullback * 100).toFixed(1) + '%', 'win');
+              log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | Pullback -' + (pullback * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
               closeTradeReal(trade.id, 'Trail exit');
               return;
             }
@@ -600,7 +601,7 @@ function handleSwap(p) {
         }
 
         if (pct <= -(trade.sl || 0.10)) {
-          log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '%', 'loss');
+          log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'loss');
           closeTradeReal(trade.id, 'Stop loss hit');
           return;
         }
@@ -714,6 +715,7 @@ async function updateOpenTradePrices() {
     }
 
     trade.currentPrice = price;
+    trade.priceUpdates = (trade.priceUpdates || 0) + 1;
     if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
       trade.lastPriceChange = Date.now();
       trade.lastPrice = price;
@@ -732,7 +734,7 @@ async function updateOpenTradePrices() {
     if (price > (trade.peakPrice || 0)) trade.peakPrice = price;
 
     if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
-      log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '%', 'win');
+      log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
       closeTradeReal(trade.id, 'Take profit hit');
       continue;
     }
@@ -742,7 +744,7 @@ async function updateOpenTradePrices() {
       if (peakGain >= CFG.TRAIL_ACT) {
         var pullback = (trade.peakPrice - price) / trade.peakPrice;
         if (pullback >= CFG.TRAIL_PB) {
-          log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '%', 'win');
+          log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
           closeTradeReal(trade.id, 'Trail exit');
           continue;
         }
@@ -750,7 +752,7 @@ async function updateOpenTradePrices() {
     }
 
     if (pct <= -(trade.sl || 0.10)) {
-      log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '%', 'loss');
+      log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'loss');
       closeTradeReal(trade.id, 'Stop loss hit');
     }
   }
@@ -916,14 +918,14 @@ function checkExitCriteria() {
       if (peakGain >= CFG.TRAIL_ACT) {
         var pullback = (t.peakPrice - t.currentPrice) / t.peakPrice;
         if (pullback >= CFG.TRAIL_PB) {
-          log('TRAIL EXIT ' + t.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '%', 'win');
+          log('TRAIL EXIT ' + t.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | ticks:' + (t.priceUpdates||0), 'win');
           closeTradeReal(t.id, 'Trail exit');
           return;
         }
       }
       var pct = (t.currentPrice - t.entryPrice) / t.entryPrice;
       if (pct <= -(t.sl || 0.10)) {
-        log('SL HIT ' + t.tok.n + ' | ' + (pct * 100).toFixed(1) + '%', 'loss');
+        log('SL HIT ' + t.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (t.priceUpdates||0), 'loss');
         closeTradeReal(t.id, 'Stop loss hit');
       }
     }
@@ -974,6 +976,7 @@ async function runGradSniper() {
       lastPriceChange: Date.now(),
       realPnl: 0,
       realPnlPct: 0,
+      priceUpdates: 0,
       isGrad: true,
       gradSolAtEntry: cand.solInCurve,
       openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
@@ -1076,6 +1079,7 @@ async function runScan() {
     realPnl: 0,
     realPnlPct: 0,
     isGrad: false,
+    priceUpdates: 0,
     openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     startTime: Date.now(),
   };
