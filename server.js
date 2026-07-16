@@ -1029,6 +1029,8 @@ async function runScan() {
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
   if (size < 0.50) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
 
+  if (tok.src === 'DSC') { if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
+
   var entryPrice = null;
   if (tok.src === 'PUMP') {
     // Only enter on a FRESH price — under 1 second old
@@ -1302,6 +1304,7 @@ app.get('/api/portfolio/trades', function(req, res) {
   if (q.date) trades = trades.filter(function(t) { return t.closedDate === q.date; });
   if (q.token) { var tok = q.token.toUpperCase(); trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; }); }
   if (q.chain && q.chain !== 'all') trades = trades.filter(function(t) { return t.chain === q.chain; });
+  if (q.src && q.src !== 'all') trades = trades.filter(function(t) { return t.src === q.src; });
   if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl > 0; });
   if (q.result === 'loss') trades = trades.filter(function(t) { return t.pnl <= 0; });
   if (q.exit && q.exit !== 'all') trades = trades.filter(function(t) { return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0; });
