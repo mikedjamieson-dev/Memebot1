@@ -513,13 +513,20 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <button class="nav-btn active" id="nav-port-p" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
   </div>
 
-  <!-- All Time Stats -->
+  <!-- Stats Mode Toggle -->
+  <div class="tp-mode-row" style="margin-bottom:8px;">
+    <button class="tp-btn active" id="btn-stats-all" onclick="setStatsMode('all')">ALL TIME</button>
+    <button class="tp-btn" id="btn-stats-session" onclick="setStatsMode('session')">SESSION</button>
+  </div>
+
+  <!-- Performance Stats -->
   <div class="card">
-    <div class="card-lbl">ALL TIME PERFORMANCE</div>
+    <div class="card-lbl" id="pt-perf-lbl">ALL TIME PERFORMANCE</div>
     <div class="port-grid" style="margin-top:8px;">
       <div class="port-stat"><div class="port-lbl">TOTAL TRADES</div><div class="port-val" id="pt-total" style="color:var(--blue)">0</div></div>
       <div class="port-stat"><div class="port-lbl">WIN RATE</div><div class="port-val" id="pt-wr" style="color:var(--green)">0%</div></div>
       <div class="port-stat"><div class="port-lbl">TOTAL P&L</div><div class="port-val" id="pt-pnl" style="color:var(--green)">$0.00</div></div>
+      <div class="port-stat"><div class="port-lbl">RETURN %</div><div class="port-val" id="pt-return-pct" style="color:var(--green)">0.00%</div></div>
       <div class="port-stat"><div class="port-lbl">TOTAL FEES</div><div class="port-val" id="pt-fees" style="color:var(--red)">$0.00</div></div>
       <div class="port-stat"><div class="port-lbl">TOTAL WINS</div><div class="port-val" id="pt-wins" style="color:var(--green)">0</div></div>
       <div class="port-stat"><div class="port-lbl">TOTAL LOSSES</div><div class="port-val" id="pt-losses" style="color:var(--red)">0</div></div>
@@ -532,12 +539,22 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="card-lbl">BEST TRADE EVER</div>
       <div class="port-val" id="pt-best-name" style="color:var(--green);font-size:14px;margin:6px 0;">—</div>
       <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:var(--green);" id="pt-best-pnl">$0.00</div>
+      <div style="font-size:12px;color:var(--green);margin-top:2px;" id="pt-best-pct">0.00%</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;">
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">SIZE</div><div style="font-size:11px;" id="pt-best-size">—</div></div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">ENTRY→EXIT</div><div style="font-size:10px;" id="pt-best-prices">—</div></div>
+      </div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px;" id="pt-best-reason">—</div>
     </div>
     <div class="card">
       <div class="card-lbl">WORST TRADE EVER</div>
       <div class="port-val" id="pt-worst-name" style="color:var(--red);font-size:14px;margin:6px 0;">—</div>
       <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:var(--red);" id="pt-worst-pnl">$0.00</div>
+      <div style="font-size:12px;color:var(--red);margin-top:2px;" id="pt-worst-pct">0.00%</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;">
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">SIZE</div><div style="font-size:11px;" id="pt-worst-size">—</div></div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">ENTRY→EXIT</div><div style="font-size:10px;" id="pt-worst-prices">—</div></div>
+      </div>
       <div style="font-size:11px;color:var(--dim);margin-top:4px;" id="pt-worst-reason">—</div>
     </div>
   </div>
@@ -558,6 +575,12 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
       <button class="filter-btn" onclick="setFilter2('chain','solana',this)">◎ SOL</button>
       <button class="filter-btn" onclick="setFilter2('chain','base',this)">🔵 BASE</button>
+    </div>
+    <div class="filter-row" style="margin-top:6px;">
+      <button class="filter-btn active" onclick="setFilter2('src','all',this)">ALL SOURCES</button>
+      <button class="filter-btn" onclick="setFilter2('src','PUMP',this)">PUMP</button>
+      <button class="filter-btn" onclick="setFilter2('src','DSC',this)">DSC</button>
+      <button class="filter-btn" onclick="setFilter2('src','GRAD',this)">GRAD</button>
     </div>
     <div class="filter-row" style="margin-top:6px;">
       <button class="filter-btn active" onclick="setFilter2('result','all',this)">ALL</button>
@@ -606,7 +629,7 @@ var timerId = null;
 var currentTPMode = 'TRAIL';
 var currentSolEnabled = true;
 var currentBaseEnabled = false;
-var ptFilters = { chain: 'all', result: 'all', exit: 'all' };
+var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
 var ptLimit = 50;
 
@@ -1103,6 +1126,16 @@ function setFilter2(type, val, btn) {
   ptPage = 0; loadTrades();
 }
 
+var statsMode = 'all';
+
+function setStatsMode(mode) {
+  statsMode = mode;
+  document.getElementById('btn-stats-all').classList.toggle('active', mode === 'all');
+  document.getElementById('btn-stats-session').classList.toggle('active', mode === 'session');
+  document.getElementById('pt-perf-lbl').textContent = mode === 'all' ? 'ALL TIME PERFORMANCE' : 'SESSION PERFORMANCE';
+  loadPortfolioPage();
+}
+
 function searchTrades() { ptPage = 0; loadTrades(); }
 function changePage(dir) { ptPage += dir; loadTrades(); }
 function changePerPage() { ptLimit = parseInt(document.getElementById('pt-per-page').value); ptPage = 0; loadTrades(); }
@@ -1112,20 +1145,63 @@ async function loadPortfolioPage() {
     var res = await fetch(BASE + '/api/portfolio');
     if (!res.ok) return;
     var data = await res.json();
-    var at = data.allTime || {};
-    var total = at.t || 0;
-    var wr = total > 0 ? ((at.w/total)*100).toFixed(1) : '0.0';
-    document.getElementById('pt-total').textContent = total;
-    var wrEl = document.getElementById('pt-wr');
-    wrEl.textContent = wr + '%'; wrEl.style.color = parseFloat(wr)>=50?'var(--green)':'var(--red)';
-    var pnlEl = document.getElementById('pt-pnl');
-    pnlEl.textContent = pSign(at.totalPnl||0)+'$'+f2(at.totalPnl||0);
-    pnlEl.style.color = (at.totalPnl||0)>=0?'var(--green)':'var(--red)';
-    document.getElementById('pt-fees').textContent = '$'+f2(at.totalFees||0);
-    document.getElementById('pt-wins').textContent = at.w||0;
-    document.getElementById('pt-losses').textContent = at.l||0;
-    if (data.bestTrade) { document.getElementById('pt-best-name').textContent=data.bestTrade.name||'?'; document.getElementById('pt-best-pnl').textContent='+$'+f2(data.bestTrade.pnl); document.getElementById('pt-best-reason').textContent=data.bestTrade.closeReason||'?'; }
-    if (data.worstTrade) { document.getElementById('pt-worst-name').textContent=data.worstTrade.name||'?'; document.getElementById('pt-worst-pnl').textContent='-$'+f2(Math.abs(data.worstTrade.pnl)); document.getElementById('pt-worst-reason').textContent=data.worstTrade.closeReason||'?'; }
+
+    if (statsMode === 'all') {
+      var at = data.allTime || {};
+      var total = at.t || 0;
+      var wr = total > 0 ? ((at.w/total)*100).toFixed(1) : '0.0';
+      document.getElementById('pt-total').textContent = total;
+      var wrEl = document.getElementById('pt-wr');
+      wrEl.textContent = wr + '%'; wrEl.style.color = parseFloat(wr)>=50?'var(--green)':'var(--red)';
+      var pnlEl = document.getElementById('pt-pnl');
+      pnlEl.textContent = pSign(at.totalPnl||0)+'$'+f2(at.totalPnl||0);
+      pnlEl.style.color = (at.totalPnl||0)>=0?'var(--green)':'var(--red)';
+      document.getElementById('pt-fees').textContent = '$'+f2(at.totalFees||0);
+      document.getElementById('pt-wins').textContent = at.w||0;
+      document.getElementById('pt-losses').textContent = at.l||0;
+      // All Time spans many sessions with different starting funds — a single % return
+      // figure would be misleading, so we show dollar totals only in this mode.
+      document.getElementById('pt-return-pct').textContent = '—';
+      document.getElementById('pt-return-pct').style.color = 'var(--dim)';
+    } else {
+      var sres = await fetch(BASE + '/api/state');
+      if (!sres.ok) return;
+      var s = await sres.json();
+      var stotal = (s.stats && s.stats.t) || 0;
+      var swr = stotal > 0 ? (((s.stats.w||0)/stotal)*100).toFixed(1) : '0.0';
+      document.getElementById('pt-total').textContent = stotal;
+      var swrEl = document.getElementById('pt-wr');
+      swrEl.textContent = swr + '%'; swrEl.style.color = parseFloat(swr)>=50?'var(--green)':'var(--red)';
+      var sessionBase = s.sessionFund || 100;
+      var sessionPnl = (s.fund||0) + (s.savings||0) - sessionBase;
+      var spnlEl = document.getElementById('pt-pnl');
+      spnlEl.textContent = pSign(sessionPnl)+'$'+f2(sessionPnl);
+      spnlEl.style.color = sessionPnl>=0?'var(--green)':'var(--red)';
+      document.getElementById('pt-fees').textContent = '$'+f2(s.totalFees||0);
+      document.getElementById('pt-wins').textContent = (s.stats && s.stats.w) || 0;
+      document.getElementById('pt-losses').textContent = (s.stats && s.stats.l) || 0;
+      var returnPct = sessionBase > 0 ? (sessionPnl / sessionBase * 100) : 0;
+      var retEl = document.getElementById('pt-return-pct');
+      retEl.textContent = pSign(returnPct)+returnPct.toFixed(2)+'%';
+      retEl.style.color = returnPct>=0?'var(--green)':'var(--red)';
+    }
+
+    if (data.bestTrade) {
+      document.getElementById('pt-best-name').textContent=data.bestTrade.name||'?';
+      document.getElementById('pt-best-pnl').textContent='+$'+f2(data.bestTrade.pnl);
+      document.getElementById('pt-best-pct').textContent=pSign(data.bestTrade.pnlPct||0)+f2(data.bestTrade.pnlPct||0)+'%';
+      document.getElementById('pt-best-size').textContent='$'+f2(data.bestTrade.size||0);
+      document.getElementById('pt-best-prices').textContent='$'+f8(data.bestTrade.entryPrice||0)+' → $'+f8(data.bestTrade.exitPrice||0);
+      document.getElementById('pt-best-reason').textContent=data.bestTrade.closeReason||'?';
+    }
+    if (data.worstTrade) {
+      document.getElementById('pt-worst-name').textContent=data.worstTrade.name||'?';
+      document.getElementById('pt-worst-pnl').textContent='-$'+f2(Math.abs(data.worstTrade.pnl));
+      document.getElementById('pt-worst-pct').textContent=f2(data.worstTrade.pnlPct||0)+'%';
+      document.getElementById('pt-worst-size').textContent='$'+f2(data.worstTrade.size||0);
+      document.getElementById('pt-worst-prices').textContent='$'+f8(data.worstTrade.entryPrice||0)+' → $'+f8(data.worstTrade.exitPrice||0);
+      document.getElementById('pt-worst-reason').textContent=data.worstTrade.closeReason||'?';
+    }
     var sessEl = document.getElementById('pt-sessions');
     var sessions = data.sessions||[];
     document.getElementById('pt-session-count').textContent = '('+( data.totalSessions||0)+' sessions)';
@@ -1146,7 +1222,7 @@ async function loadPortfolioPage() {
 
 async function loadTrades() {
   try {
-    var params = new URLSearchParams({ page:ptPage, limit:ptLimit, chain:ptFilters.chain, result:ptFilters.result, exit:ptFilters.exit });
+    var params = new URLSearchParams({ page:ptPage, limit:ptLimit, chain:ptFilters.chain, src:ptFilters.src, result:ptFilters.result, exit:ptFilters.exit });
     var token = document.getElementById('pt-search-token').value.trim();
     var dateRaw = document.getElementById('pt-search-date').value.trim();
     var dateSearch = '';
