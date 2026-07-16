@@ -638,7 +638,7 @@ function handleSwap(p) {
 // ── SWAP FILTER MANAGEMENT ────────────────────────────────────
 // Streams swaps for: every open PUMP trade + the newest bonding curves
 // Recomputed every 5 seconds — only sent when the list actually changes
-var SS_WATCH_CAP = 250;
+var SS_WATCH_CAP = 5; // Basic plan hard limit — confirmed via SolanaStreaming docs
 
 function updateSSFilter() {
   if (!pumpWs || pumpWs.readyState !== WebSocket.OPEN) return;
