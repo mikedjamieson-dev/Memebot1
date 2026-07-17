@@ -111,6 +111,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .pnl-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
 .pnl-val{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
 .entry-price{font-size:11px;color:var(--dim);margin-top:6px;}
+.ca-row{font-size:11px;color:var(--dim);margin-top:4px;cursor:pointer;}
+.ca-addr{color:var(--blue);font-family:'Share Tech Mono',monospace;}
+.ca-copy{font-size:10px;}
 .grad-bar-wrap{background:rgba(0,0,0,0.3);border-radius:4px;height:6px;margin:6px 0;overflow:hidden;}
 .grad-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--yellow),var(--green));transition:width 0.5s;}
 
@@ -648,6 +651,21 @@ function f2(n) { return parseFloat(n || 0).toFixed(2); }
 function f8(n) { return parseFloat(n || 0).toFixed(8); }
 function pSign(n) { return n >= 0 ? '+' : ''; }
 
+function caRow(mint) {
+  if (!mint) return '';
+  var short = mint.slice(0, 4) + '...' + mint.slice(-4);
+  return '<div class="ca-row" onclick="copyCA(\'' + mint + '\', event)">CA: <span class="ca-addr">' + short + '</span> <span class="ca-copy" id="ca-copy-' + mint + '">📋</span></div>';
+}
+
+async function copyCA(mint, ev) {
+  if (ev) ev.stopPropagation();
+  try {
+    await navigator.clipboard.writeText(mint);
+    var el = document.getElementById('ca-copy-' + mint);
+    if (el) { var old = el.textContent; el.textContent = '✅'; setTimeout(function() { el.textContent = old; }, 1200); }
+  } catch(e) {}
+}
+
 // ── PAGE NAVIGATION ───────────────────────────────────────────
 function showPage(page) {
   var lp = document.getElementById('live-page');
@@ -1014,7 +1032,7 @@ async function fetchState() {
           '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pSign(t.realPnl||0) + '$' + f2(Math.abs(t.realPnl||0)) + '</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pSign(t.realPnlPct||0) + ((t.realPnlPct||0)*100).toFixed(1) + '%</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl?(t.sl*100).toFixed(0):'10') + '%</div></div></div>' +
-          '<div class="entry-price">ENTRY: $' + f8(t.entryPrice) + '</div>';
+          '<div class="entry-price">ENTRY: $' + f8(t.entryPrice) + '</div>' + caRow(t.mint);
         document.getElementById('grad-list').appendChild(d3);
       });
     } else { gradSec.style.display = 'none'; }
@@ -1039,7 +1057,7 @@ async function fetchState() {
           '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl?(t.sl*100).toFixed(0):'10') + '%</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
-          '<div class="entry-price">ENTRY: $' + (hasPrice ? f8(t.entryPrice) : 'FETCHING...') + '</div>';
+          '<div class="entry-price">ENTRY: $' + (hasPrice ? f8(t.entryPrice) : 'FETCHING...') + '</div>' + caRow(t.mint);
         document.getElementById('open-list').appendChild(d4);
       });
     } else { openSec.style.display = 'none'; }
@@ -1067,7 +1085,7 @@ async function fetchState() {
           '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src||'?') + ' ' + (t.chain==='base'?'🔵':'◎') + '</div></div></div>' +
           '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
-          '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason||'?') + '</span><span>' + (t.openedAt||'') + (t.closedAt?' → '+t.closedAt:'') + '</span></div>';
+          '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason||'?') + '</span><span>' + (t.openedAt||'') + (t.closedAt?' → '+t.closedAt:'') + '</span></div>' + caRow(t.mint);
         document.getElementById('closed-list').appendChild(d5);
       });
     } else { closedSec.style.display = 'none'; }
@@ -1247,7 +1265,9 @@ async function loadTrades() {
       var chainIcon=t.chain==='base'?'🔵':'◎';
       var d=document.createElement('div'); d.className='trade-row';
       var pctStr2 = t.pnlPct !== undefined ? pSign(t.pnlPct)+parseFloat(t.pnlPct).toFixed(2)+'%' : '';
-      d.innerHTML='<div><div class="trade-row-name" style="color:'+pnlColor+'">'+chainIcon+' '+(t.name||'?')+'</div><div class="trade-row-meta">$'+f2(t.size)+' · '+(t.closedDate||'')+' · '+(t.src||'')+'</div></div>' +
+      var caShort = t.mint ? t.mint.slice(0,4)+'...'+t.mint.slice(-4) : '';
+      d.innerHTML='<div><div class="trade-row-name" style="color:'+pnlColor+'">'+chainIcon+' '+(t.name||'?')+'</div><div class="trade-row-meta">$'+f2(t.size)+' · '+(t.closedDate||'')+' · '+(t.src||'')+'</div>' +
+        (t.mint ? '<div class="ca-row" onclick="copyCA(\''+t.mint+'\', event)">CA: <span class="ca-addr">'+caShort+'</span> <span class="ca-copy" id="ca-copy-'+t.mint+'">📋</span></div>' : '') + '</div>' +
         '<div style="text-align:right;"><div class="trade-row-pnl" style="color:'+pnlColor+'">'+pSign(t.pnl||0)+'$'+f2(t.pnl||0)+'</div><div class="trade-row-reason" style="color:'+pnlColor+'">'+(pctStr2||'')+'</div><div class="trade-row-reason">'+(t.closeReason||'?')+'</div></div>';
       tradesEl.appendChild(d);
     });
