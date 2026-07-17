@@ -812,6 +812,7 @@ function closeTradeReal(id, reason) {
     exitPrice: tr.currentPrice,
     size: tr.size,
     slip: tr.slip || 0,
+    mint: tr.mint || '',
     openedAt: tr.openedAt,
     closedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     src: tr.src || (tr.tok && tr.tok.src) || 'unknown',
