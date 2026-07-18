@@ -842,6 +842,7 @@ function closeTradeReal(id, reason) {
     closedTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
+    priceUpdates: tr.priceUpdates || 0,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1320,6 +1321,43 @@ app.get('/api/portfolio/trades', function(req, res) {
   trades = trades.slice(page * limit, (page + 1) * limit);
   res.json({ trades: trades, total: total, page: page, pages: Math.ceil(total / limit) });
 });
+
+app.get('/api/portfolio/export', function(req, res) {
+  var rows = [
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees'].join(',')
+  ];
+  P.trades.forEach(function(t) {
+    rows.push([
+      csvSafe(t.name),
+      t.mint || '',
+      t.chain || '',
+      t.src || '',
+      t.size || 0,
+      t.entryPrice || 0,
+      t.exitPrice || 0,
+      t.pnl || 0,
+      t.pnlPct || 0,
+      t.priceUpdates || 0,
+      csvSafe(t.closeReason),
+      csvSafe(t.openedAt),
+      csvSafe(t.closedAt),
+      t.closedDate || '',
+      t.fees || 0,
+    ].join(','));
+  });
+  var csv = rows.join('\n');
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_trades_' + Date.now() + '.csv"');
+  res.send(csv);
+});
+
+function csvSafe(val) {
+  var s = (val === undefined || val === null) ? '' : String(val);
+  if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+    s = '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
 
 app.post('/api/portfolio/clear', function(req, res) {
   P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [] };
