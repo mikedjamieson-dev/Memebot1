@@ -569,6 +569,7 @@ function handleSwap(p) {
 
       trade.currentPrice = priceUsd;
       trade.priceUpdates = (trade.priceUpdates || 0) + 1;
+      if (!trade.firstUpdateAt) trade.firstUpdateAt = Date.now();
       if (priceUsd > (trade.peakPrice || 0)) trade.peakPrice = priceUsd;
       if (trade.entryPrice > 0) {
         trade.realPnlPct = (priceUsd - trade.entryPrice) / trade.entryPrice;
@@ -716,6 +717,7 @@ async function updateOpenTradePrices() {
 
     trade.currentPrice = price;
     trade.priceUpdates = (trade.priceUpdates || 0) + 1;
+    if (!trade.firstUpdateAt) trade.firstUpdateAt = Date.now();
     if (!trade.lastPrice || Math.abs(price - trade.lastPrice) / trade.lastPrice > 0.001) {
       trade.lastPriceChange = Date.now();
       trade.lastPrice = price;
@@ -843,6 +845,10 @@ function closeTradeReal(id, reason) {
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
     priceUpdates: tr.priceUpdates || 0,
+    peakGainPct: (tr.peakPrice && tr.entryPrice)
+      ? parseFloat(((tr.peakPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+    secToFirstUpdate: (tr.firstUpdateAt && tr.startTime)
+      ? parseFloat(((tr.firstUpdateAt - tr.startTime) / 1000).toFixed(1)) : null,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -979,6 +985,7 @@ async function runGradSniper() {
       realPnl: 0,
       realPnlPct: 0,
       priceUpdates: 0,
+      firstUpdateAt: null,
       isGrad: true,
       gradSolAtEntry: cand.solInCurve,
       openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
@@ -1082,6 +1089,7 @@ async function runScan() {
     realPnlPct: 0,
     isGrad: false,
     priceUpdates: 0,
+    firstUpdateAt: null,
     openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     startTime: Date.now(),
   };
@@ -1324,7 +1332,7 @@ app.get('/api/portfolio/trades', function(req, res) {
 
 app.get('/api/portfolio/export', function(req, res) {
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1338,6 +1346,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.pnl || 0,
       t.pnlPct || 0,
       t.priceUpdates || 0,
+      t.peakGainPct !== undefined ? t.peakGainPct : '',
+      t.secToFirstUpdate !== null && t.secToFirstUpdate !== undefined ? t.secToFirstUpdate : '',
       csvSafe(t.closeReason),
       csvSafe(t.openedAt),
       csvSafe(t.closedAt),
