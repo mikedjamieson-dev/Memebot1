@@ -548,7 +548,10 @@ function handleSwap(p) {
   if (poolTok) {
     if (s.swapType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
     else if (s.swapType === 'sell') poolTok.sells = (poolTok.sells || 0) + 1;
-    if (priceUsd) poolTok.price = priceUsd;
+    if (priceUsd) {
+      poolTok.price = priceUsd;
+      poolTok.mcap = priceUsd * 1000000000; // Pump.fun fixed supply
+    }
   }
 
   if (priceUsd) {
@@ -1029,6 +1032,11 @@ async function runScan() {
 
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
   if (bsr < 0.8) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: BSR '+bsr.toFixed(2)+' buys='+tok.buys+' sells='+tok.sells, 'info'); return; }
+
+  if (tok.src === 'PUMP' && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) {
+    if(diag) log('DIAG '+tok.n+' | SKIP: mcap $'+tok.mcap.toFixed(0)+' below floor $'+CFG.MIN_MCAP_USD, 'info');
+    return;
+  }
 
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
