@@ -650,6 +650,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function f2(n) { return parseFloat(n || 0).toFixed(2); }
 function f8(n) { return parseFloat(n || 0).toFixed(8); }
+function mcapFmt(n) {
+  n = parseFloat(n || 0);
+  if (n >= 1000) return (n/1000).toFixed(1) + 'k';
+  return n.toFixed(0);
+}
 function pSign(n) { return n >= 0 ? '+' : ''; }
 
 function caRow(mint) {
@@ -1086,6 +1091,8 @@ async function fetchState() {
           '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src||'?') + ' ' + (t.chain==='base'?'🔵':'◎') + '</div></div></div>' +
           '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
+          (t.entryMcap ? '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">MC ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.entryMcap) + '</div></div>' +
+          '<div class="ctrade-cell"><div class="ctrade-lbl">MC EXIT</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.exitMcap) + '</div></div></div>' : '') +
           '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason||'?') + '</span><span>' + (t.openedAt||'') + (t.closedAt?' → '+t.closedAt:'') + '</span></div>' + caRow(t.mint);
         document.getElementById('closed-list').appendChild(d5);
       });
