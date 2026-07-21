@@ -378,6 +378,7 @@ var bqSubId = 1;
 var bqPairSubActive = false;
 var bqTradeSubActive = false;
 var bqReconnectDelay = 3000;
+var bqDeliberateStop = false;
 var bqPingI = null;
 var bqTradeLogCount = 0;
 
@@ -436,6 +437,7 @@ function connectBQ() {
       S.pumpLive = false;
       S.sources['BITQUERY'] = 'dead';
       if (bqPingI) clearInterval(bqPingI);
+      if (bqDeliberateStop) { bqDeliberateStop = false; return; }
       var delay = bqReconnectDelay;
       bqReconnectDelay = Math.min(bqReconnectDelay * 2, 30000);
       setTimeout(connectBQ, delay);
@@ -513,7 +515,7 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}}) { Side Trader { Address } Amounts { Base Quote } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
@@ -1011,6 +1013,9 @@ async function runGradSniper() {
     if (!cand.nearGrad) continue;
     if (isBanned(mint)) continue;
     if (S.open.find(function(t) { return t.mint === mint; })) continue;
+    var gradCooldownKey = (cand.name || mint.slice(0, 8)) + mint;
+    var lastGradCooldown = S.cooldowns.get(gradCooldownKey);
+    if (lastGradCooldown && (Date.now() - lastGradCooldown) < CFG.COOLDOWN_MS) continue;
     if (!cand.price || cand.price <= 0) continue;
     var totalTxns = (cand.buys || 0) + (cand.sells || 0);
     if (totalTxns < CFG.GRAD_MIN_TXNS) continue;
@@ -1239,6 +1244,11 @@ function stopBot() {
   if (dsI) clearInterval(dsI);
   if (cleanI) clearInterval(cleanI);
   if (solPriceI) clearInterval(solPriceI);
+  if (pumpWs) {
+    bqDeliberateStop = true;
+    try { pumpWs.close(); } catch(e) {}
+    pumpWs = null;
+  }
 
   if (S.stats.t > 0) {
     var session = {
@@ -1325,6 +1335,14 @@ app.get('/api/start', function(req, res) { startBot(); res.json({ success: true 
 app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.get('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
+app.post('/api/lock-fund', function(req, res) {
+  var oldBase = S.dayStartFund;
+  S.dayStartFund = S.fund;
+  S.windingDown = false;
+  var newTrigger = S.fund * (1 - S.fundStopLossPct / 100);
+  log('Fund stop loss locked to current balance — new base $' + S.fund.toFixed(2) + ' (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  res.json({ success: true, newBase: S.fund, triggerAt: parseFloat(newTrigger.toFixed(2)) });
+});
 
 app.post('/api/settings', function(req, res) {
   if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
@@ -1450,7 +1468,6 @@ app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
 app.listen(PORT, function() {
   console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
   loadPortfolio();
-  connectBQ();
   fetchDSTokens();
   updateSolPrice();
 });
