@@ -281,6 +281,12 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-fundloss-display">10</span>%. Warning at 70% of limit.</div>
       <button class="settings-save" onclick="saveFundLoss()">SAVE FUND STOP LOSS</button>
       <div class="settings-status" id="status-fundloss"></div>
+      <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
+        <div class="settings-lbl" style="margin-top:0;">LOCK IN CURRENT BALANCE</div>
+        <div class="settings-hint">Resets the stop loss to trigger <span id="current-fundloss-display-2">10</span>% below your <b>current</b> fund value ($<span id="current-fund-live">0.00</span>), instead of your original session start. Use this to protect gains after a win streak. This is manual — nothing resets automatically.</div>
+        <button class="settings-save" onclick="lockFund()" style="border-color:var(--yellow);background:rgba(255,194,51,0.08);color:var(--yellow);">🔒 RAISE STOP LOSS TO CURRENT FUND</button>
+        <div class="settings-status" id="status-lockfund"></div>
+      </div>
     </div>
 
     <!-- Pool Size -->
@@ -797,6 +803,17 @@ async function saveFundLoss() {
   el.textContent = ok ? '✅ Fund SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function lockFund() {
+  var el = document.getElementById('status-lockfund');
+  try {
+    var res = await fetch(BASE + '/api/lock-fund', { method: 'POST' });
+    if (!res.ok) { el.textContent = '❌ Failed'; el.style.color = 'var(--red)'; return; }
+    var data = await res.json();
+    el.textContent = '✅ Locked at $' + f2(data.newBase) + ' — stop loss now triggers below $' + f2(data.triggerAt);
+    el.style.color = 'var(--green)';
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
 async function savePoolSize() {
   var el = document.getElementById('status-poolsize');
   var n = parseInt(document.getElementById('input-poolsize').value);
@@ -1011,6 +1028,10 @@ async function fetchState() {
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
     var fundLossDisp = document.getElementById('current-fundloss-display');
     if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 10;
+    var fundLossDisp2 = document.getElementById('current-fundloss-display-2');
+    if (fundLossDisp2) fundLossDisp2.textContent = data.fundStopLossPct || 10;
+    var fundLiveDisp = document.getElementById('current-fund-live');
+    if (fundLiveDisp) fundLiveDisp.textContent = f2(data.fund || 0);
     var poolSizeDisp = document.getElementById('current-poolsize-display');
     if (poolSizeDisp) poolSizeDisp.textContent = data.maxPool || 10000;
 
