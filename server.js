@@ -382,9 +382,15 @@ var bqPingI = null;
 var bqTradeLogCount = 0;
 
 // Sources to subscribe to. protocolFamily matches Bitquery's Market.ProtocolFamily field.
-// Add a new entry here (e.g. LetsBonk) to extend coverage — handlers below are generic.
+// programAddress/createMethods drive the new-pair-launch query for that source.
+// Add a new entry here to extend coverage — handlers below branch on source.queryShape.
 var BQ_SOURCES = [
-  { src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun' },
+  {
+    src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun',
+    programAddress: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+    createMethods: ['create', 'create_v2'],
+    queryShape: 'tokenSupplyUpdate',
+  },
 ];
 
 function connectBQ() {
@@ -465,6 +471,9 @@ function handleBQMessage(msg) {
     if (data.Solana && data.Solana.TokenSupplyUpdates) {
       data.Solana.TokenSupplyUpdates.forEach(function(u) { handleNewPair(u); });
     }
+    if (data.Solana && data.Solana.Instructions) {
+      data.Solana.Instructions.forEach(function(i) { handleNewPairFromInstruction(i); });
+    }
     if (data.Trading && data.Trading.Trades) {
       data.Trading.Trades.forEach(function(t) { handleSwap(t); });
     }
@@ -475,18 +484,25 @@ function handleBQMessage(msg) {
 }
 
 // One subscription per source for new launches, one shared subscription for all trades.
-// Extending to LetsBonk: add its protocolFamily to BQ_SOURCES, then the trade subscription
-// below already covers it via the `in` filter — only the pair-launch query needs a
-// source-specific program address if LetsBonk uses a different creation instruction.
+// Extending to LetsBonk: add an entry to BQ_SOURCES with queryShape: 'instructions',
+// its programAddress ("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"), and createMethods
+// (["initialize_v2"]) — buildPairQuery below already branches on queryShape.
+function buildPairQuery(source) {
+  var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
+  if (source.queryShape === 'instructions') {
+    return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}, Transaction: {Result: {Success: true}}}) { Block { Time } Transaction { Signer } Instruction { Accounts { Address Token { Mint Owner } } Program { Method } } } } }';
+  }
+  // default: tokenSupplyUpdate shape (Pump.fun-style create)
+  return 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}}) { Block { Time } Transaction { Signer } TokenSupplyUpdate { Amount Currency { Symbol Name MintAddress Decimals Uri UpdateAuthority } PostBalance } } } }';
+}
+
 function sendBQSubscriptions() {
   BQ_SOURCES.forEach(function(source) {
     var id = 'pairs_' + source.src;
     pumpWs.send(JSON.stringify({
       id: id,
       type: 'start',
-      payload: {
-        query: 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"}, Method: {in: ["create", "create_v2"]}}}}) { Block { Time } Transaction { Signer } TokenSupplyUpdate { Amount Currency { Symbol Name MintAddress Decimals Uri UpdateAuthority } PostBalance } } } }'
-      }
+      payload: { query: buildPairQuery(source) }
     }));
   });
   bqPairSubActive = true;
@@ -497,13 +513,27 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}}) { Side Trader { Address } Amounts { Base Quote } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol MintAddress: Id } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}}) { Side Trader { Address } Amounts { Base Quote } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
   log('Swap stream active — all sources', 'pump');
 
   sendBQPoolSubscription();
+}
+
+// LetsBonk/Raydium LaunchLab new-pair handler. NOTE: unlike Pump.fun's
+// TokenSupplyUpdates, the initialize_v2 instruction does not appear to carry
+// a token symbol/name directly (only mint/owner accounts) based on Bitquery's
+// documented example — this needs verification against a live message before
+// LetsBonk is enabled. Logs raw structure on first calls so the real field
+// mapping can be confirmed rather than guessed.
+var bqInstrLogCount = 0;
+async function handleNewPairFromInstruction(i) {
+  bqInstrLogCount++;
+  if (bqInstrLogCount <= 3) log('BQ INSTR #' + bqInstrLogCount + ' (verify field mapping): ' + JSON.stringify(i).slice(0, 300), 'warn');
+  // Intentionally not wired to S.tokens yet — see note above. Enable once
+  // the mint/name extraction is confirmed against real data.
 }
 
 async function handleNewPair(u) {
@@ -567,7 +597,8 @@ async function handleNewPair(u) {
 function handleSwap(t) {
   var pair = t.Pair || {};
   var currency = pair.Currency || {};
-  var mint = currency.MintAddress;
+  var token = pair.Token || {};
+  var mint = token.Address;
   if (!mint) return;
 
   bqTradeLogCount++;
@@ -579,12 +610,21 @@ function handleSwap(t) {
     if (!isNaN(p) && p > 0) priceUsd = p;
   }
 
+  var protocolFamily = (pair.Market || {}).ProtocolFamily || '';
+
   var mcap = 0;
   if (t.Supply && t.Supply.MarketCap) {
     var mc = parseFloat(t.Supply.MarketCap);
     if (!isNaN(mc) && mc > 0) mcap = mc;
-  } else if (priceUsd) {
-    mcap = priceUsd * 1000000000; // Pump.fun fixed supply fallback
+  } else if (t.Supply && t.Supply.TotalSupply && priceUsd) {
+    // Use actual reported supply when available, regardless of source
+    var ts = parseFloat(t.Supply.TotalSupply);
+    if (!isNaN(ts) && ts > 0) mcap = priceUsd * ts;
+  } else if (protocolFamily === 'Pumpfun' && priceUsd) {
+    // Only apply the fixed 1B supply assumption for confirmed Pump.fun trades —
+    // other sources (LetsBonk/Raydium, etc.) have different supply models and
+    // must not silently reuse this number.
+    mcap = priceUsd * 1000000000;
   }
 
   var poolTok = S.tokens.get(mint);
