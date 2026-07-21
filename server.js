@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 // ── API KEYS ──────────────────────────────────────────────────
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
-const SOLANA_STREAMING_KEY = process.env.SOLANA_STREAMING_KEY || '';
+const BITQUERY_TOKEN = process.env.BITQUERY_TOKEN || '';
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
@@ -365,42 +365,53 @@ async function fetchDSTokens() {
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
-// ── SOLANASTREAMING — REAL TIME DATA ─────────────────────────
-// One WebSocket connection: wss://api.solanastreaming.com
-// Auth via X-API-KEY header — key lives in Render environment only
-// newPairSubscribe: new Pump.fun launches with REAL authority data
-// swapSubscribe: every buy/sell on watched bonding curves — real prices
+// ── BITQUERY — REAL TIME DATA ─────────────────────────────────
+// One WebSocket connection: wss://streaming.bitquery.io/graphql
+// Auth: OAuth2 bearer token in URL query param — token lives in Render environment only
+// GraphQL subscriptions over the same connection: new pair launches + all trades
+// Designed for multiple sources/chains: each subscription carries its own SRC label
+// and Bitquery protocol filter, so adding LetsBonk/Base/BSC later means adding a
+// new subscription entry, not rewriting the handlers.
 var pumpPrices = {};
 var pumpWs = null;
-var ssSwapSubId = null;
-var ssSwapSubPending = false;
-var ssTooManyConn = false;
-var ssLastSentFilter = '';
-var ssMsgId = 10;
-var ssSwapLogCount = 0;
-var ssPingI = null;
+var bqSubId = 1;
+var bqPairSubActive = false;
+var bqTradeSubActive = false;
+var bqReconnectDelay = 3000;
+var bqPingI = null;
+var bqTradeLogCount = 0;
 
-function connectSS() {
+// Sources to subscribe to. protocolFamily matches Bitquery's Market.ProtocolFamily field.
+// Add a new entry here (e.g. LetsBonk) to extend coverage — handlers below are generic.
+var BQ_SOURCES = [
+  { src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun' },
+];
+
+function connectBQ() {
   if (pumpWs && (pumpWs.readyState === WebSocket.OPEN || pumpWs.readyState === WebSocket.CONNECTING)) return;
-  if (!SOLANA_STREAMING_KEY) {
-    log('SOLANA_STREAMING_KEY missing — add it in Render Environment tab', 'rug');
+  if (!BITQUERY_TOKEN) {
+    log('BITQUERY_TOKEN missing — add it in Render Environment tab', 'rug');
     return;
   }
   try {
-    pumpWs = new WebSocket('wss://api.solanastreaming.com', {
-      headers: { 'X-API-KEY': SOLANA_STREAMING_KEY }
-    });
+    var wsUrl = 'wss://streaming.bitquery.io/graphql?token=' + encodeURIComponent(BITQUERY_TOKEN);
+    pumpWs = new WebSocket(wsUrl, 'graphql-ws');
 
     pumpWs.on('open', function() {
       S.pumpLive = true;
-      ssSwapSubId = null;
-      ssSwapSubPending = false;
-      ssLastSentFilter = '';
-      S.sources['SOLSTREAM'] = 'live:0';
-      pumpWs.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'newPairSubscribe', params: { include_pumpfun: true } }));
-      log('SolanaStreaming LIVE — real time data connected', 'pump');
-      if (ssPingI) clearInterval(ssPingI);
-      ssPingI = setInterval(function() {
+      bqPairSubActive = false;
+      bqTradeSubActive = false;
+      bqReconnectDelay = 3000;
+      S.sources['BITQUERY'] = 'live:0';
+      log('Bitquery LIVE — real time data connected', 'pump');
+      sendBQConnectionInit();
+      setTimeout(function() {
+        if (!bqPairSubActive && pumpWs && pumpWs.readyState === WebSocket.OPEN) {
+          log('BQ WARNING: no connection_ack received after 10s — subscriptions may not have started', 'warn');
+        }
+      }, 10000);
+      if (bqPingI) clearInterval(bqPingI);
+      bqPingI = setInterval(function() {
         try { if (pumpWs && pumpWs.readyState === WebSocket.OPEN) pumpWs.ping(); } catch(e) {}
       }, 30000);
     });
@@ -408,75 +419,108 @@ function connectSS() {
     pumpWs.on('message', function(raw) {
       try {
         var msg = JSON.parse(raw.toString());
-
-        if (msg.id === 1 && msg.result && msg.result.subscription_id !== undefined) {
-          log('New pair stream active — subscription #' + msg.result.subscription_id, 'pump');
-          return;
-        }
-        if (msg.id === 2 && msg.result && msg.result.subscription_id !== undefined) {
-          ssSwapSubId = msg.result.subscription_id;
-          ssSwapSubPending = false;
-          log('Swap stream active — subscription #' + ssSwapSubId, 'pump');
-          return;
-        }
-        if (msg.id >= 10 && msg.result === true) {
-          ssSwapSubPending = false;
-          return;
-        }
-        if (msg.error) {
-          ssSwapSubPending = false;
-          log('SS ERROR: ' + JSON.stringify(msg.error).slice(0, 200), 'warn');
-          if (msg.error.code === -32001) ssTooManyConn = true;
-          return;
-        }
-        if (msg.params && msg.params.pair) { handleNewPair(msg.params); return; }
-        if (msg.params && msg.params.swap) { handleSwap(msg.params); return; }
-      } catch(e) {}
+        handleBQMessage(msg);
+      } catch(e) {
+        log('BQ MSG HANDLER ERROR: ' + (e && e.message ? e.message : 'unknown').slice(0, 150), 'warn');
+      }
     });
 
-    pumpWs.on('error', function() { S.pumpLive = false; S.sources['SOLSTREAM'] = 'dead'; });
+    pumpWs.on('error', function() { S.pumpLive = false; S.sources['BITQUERY'] = 'dead'; });
     pumpWs.on('close', function() {
       S.pumpLive = false;
-      S.sources['SOLSTREAM'] = 'dead';
-      if (ssPingI) clearInterval(ssPingI);
-      var delay = ssTooManyConn ? 15000 : 3000;
-      ssTooManyConn = false;
-      setTimeout(connectSS, delay);
+      S.sources['BITQUERY'] = 'dead';
+      if (bqPingI) clearInterval(bqPingI);
+      var delay = bqReconnectDelay;
+      bqReconnectDelay = Math.min(bqReconnectDelay * 2, 30000);
+      setTimeout(connectBQ, delay);
     });
-  } catch(e) { setTimeout(connectSS, 5000); }
+  } catch(e) { setTimeout(connectBQ, 5000); }
 }
 
-async function handleNewPair(p) {
-  var pair = p.pair || {};
+// graphql-ws protocol handshake — required before subscriptions are accepted
+function sendBQConnectionInit() {
+  pumpWs.send(JSON.stringify({ type: 'connection_init' }));
+}
 
-  // Graduation — token migrated off the bonding curve to a DEX
-  if (pair.migration === 'pumpfun') {
-    var gmint = pair.baseToken && pair.baseToken.account;
-    if (gmint && S.gradCandidates.has(gmint)) {
-      log('GRADUATED ' + gmint.slice(0, 8) + '... — migrated to ' + (pair.sourceExchange || 'DEX'), 'pump');
-    }
+var bqMsgLogCount = 0;
+
+function handleBQMessage(msg) {
+  bqMsgLogCount++;
+  if (bqMsgLogCount <= 5) log('BQ MSG #' + bqMsgLogCount + ' type=' + msg.type, 'info');
+
+  if (msg.type === 'connection_ack') {
+    sendBQSubscriptions();
     return;
   }
+  if (msg.type === 'ka') return; // keepalive
+  if (msg.type === 'error') {
+    log('BQ ERROR: ' + JSON.stringify(msg.payload || msg).slice(0, 200), 'warn');
+    return;
+  }
+  if (msg.type === 'complete') return;
+  if (msg.type === 'next' || msg.type === 'data') {
+    var payload = msg.payload || msg;
+    var data = payload.data;
+    if (!data) return;
+    if (data.Solana && data.Solana.TokenSupplyUpdates) {
+      data.Solana.TokenSupplyUpdates.forEach(function(u) { handleNewPair(u); });
+    }
+    if (data.Trading && data.Trading.Trades) {
+      data.Trading.Trades.forEach(function(t) { handleSwap(t); });
+    }
+    if (data.Solana && data.Solana.DEXPools) {
+      data.Solana.DEXPools.forEach(function(p) { handleBQPool(p); });
+    }
+  }
+}
 
-  // Only Pump.fun launches feed the sniper pipeline
-  if (pair.sourceExchange !== 'pumpfun') return;
+// One subscription per source for new launches, one shared subscription for all trades.
+// Extending to LetsBonk: add its protocolFamily to BQ_SOURCES, then the trade subscription
+// below already covers it via the `in` filter — only the pair-launch query needs a
+// source-specific program address if LetsBonk uses a different creation instruction.
+function sendBQSubscriptions() {
+  BQ_SOURCES.forEach(function(source) {
+    var id = 'pairs_' + source.src;
+    pumpWs.send(JSON.stringify({
+      id: id,
+      type: 'start',
+      payload: {
+        query: 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"}, Method: {in: ["create", "create_v2"]}}}}) { Block { Time } Transaction { Signer } TokenSupplyUpdate { Amount Currency { Symbol Name MintAddress Decimals Uri UpdateAuthority } PostBalance } } } }'
+      }
+    }));
+  });
+  bqPairSubActive = true;
+  log('New pair stream active (' + BQ_SOURCES.map(function(s){return s.src;}).join(', ') + ')', 'pump');
 
-  var mint = pair.baseToken && pair.baseToken.account;
-  var amm = pair.ammAccount;
-  if (!mint || !amm) return;
+  var families = BQ_SOURCES.map(function(s) { return '"' + s.protocolFamily + '"'; }).join(', ');
+  pumpWs.send(JSON.stringify({
+    id: 'trades_all',
+    type: 'start',
+    payload: {
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}}) { Side Trader { Address } Amounts { Base Quote } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol MintAddress: Id } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+    }
+  }));
+  bqTradeSubActive = true;
+  log('Swap stream active — all sources', 'pump');
 
-  var info = (pair.baseToken && pair.baseToken.info) || {};
-  var meta = info.metadata || {};
-  var name = ((meta.symbol || meta.name || 'NEW') + '').toUpperCase().slice(0, 12);
+  sendBQPoolSubscription();
+}
+
+async function handleNewPair(u) {
+  var update = u.TokenSupplyUpdate || {};
+  var currency = update.Currency || {};
+  var mint = currency.MintAddress;
+  if (!mint) return;
+
+  var name = ((currency.Symbol || currency.Name || 'NEW') + '').toUpperCase().slice(0, 12);
 
   S.pumpCount++;
-  S.sources['SOLSTREAM'] = 'live:' + S.pumpCount;
+  S.sources['BITQUERY'] = 'live:' + S.pumpCount;
   if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
 
   if (isBanned(mint)) return;
   if (S.tokens.has(mint)) return;
 
-  // Pool cap eviction — unchanged behavior
   if (S.tokens.size >= S.maxPool) {
     var worstKey = null;
     var worstBSR = Infinity;
@@ -488,17 +532,17 @@ async function handleNewPair(p) {
     if (worstKey) S.tokens.delete(worstKey);
   }
 
-  // Safety checklist — now fed with REAL on-chain authority data
+  // Bitquery's TokenSupplyUpdates for a fresh Pump.fun create doesn't carry
+  // mint/freeze authority directly — safety checklist runs with nulls here,
+  // same conservative behavior as before real authority data was available.
   var tokenData = {
-    mintAuthority: info.mintAuthority || null,
-    freezeAuthority: info.freezeAuthority || null,
+    mintAuthority: null,
+    freezeAuthority: null,
     lpBurn: undefined,
     dev: undefined,
   };
   var safe = await runSafetyChecklist(mint, tokenData, true);
   if (!safe) return;
-
-  var liqSol = parseInt(pair.quoteTokenLiquidityAdded || '0') / 1e9;
 
   S.tokens.set(mint, {
     mint: mint,
@@ -506,8 +550,7 @@ async function handleNewPair(p) {
     n: name,
     src: 'PUMP',
     chain: 'solana',
-    ammAccount: amm,
-    liq: liqSol * SOL_PRICE_USD,
+    liq: 0,
     mcap: 0,
     vol1h: 0,
     buys: 1,
@@ -518,50 +561,48 @@ async function handleNewPair(p) {
     isNew: true,
   });
 
-  log('NEW TOKEN ' + name + ' | ' + liqSol.toFixed(1) + ' SOL liq | Added to pool', 'info');
+  log('NEW TOKEN ' + name + ' | Added to pool', 'info');
 }
 
-function handleSwap(p) {
-  var s = p.swap || {};
-  var mint = s.baseTokenMint;
+function handleSwap(t) {
+  var pair = t.Pair || {};
+  var currency = pair.Currency || {};
+  var mint = currency.MintAddress;
   if (!mint) return;
 
-  // Confirm the stream is flowing — first 3 swaps logged
-  ssSwapLogCount++;
-  if (ssSwapLogCount <= 3) log('SS SWAP #' + ssSwapLogCount + ' | ' + (s.swapType || '?') + ' | ' + mint.slice(0, 8) + '...', 'info');
+  bqTradeLogCount++;
+  if (bqTradeLogCount <= 3) log('BQ SWAP #' + bqTradeLogCount + ' | ' + (t.Side || '?') + ' | ' + mint.slice(0, 8) + '...', 'info');
 
-  // quotePrice is in wSOL — convert to USD
   var priceUsd = null;
-  if (s.quotePrice && s.quotePrice !== '') {
-    var pSol = parseFloat(s.quotePrice);
-    if (!isNaN(pSol) && pSol > 0) priceUsd = pSol * SOL_PRICE_USD;
+  if (t.PriceInUsd) {
+    var p = parseFloat(t.PriceInUsd);
+    if (!isNaN(p) && p > 0) priceUsd = p;
   }
 
-  // Real SOL reserves in the bonding curve (beta field — may be empty)
-  var solInCurve = 0;
-  if (s.quoteTokenLiquidity && s.quoteTokenLiquidity !== '') {
-    solInCurve = parseInt(s.quoteTokenLiquidity) / 1e9;
+  var mcap = 0;
+  if (t.Supply && t.Supply.MarketCap) {
+    var mc = parseFloat(t.Supply.MarketCap);
+    if (!isNaN(mc) && mc > 0) mcap = mc;
+  } else if (priceUsd) {
+    mcap = priceUsd * 1000000000; // Pump.fun fixed supply fallback
   }
 
-  // Buy count ALWAYS updates — fully decoupled from price
   var poolTok = S.tokens.get(mint);
   if (poolTok) {
-    if (s.swapType === 'buy') poolTok.buys = (poolTok.buys || 0) + 1;
-    else if (s.swapType === 'sell') poolTok.sells = (poolTok.sells || 0) + 1;
+    if (t.Side === 'Buy') poolTok.buys = (poolTok.buys || 0) + 1;
+    else if (t.Side === 'Sell') poolTok.sells = (poolTok.sells || 0) + 1;
     if (priceUsd) {
       poolTok.price = priceUsd;
-      poolTok.mcap = priceUsd * 1000000000; // Pump.fun fixed supply
+      poolTok.mcap = mcap;
     }
   }
 
   if (priceUsd) {
-    pumpPrices[mint] = { price: priceUsd, solInCurve: solInCurve, ts: Date.now() };
+    pumpPrices[mint] = { price: priceUsd, solInCurve: 0, ts: Date.now() };
 
-    // Open PUMP trades — price update + exit checks on EVERY swap
     S.open.forEach(function(trade) {
       if (trade.mint !== mint || trade.src !== 'PUMP') return;
 
-      // Sanity check — reject single-tick moves over 90% as data errors
       if (trade.currentPrice && trade.currentPrice > 0) {
         var change = Math.abs(priceUsd - trade.currentPrice) / trade.currentPrice;
         if (change > 0.90) {
@@ -612,93 +653,63 @@ function handleSwap(p) {
       }
     });
   }
+}
 
-  // Graduation candidate tracking — REAL SOL reserves now
-  if (solInCurve > 0) {
-    var pt = S.tokens.get(mint);
+// ── GRADUATION TRACKING ────────────────────────────────────────
+// Separate subscription: DEXPools gives bonding curve reserves needed to
+// compute graduation progress. Trading.Trades does not carry this field.
+function sendBQPoolSubscription() {
+  pumpWs.send(JSON.stringify({
+    id: 'pools_pump',
+    type: 'start',
+    payload: {
+      query: 'subscription { Solana { DEXPools(where: {Pool: {Dex: {ProtocolName: {is: "pump"}}}}) { Pool { Market { BaseCurrency { MintAddress Symbol Name } } Base { PostAmount } Quote { PostAmount PostAmountInUSD } } } } }'
+    }
+  }));
+  log('Graduation stream active', 'pump');
+}
+
+function handleBQPool(p) {
+  var pool = p.Pool || {};
+  var market = pool.Market || {};
+  var baseCurrency = market.BaseCurrency || {};
+  var mint = baseCurrency.MintAddress;
+  if (!mint) return;
+
+  var baseReserve = parseFloat((pool.Base || {}).PostAmount || 0);
+  var quoteReserveSol = parseFloat((pool.Quote || {}).PostAmount || 0);
+  if (!baseReserve) return;
+
+  // Pump.fun graduates when the base (token) reserve drops to ~206,900,000
+  // out of an initial ~793,100,000 tradeable in the curve.
+  var progressPct = Math.max(0, Math.min(100, ((793100000 - (baseReserve - 206900000)) / 793100000) * 100));
+  var solInCurve = quoteReserveSol;
+
+  if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
+    var name = (baseCurrency.Symbol || baseCurrency.Name || mint.slice(0, 8)).toUpperCase().slice(0, 12);
     var existing = S.gradCandidates.get(mint) || {
-      name: pt ? pt.n : '', mint: mint, firstSeen: Date.now(), buys: 0, sells: 0,
+      name: name, mint: mint, firstSeen: Date.now(), buys: 0, sells: 0,
     };
     existing.solInCurve = solInCurve;
-    existing.price = priceUsd || existing.price;
+    existing.price = pumpPrices[mint] ? pumpPrices[mint].price : existing.price;
     existing.lastUpdate = Date.now();
-    if (s.swapType === 'buy') existing.buys = (existing.buys || 0) + 1;
-    else if (s.swapType === 'sell') existing.sells = (existing.sells || 0) + 1;
-    existing.bsr = existing.buys / Math.max(existing.sells, 1);
-    if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
-      existing.nearGrad = true;
-      var gpct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
-      if (!existing.logged || existing.loggedPct !== gpct) {
-        existing.logged = true;
-        existing.loggedPct = gpct;
-        log('GRAD CANDIDATE ' + (existing.name || mint.slice(0, 8)) + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + gpct + '% | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
-      }
-    } else {
-      existing.nearGrad = false;
+    var pt = S.tokens.get(mint);
+    if (pt) { existing.buys = pt.buys; existing.sells = pt.sells; }
+    existing.bsr = existing.buys / Math.max(existing.sells || 1, 1);
+    existing.nearGrad = true;
+    var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
+    if (!existing.logged || existing.loggedPct !== pct) {
+      existing.logged = true;
+      existing.loggedPct = pct;
+      log('GRAD CANDIDATE ' + name + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
     }
     S.gradCandidates.set(mint, existing);
-  }
-}
-
-// ── SWAP FILTER MANAGEMENT ────────────────────────────────────
-// Streams swaps for: every open PUMP trade + the newest bonding curves
-// Recomputed every 5 seconds — only sent when the list actually changes
-var SS_WATCH_CAP = 5; // Basic plan hard limit — confirmed via SolanaStreaming docs
-
-function updateSSFilter() {
-  if (!pumpWs || pumpWs.readyState !== WebSocket.OPEN) return;
-
-  var amms = [];
-  var seen = {};
-
-  // Open PUMP trades are ALWAYS watched — exits depend on it
-  S.open.forEach(function(t) {
-    if (t.src === 'PUMP' && t.ammAccount && !seen[t.ammAccount]) {
-      seen[t.ammAccount] = true;
-      amms.push(t.ammAccount);
-    }
-  });
-
-  // Newest PUMP pool tokens fill the rest, up to the cap
-  var pumpToks = [];
-  S.tokens.forEach(function(tok) {
-    if (tok.src === 'PUMP' && tok.ammAccount && !seen[tok.ammAccount]) pumpToks.push(tok);
-  });
-  pumpToks.sort(function(a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
-  for (var i = 0; i < pumpToks.length && amms.length < SS_WATCH_CAP; i++) {
-    seen[pumpToks[i].ammAccount] = true;
-    amms.push(pumpToks[i].ammAccount);
-  }
-
-  // Never send an empty or malformed filter — API rejects it as invalid params
-  if (amms.length === 0) return;
-  if (!Array.isArray(amms) || amms.some(function(a) { return typeof a !== 'string' || !a; })) return;
-
-  var fingerprint = amms.join(',');
-  if (fingerprint === ssLastSentFilter) return;
-
-  if (ssSwapSubId === null) {
-    // Prevent sending a second swapSubscribe before the first is confirmed —
-    // only 1 swap subscription is permitted per connection
-    if (ssSwapSubPending) return;
-    ssSwapSubPending = true;
-    pumpWs.send(JSON.stringify({
-      jsonrpc: '2.0', id: 2, method: 'swapSubscribe',
-      params: { include: { ammAccount: amms } }
-    }));
   } else {
-    if (ssSwapSubPending) return;
-    ssSwapSubPending = true;
-    ssMsgId++;
-    pumpWs.send(JSON.stringify({
-      jsonrpc: '2.0', id: ssMsgId, method: 'updateSubscriptionParams',
-      params: { subscription_id: ssSwapSubId, update: { include: { ammAccount: amms } } }
-    }));
+    var cand = S.gradCandidates.get(mint);
+    if (cand) cand.nearGrad = false;
   }
-  ssLastSentFilter = fingerprint;
 }
 
-var ssFilterI = setInterval(updateSSFilter, 5000);
 
 // ── OPEN TRADE PRICE TRACKING ─────────────────────────────────
 async function updateOpenTradePrices() {
@@ -1164,7 +1175,7 @@ function startBot() {
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
 
-  connectSS();
+  connectBQ();
   fetchDSTokens();
   updateSolPrice();
 
@@ -1399,7 +1410,7 @@ app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
 app.listen(PORT, function() {
   console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
   loadPortfolio();
-  connectSS();
+  connectBQ();
   fetchDSTokens();
   updateSolPrice();
 });
