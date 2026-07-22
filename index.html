@@ -220,6 +220,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-chains')"><span>⛓ CHAIN TOGGLES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-grad')"><span>🎓 GRADUATION SNIPER</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -320,6 +321,19 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       </div>
       <button class="settings-save" onclick="saveChains()">SAVE CHAIN SETTINGS</button>
       <div class="settings-status" id="status-chains"></div>
+    </div>
+
+    <!-- Graduation Sniper -->
+    <div class="settings-sub" id="sub-grad">
+      <button class="settings-back" onclick="closeSub('sub-grad')">← BACK</button>
+      <div class="settings-sub-title">🎓 GRADUATION SNIPER</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Currently paused while price tracking for graduation trades is being fixed. Open trades finish naturally when turned off.</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-grad-on" onclick="setGrad(true)">● ON</button>
+        <button class="tp-btn active" id="btn-grad-off" onclick="setGrad(false)">○ OFF</button>
+      </div>
+      <button class="settings-save" onclick="saveGrad()">SAVE GRADUATION SETTING</button>
+      <div class="settings-status" id="status-grad"></div>
     </div>
 
     <!-- Wallets -->
@@ -639,6 +653,7 @@ var timerId = null;
 var currentTPMode = 'TRAIL';
 var currentSolEnabled = true;
 var currentBaseEnabled = false;
+var currentGradEnabled = false;
 var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
 var ptLimit = 50;
@@ -739,6 +754,12 @@ function setChain(chain, enabled) {
   }
 }
 
+function setGrad(enabled) {
+  currentGradEnabled = enabled;
+  document.getElementById('btn-grad-on').classList.toggle('active', enabled);
+  document.getElementById('btn-grad-off').classList.toggle('active', !enabled);
+}
+
 function toggleWalletChain(chain) {
   var panel = document.getElementById(chain + '-wallet-panel');
   var arrow = document.getElementById(chain + '-wallet-arrow');
@@ -826,6 +847,13 @@ async function saveChains() {
   var el = document.getElementById('status-chains');
   var ok = await apiPost({ solEnabled: currentSolEnabled, baseEnabled: currentBaseEnabled });
   el.textContent = ok ? '✅ SOL: ' + (currentSolEnabled ? 'ON' : 'OFF') + ' | BASE: ' + (currentBaseEnabled ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveGrad() {
+  var el = document.getElementById('status-grad');
+  var ok = await apiPost({ gradEnabled: currentGradEnabled });
+  el.textContent = ok ? '✅ Graduation sniper: ' + (currentGradEnabled ? 'ON' : 'OFF') : '❌ Failed';
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
@@ -928,7 +956,12 @@ async function fetchState() {
     }
 
     // Runtime
-    if (data.startTime) startTimer(data.startTime);
+    if (data.running && data.startTime) {
+      startTimer(data.startTime);
+    } else if (timerId) {
+      clearInterval(timerId);
+      timerId = null;
+    }
 
     // Pump.fun bar
     var wsbar = document.getElementById('wsbar');
@@ -1017,6 +1050,13 @@ async function fetchState() {
       document.getElementById('sol-status').style.color = solOn ? 'var(--green)' : 'var(--red)';
       document.getElementById('base-status').textContent = baseOn ? '● ON' : '○ OFF';
       document.getElementById('base-status').style.color = baseOn ? 'var(--green)' : 'var(--red)';
+
+      // Sync graduation toggle — defaults to OFF (opposite of chain toggles), so the
+      // missing-field fallback must be false, not true
+      var gradOn = data.gradEnabled === true;
+      currentGradEnabled = gradOn;
+      document.getElementById('btn-grad-on').classList.toggle('active', gradOn);
+      document.getElementById('btn-grad-off').classList.toggle('active', !gradOn);
     }
 
     // Settings hints
