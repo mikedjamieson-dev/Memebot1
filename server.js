@@ -36,6 +36,7 @@ const CFG = {
   MIN_LIQ_USD: 5000,
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 1000,
+  BQ_SUBSCRIBE_MIN_MCAP: 750,
   GRAD_ENTRY_SOL: 100,
   GRAD_MAX_SOL: 480,
   GRAD_TARGET: 500,
@@ -118,6 +119,7 @@ const S = {
   maxPool: 10000,
   solEnabled: true,
   baseEnabled: true,
+  gradEnabled: false,
   chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
   bestTrade: null,
 };
@@ -515,7 +517,7 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
@@ -1006,6 +1008,7 @@ function checkExitCriteria() {
 
 // ── GRADUATION SNIPER ─────────────────────────────────────────
 async function runGradSniper() {
+  if (!S.gradEnabled) return;
   if (!S.running || S.fund < 1) return;
   if (S.windingDown) return;
   var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
@@ -1323,6 +1326,7 @@ app.get('/api/state', function(req, res) {
     chainStats: S.chainStats,
     solEnabled: S.solEnabled,
     baseEnabled: S.baseEnabled,
+    gradEnabled: S.gradEnabled,
     maxPool: S.maxPool,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
@@ -1389,6 +1393,10 @@ app.post('/api/settings', function(req, res) {
   if (req.body.baseEnabled !== undefined) {
     S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
     log('Base: ' + (S.baseEnabled ? 'ON' : 'OFF'), 'info');
+  }
+  if (req.body.gradEnabled !== undefined) {
+    S.gradEnabled = req.body.gradEnabled === true || req.body.gradEnabled === 'true';
+    log('Graduation sniper: ' + (S.gradEnabled ? 'ON' : 'OFF'), 'info');
   }
   res.json({ success: true });
 });
