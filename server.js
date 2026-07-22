@@ -873,6 +873,8 @@ function closeTradeReal(id, reason) {
     mint: tr.mint || '',
     entryMcap: (tr.src === 'PUMP') ? (tr.entryMcap || 0) : 0,
     exitMcap: (tr.src === 'PUMP' && tr.currentPrice) ? tr.currentPrice * 1000000000 : 0,
+    entryBuys: tr.entryBuys || 0,
+    entrySells: tr.entrySells || 0,
     openedAt: tr.openedAt,
     closedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     src: tr.src || (tr.tok && tr.tok.src) || 'unknown',
@@ -905,6 +907,8 @@ function closeTradeReal(id, reason) {
     priceUpdates: tr.priceUpdates || 0,
     entryMcap: (tr.src === 'PUMP') ? (tr.entryMcap || 0) : 0,
     exitMcap: (tr.src === 'PUMP' && tr.currentPrice) ? tr.currentPrice * 1000000000 : 0,
+    entryBuys: tr.entryBuys || 0,
+    entrySells: tr.entrySells || 0,
     peakGainPct: (tr.peakPrice && tr.entryPrice)
       ? parseFloat(((tr.peakPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
     secToFirstUpdate: (tr.firstUpdateAt && tr.startTime)
@@ -1150,6 +1154,8 @@ async function runScan() {
     pairAddress: tok.pairAddress || null,
     entryPrice: entryPrice,
     entryMcap: tok.mcap || 0,
+    entryBuys: tok.buys || 0,
+    entrySells: tok.sells || 0,
     currentPrice: entryPrice,
     peakPrice: entryPrice,
     lastPrice: entryPrice,
@@ -1414,7 +1420,7 @@ app.get('/api/portfolio/trades', function(req, res) {
 
 app.get('/api/portfolio/export', function(req, res) {
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1437,6 +1443,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.fees || 0,
       t.entryMcap || 0,
       t.exitMcap || 0,
+      t.entryBuys || 0,
+      t.entrySells || 0,
     ].join(','));
   });
   var csv = rows.join('\n');
