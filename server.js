@@ -37,6 +37,7 @@ const CFG = {
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 1000,
   BQ_SUBSCRIBE_MIN_MCAP: 750,
+  BQ_SUBSCRIBE_MAX_MCAP: 50000000,
   GRAD_ENTRY_SOL: 100,
   GRAD_MAX_SOL: 480,
   GRAD_TARGET: 500,
@@ -517,7 +518,7 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + ', lt: ' + CFG.BQ_SUBSCRIBE_MAX_MCAP + '}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
