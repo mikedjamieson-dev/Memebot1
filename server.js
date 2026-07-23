@@ -37,7 +37,8 @@ const CFG = {
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 1000,
   BQ_SUBSCRIBE_MIN_MCAP: 1000,
-  BQ_SUBSCRIBE_MAX_MCAP: 50000000,
+  BQ_SUBSCRIBE_MAX_MCAP: 350000,
+  MCAP_CEILING_EXIT: 300000,
   GRAD_ENTRY_SOL: 100,
   GRAD_MAX_SOL: 480,
   GRAD_TARGET: 500,
@@ -88,7 +89,7 @@ const S = {
   tokens: new Map(),
   open: [],
   closed: [],
-  stats: { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 },
+  stats: { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0, mcapCeiling: 0 },
   fund: 100,
   savings: 0,
   running: false,
@@ -715,6 +716,14 @@ function handleSwap(t) {
         trade.lastPrice = priceUsd;
       }
 
+      if (trade.src === 'PUMP' && mcap >= CFG.MCAP_CEILING_EXIT) {
+        var ceilPct = trade.entryPrice > 0 ? ((priceUsd - trade.entryPrice) / trade.entryPrice * 100) : 0;
+        S.stats.mcapCeiling = (S.stats.mcapCeiling || 0) + 1;
+        log('MCAP CEILING ' + trade.tok.n + ' | $' + mcap.toFixed(0) + ' | +' + ceilPct.toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
+        closeTradeReal(trade.id, 'Mcap ceiling reached');
+        return;
+      }
+
       if (trade.entryPrice > 0) {
         var pct = (priceUsd - trade.entryPrice) / trade.entryPrice;
 
@@ -1270,7 +1279,7 @@ function startBot() {
   if (S.running) return;
   S.running = true;
   S.startTime = Date.now();
-  S.stats = { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0 };
+  S.stats = { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0, mcapCeiling: 0 };
   S.savings = 0;
   S.dscPool = 0;
   S.solPool = 0;
