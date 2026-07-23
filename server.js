@@ -36,7 +36,7 @@ const CFG = {
   MIN_LIQ_USD: 5000,
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 1000,
-  BQ_SUBSCRIBE_MIN_MCAP: 750,
+  BQ_SUBSCRIBE_MIN_MCAP: 1000,
   BQ_SUBSCRIBE_MAX_MCAP: 50000000,
   GRAD_ENTRY_SOL: 100,
   GRAD_MAX_SOL: 480,
@@ -185,6 +185,52 @@ function recheckExpiredBans() {
       log('RECHECK ' + mint.slice(0, 8) + '... — 12hr ban expired', 'info');
     }
   });
+}
+
+// ── WALLET CONCENTRATION CHECK ────────────────────────────────
+// One-off HTTP query (not the WebSocket stream) — only called on tokens that
+// already passed every other filter, right before entry, to avoid spending
+// extra calls on candidates we'd reject anyway.
+// SOLANA_INCINERATOR is a known burn address: tokens sent here are permanently
+// destroyed and can never be sold, but still count as a "holder" balance-wise —
+// must be excluded or we'd wrongly reject tokens that burned supply this way.
+var SOLANA_INCINERATOR = '1nc1nerator11111111111111111111111111111111';
+var pendingConcentrationChecks = new Set();
+
+async function checkWalletConcentration(mint) {
+  if (!BITQUERY_TOKEN) return { safe: true, reason: 'no token' };
+  try {
+    var query = 'query { Solana { BalanceUpdates(limit: {count: 5} orderBy: {descendingByField: "BalanceUpdate_Holding_maximum"} where: {BalanceUpdate: {Currency: {MintAddress: {is: "' + mint + '"}}}, Transaction: {Result: {Success: true}}}) { BalanceUpdate { Account { Address } Holding: PostBalance(maximum: Block_Slot) } } } }';
+    var res = await fetch('https://streaming.bitquery.io/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BITQUERY_TOKEN },
+      body: JSON.stringify({ query: query }),
+    });
+    if (!res.ok) return { safe: true, reason: 'query failed, allowing through' };
+    var data = await res.json();
+    var updates = data && data.data && data.data.Solana && data.data.Solana.BalanceUpdates;
+    if (!updates || !updates.length) return { safe: true, reason: 'no holder data' };
+
+    var totalHeld = 0;
+    var holders = [];
+    updates.forEach(function(u) {
+      var addr = u.BalanceUpdate.Account.Address;
+      var bal = parseFloat(u.BalanceUpdate.Holding || 0);
+      if (addr === SOLANA_INCINERATOR) return; // burned supply, not a real holder risk
+      totalHeld += bal;
+      holders.push({ addr: addr, bal: bal });
+    });
+    if (!holders.length || totalHeld <= 0) return { safe: true, reason: 'no non-burn holders found' };
+
+    holders.sort(function(a, b) { return b.bal - a.bal; });
+    var topPct = holders[0].bal / totalHeld;
+    if (topPct >= 0.50) {
+      return { safe: false, reason: 'top wallet holds ' + (topPct * 100).toFixed(0) + '% of supply' };
+    }
+    return { safe: true, reason: 'concentration OK (' + (topPct * 100).toFixed(0) + '% top holder)' };
+  } catch (e) {
+    return { safe: true, reason: 'check errored, allowing through' };
+  }
 }
 
 // ── SAFETY CHECKLIST ──────────────────────────────────────────
@@ -1136,6 +1182,18 @@ async function runScan() {
   }
 
   if (!entryPrice || entryPrice <= 0) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
+
+  if (tok.src === 'PUMP') {
+    if (pendingConcentrationChecks.has(tok.mint)) return;
+    pendingConcentrationChecks.add(tok.mint);
+    var concCheck = await checkWalletConcentration(tok.mint);
+    pendingConcentrationChecks.delete(tok.mint);
+    if (!concCheck.safe) {
+      S.rejectCount++;
+      if(diag) log('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
+      return;
+    }
+  }
 
   var slip = parseFloat(
     Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
