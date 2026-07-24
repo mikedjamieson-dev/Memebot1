@@ -440,12 +440,6 @@ var BQ_SOURCES = [
     createMethods: ['create', 'create_v2'],
     queryShape: 'tokenSupplyUpdate',
   },
-  {
-    src: 'BONK', chain: 'solana', protocolFamily: 'raydium',
-    programAddress: 'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj',
-    createMethods: ['initialize_v2'],
-    queryShape: 'instructions',
-  },
 ];
 
 function connectBQ() {
