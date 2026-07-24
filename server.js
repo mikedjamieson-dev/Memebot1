@@ -35,10 +35,8 @@ const CFG = {
   SAVINGS_PCT: 0.20,
   MIN_LIQ_USD: 5000,
   MAX_MCAP_USD: 25000000,
-  MIN_MCAP_USD: 1000,
-  BQ_SUBSCRIBE_MIN_MCAP: 1000,
-  BQ_SUBSCRIBE_MAX_MCAP: 350000,
-  MCAP_CEILING_EXIT: 300000,
+  MIN_MCAP_USD: 2750,
+  BQ_SUBSCRIBE_MIN_MCAP: 2750,
   GRAD_ENTRY_SOL: 100,
   GRAD_MAX_SOL: 480,
   GRAD_TARGET: 500,
@@ -442,6 +440,12 @@ var BQ_SOURCES = [
     createMethods: ['create', 'create_v2'],
     queryShape: 'tokenSupplyUpdate',
   },
+  {
+    src: 'BONK', chain: 'solana', protocolFamily: 'raydium',
+    programAddress: 'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj',
+    createMethods: ['initialize_v2'],
+    queryShape: 'instructions',
+  },
 ];
 
 function connectBQ() {
@@ -565,7 +569,7 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + ', lt: ' + CFG.BQ_SUBSCRIBE_MAX_MCAP + '}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
@@ -714,14 +718,6 @@ function handleSwap(t) {
       if (!trade.lastPrice || Math.abs(priceUsd - trade.lastPrice) / trade.lastPrice > 0.001) {
         trade.lastPriceChange = Date.now();
         trade.lastPrice = priceUsd;
-      }
-
-      if (trade.src === 'PUMP' && mcap >= CFG.MCAP_CEILING_EXIT) {
-        var ceilPct = trade.entryPrice > 0 ? ((priceUsd - trade.entryPrice) / trade.entryPrice * 100) : 0;
-        S.stats.mcapCeiling = (S.stats.mcapCeiling || 0) + 1;
-        log('MCAP CEILING ' + trade.tok.n + ' | $' + mcap.toFixed(0) + ' | +' + ceilPct.toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
-        closeTradeReal(trade.id, 'Mcap ceiling reached');
-        return;
       }
 
       if (trade.entryPrice > 0) {
