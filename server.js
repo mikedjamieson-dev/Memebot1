@@ -543,7 +543,7 @@ function buildPairQuery(source) {
     return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}, Transaction: {Result: {Success: true}}}) { Block { Time } Transaction { Signer } Instruction { Accounts { Address Token { Mint Owner } } Program { Method } } } } }';
   }
   // default: tokenSupplyUpdate shape (Pump.fun-style create)
-  return 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}}) { Block { Time } Transaction { Signer } TokenSupplyUpdate { Amount Currency { Symbol Name MintAddress Decimals Uri UpdateAuthority } PostBalance } } } }';
+  return 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}}) { TokenSupplyUpdate { Currency { Symbol Name MintAddress } } } } }';
 }
 
 function sendBQSubscriptions() {
@@ -563,7 +563,7 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Block { Time } Pair { Currency { Name Symbol } Token { Address } Market { ProtocolFamily Network } } Price PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
@@ -646,7 +646,6 @@ async function handleNewPair(u) {
 
 function handleSwap(t) {
   var pair = t.Pair || {};
-  var currency = pair.Currency || {};
   var token = pair.Token || {};
   var mint = token.Address;
   if (!mint) return;
@@ -753,7 +752,7 @@ function sendBQPoolSubscription() {
     id: 'pools_pump',
     type: 'start',
     payload: {
-      query: 'subscription { Solana { DEXPools(where: {Pool: {Dex: {ProtocolName: {is: "pump"}}}}) { Pool { Market { BaseCurrency { MintAddress Symbol Name } } Base { PostAmount } Quote { PostAmount PostAmountInUSD } } } } }'
+      query: 'subscription { Solana { DEXPools(where: {Pool: {Dex: {ProtocolName: {is: "pump"}}}}) { Pool { Market { BaseCurrency { MintAddress Symbol Name } } Base { PostAmount } Quote { PostAmount } } } } }'
     }
   }));
   log('Graduation stream active', 'pump');
