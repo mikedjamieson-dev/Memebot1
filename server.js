@@ -440,6 +440,13 @@ var BQ_SOURCES = [
     createMethods: ['create', 'create_v2'],
     queryShape: 'tokenSupplyUpdate',
   },
+  {
+    src: 'BONK', chain: 'solana', protocolFamily: 'raydium_launchpad',
+    programAddress: 'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj',
+    platformConfigAddress: 'FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1',
+    createMethods: ['initialize_v2'],
+    queryShape: 'instructions',
+  },
 ];
 
 function connectBQ() {
@@ -522,7 +529,11 @@ function handleBQMessage(msg) {
       data.Solana.TokenSupplyUpdates.forEach(function(u) { handleNewPair(u); });
     }
     if (data.Solana && data.Solana.Instructions) {
-      data.Solana.Instructions.forEach(function(i) { handleNewPairFromInstruction(i); });
+      if (msg.id === 'pools_bonk') {
+        data.Solana.Instructions.forEach(function(i) { handleBQLetsBonkGraduation(i); });
+      } else {
+        data.Solana.Instructions.forEach(function(i) { handleNewPairFromInstruction(i); });
+      }
     }
     if (data.Trading && data.Trading.Trades) {
       data.Trading.Trades.forEach(function(t) { handleSwap(t); });
@@ -540,7 +551,10 @@ function handleBQMessage(msg) {
 function buildPairQuery(source) {
   var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
   if (source.queryShape === 'instructions') {
-    return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}, Transaction: {Result: {Success: true}}}) { Block { Time } Transaction { Signer } Instruction { Accounts { Address Token { Mint Owner } } Program { Method } } } } }';
+    var platformFilter = source.platformConfigAddress
+      ? ', Accounts: {includes: {Address: {is: "' + source.platformConfigAddress + '"}}}'
+      : '';
+    return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}' + platformFilter + '}, Transaction: {Result: {Success: true}}}) { Instruction { Accounts { Address Token { Mint Owner } } Program { Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } }';
   }
   // default: tokenSupplyUpdate shape (Pump.fun-style create)
   return 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}}) { TokenSupplyUpdate { Currency { Symbol Name MintAddress } } } } }';
@@ -570,20 +584,101 @@ function sendBQSubscriptions() {
   log('Swap stream active — all sources', 'pump');
 
   sendBQPoolSubscription();
+  sendBQLetsBonkGradSubscription();
 }
 
-// LetsBonk/Raydium LaunchLab new-pair handler. NOTE: unlike Pump.fun's
-// TokenSupplyUpdates, the initialize_v2 instruction does not appear to carry
-// a token symbol/name directly (only mint/owner accounts) based on Bitquery's
-// documented example — this needs verification against a live message before
-// LetsBonk is enabled. Logs raw structure on first calls so the real field
-// mapping can be confirmed rather than guessed.
+// LetsBonk/Raydium LaunchLab new-pair handler. Confirmed via research: the
+// initialize_v2 instruction's decoded Arguments carry the token's name/symbol
+// (base_mint_param.name/symbol per Raydium's own SDK and Bitquery's field
+// docs), but the EXACT argument key name as Bitquery serializes it was not
+// confirmed through documentation alone — this is the one piece we agreed to
+// verify against live data. Extraction below searches defensively by likely
+// key names rather than assuming one exact match, and logs the raw Arguments
+// array on the first several calls so the real shape can be confirmed and
+// this tightened up if needed.
 var bqInstrLogCount = 0;
+
+function findArgValue(args, candidateNames) {
+  if (!args) return null;
+  for (var i = 0; i < args.length; i++) {
+    var argName = (args[i].Name || '').toLowerCase();
+    for (var j = 0; j < candidateNames.length; j++) {
+      if (argName === candidateNames[j] || argName.indexOf(candidateNames[j]) !== -1) {
+        var v = args[i].Value || {};
+        return v.string || v.address || null;
+      }
+    }
+  }
+  return null;
+}
+
 async function handleNewPairFromInstruction(i) {
   bqInstrLogCount++;
-  if (bqInstrLogCount <= 3) log('BQ INSTR #' + bqInstrLogCount + ' (verify field mapping): ' + JSON.stringify(i).slice(0, 300), 'warn');
-  // Intentionally not wired to S.tokens yet — see note above. Enable once
-  // the mint/name extraction is confirmed against real data.
+  var instr = (i.Instruction || {});
+  var accounts = instr.Accounts || [];
+  var programArgs = (instr.Program || {}).Arguments || [];
+
+  if (bqInstrLogCount <= 5) {
+    log('BQ INSTR #' + bqInstrLogCount + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 500), 'warn');
+  }
+
+  var mint = null;
+  for (var k = 0; k < accounts.length; k++) {
+    if (accounts[k].Token && accounts[k].Token.Mint) { mint = accounts[k].Token.Mint; break; }
+  }
+  if (!mint) return;
+
+  var symbol = findArgValue(programArgs, ['symbol', 'ticker']);
+  var tokenName = findArgValue(programArgs, ['name']);
+  var name = ((symbol || tokenName || 'NEW') + '').toUpperCase().slice(0, 12);
+
+  S.pumpCount++;
+  S.sources['BITQUERY'] = 'live:' + S.pumpCount;
+  if (S.pumpCount % 20 === 0) log('LetsBonk: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+
+  if (isBanned(mint)) return;
+  if (S.tokens.has(mint)) return;
+
+  if (S.tokens.size >= S.maxPool) {
+    var worstKey = null;
+    var worstBSR = Infinity;
+    S.tokens.forEach(function(tok, key) {
+      if (S.open.find(function(t) { return t.mint === key; })) return;
+      var bsr = tok.buys / Math.max(tok.sells || 1, 1);
+      if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
+    });
+    if (worstKey) S.tokens.delete(worstKey);
+  }
+
+  // Same conservative safety-checklist behavior as Pump.fun entries — real
+  // mint/freeze authority not available from this instruction shape either.
+  var tokenData = {
+    mintAuthority: null,
+    freezeAuthority: null,
+    lpBurn: undefined,
+    dev: undefined,
+  };
+  var safe = await runSafetyChecklist(mint, tokenData, true);
+  if (!safe) return;
+
+  S.tokens.set(mint, {
+    mint: mint,
+    price: null,
+    n: name,
+    src: 'BONK',
+    chain: 'solana',
+    liq: 0,
+    mcap: 0,
+    vol1h: 0,
+    buys: 1,
+    sells: 0,
+    age: 0,
+    pairAddress: null,
+    addedAt: Date.now(),
+    isNew: true,
+  });
+
+  log('NEW TOKEN ' + name + ' | LetsBonk | Added to pool', 'info');
 }
 
 async function handleNewPair(u) {
@@ -797,6 +892,46 @@ function handleBQPool(p) {
     var cand = S.gradCandidates.get(mint);
     if (cand) cand.nearGrad = false;
   }
+}
+
+// LetsBonk graduation: unlike Pump.fun's fixed curve, LetsBonk's raise target
+// (min 30 SOL, creator-adjustable) and curve % sold (51-80%) both vary per
+// token — there's no single fixed math we can replicate the way we do for
+// Pump.fun. Instead we treat migration as a clean binary event: the
+// migrate_to_amm/migrate_to_cpswap instruction firing on a LetsBonk-tagged
+// token IS the graduation signal, confirmed via the platform config address
+// filter, same pattern already verified for LetsBonk new-pair detection.
+function sendBQLetsBonkGradSubscription() {
+  var bonkSource = BQ_SOURCES.filter(function(s) { return s.src === 'BONK'; })[0];
+  if (!bonkSource) return;
+  pumpWs.send(JSON.stringify({
+    id: 'pools_bonk',
+    type: 'start',
+    payload: {
+      query: 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + bonkSource.programAddress + '"}, Method: {in: ["migrate_to_amm", "migrate_to_cpswap"]}}, Accounts: {includes: {Address: {is: "' + bonkSource.platformConfigAddress + '"}}}}, Transaction: {Result: {Success: true}}}) { Instruction { Accounts { Address Token { Mint } } } } } }'
+    }
+  }));
+  log('LetsBonk graduation stream active', 'pump');
+}
+
+function handleBQLetsBonkGraduation(i) {
+  var instr = (i.Instruction || {});
+  var accounts = instr.Accounts || [];
+  var mint = null;
+  for (var k = 0; k < accounts.length; k++) {
+    if (accounts[k].Token && accounts[k].Token.Mint) { mint = accounts[k].Token.Mint; break; }
+  }
+  if (!mint) return;
+
+  var tok = S.tokens.get(mint);
+  var name = tok ? tok.n : mint.slice(0, 8);
+  log('LETSBONK GRADUATED ' + name + ' | migrated to Raydium AMM', 'pump');
+
+  // Mark as graduated on the pool entry so entry logic can see it if needed.
+  // Not wired into GRAD_ENTRY_SOL/GRAD_MAX_SOL candidate tracking since that
+  // system is Pump.fun-curve-specific — this is intentionally a separate,
+  // simpler signal for now, consistent with graduation sniper being paused.
+  if (tok) tok.graduated = true;
 }
 
 
@@ -1145,7 +1280,7 @@ async function runScan() {
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
   if (bsr < 0.8) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: BSR '+bsr.toFixed(2)+' buys='+tok.buys+' sells='+tok.sells, 'info'); return; }
 
-  if (tok.src === 'PUMP' && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) {
+  if ((tok.src === 'PUMP' || tok.src === 'BONK') && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) {
     if(diag) log('DIAG '+tok.n+' | SKIP: mcap $'+tok.mcap.toFixed(0)+' below floor $'+CFG.MIN_MCAP_USD, 'info');
     return;
   }
@@ -1164,7 +1299,7 @@ async function runScan() {
   if (tok.src === 'DSC') { if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
 
   var entryPrice = null;
-  if (tok.src === 'PUMP') {
+  if (tok.src === 'PUMP' || tok.src === 'BONK') {
     // Only enter on a FRESH price — under 1 second old
     // Guarantees entry price is real AND token is actively trading right now
     var cached = pumpPrices[tok.mint];
@@ -1181,7 +1316,7 @@ async function runScan() {
 
   if (!entryPrice || entryPrice <= 0) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
 
-  if (tok.src === 'PUMP') {
+  if (tok.src === 'PUMP' || tok.src === 'BONK') {
     if (pendingConcentrationChecks.has(tok.mint)) return;
     pendingConcentrationChecks.add(tok.mint);
     var concCheck = await checkWalletConcentration(tok.mint);
