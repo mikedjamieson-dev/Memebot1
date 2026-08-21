@@ -529,11 +529,7 @@ function handleBQMessage(msg) {
       data.Solana.TokenSupplyUpdates.forEach(function(u) { handleNewPair(u); });
     }
     if (data.Solana && data.Solana.Instructions) {
-      if (msg.id === 'pools_bonk') {
-        data.Solana.Instructions.forEach(function(i) { handleBQLetsBonkGraduation(i); });
-      } else {
-        data.Solana.Instructions.forEach(function(i) { handleNewPairFromInstruction(i); });
-      }
+      data.Solana.Instructions.forEach(function(i) { handleNewPairFromInstruction(i); });
     }
     if (data.Trading && data.Trading.Trades) {
       data.Trading.Trades.forEach(function(t) { handleSwap(t); });
@@ -548,27 +544,30 @@ function handleBQMessage(msg) {
 // Extending to LetsBonk: add an entry to BQ_SOURCES with queryShape: 'instructions',
 // its programAddress ("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"), and createMethods
 // (["initialize_v2"]) — buildPairQuery below already branches on queryShape.
-function buildPairQuery(source) {
-  var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
-  if (source.queryShape === 'instructions') {
-    var platformFilter = source.platformConfigAddress
+// Builds ONE combined Instructions query covering every source's create-event
+// via the documented `any:` array pattern (Bitquery's own official
+// multi-launchpad example). Each source contributes one condition to the
+// array rather than getting its own separate subscription — this is what
+// keeps us at 1 subscription for pair-launch discovery regardless of how
+// many sources are added, instead of 1-per-source like the old design.
+function buildCombinedPairQuery() {
+  var conditions = BQ_SOURCES.map(function(source) {
+    var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
+    var accountsFilter = source.platformConfigAddress
       ? ', Accounts: {includes: {Address: {is: "' + source.platformConfigAddress + '"}}}'
       : '';
-    return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}' + platformFilter + '}, Transaction: {Result: {Success: true}}}) { Instruction { Accounts { Address Token { Mint Owner } } Program { Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } } }';
-  }
-  // default: tokenSupplyUpdate shape (Pump.fun-style create)
-  return 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}}) { TokenSupplyUpdate { Currency { Symbol Name MintAddress } } } } }';
+    return '{ Instruction: { Program: { Address: { is: "' + source.programAddress + '" }, Method: { in: [' + methods + '] } }' + accountsFilter + ' } }';
+  }).join(' ');
+
+  return 'subscription { Solana { Instructions(where: { Transaction: { Result: { Success: true } }, any: [' + conditions + '] }) { Instruction { Accounts { Address Token { Mint Owner } } Program { Address Method Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } } }';
 }
 
 function sendBQSubscriptions() {
-  BQ_SOURCES.forEach(function(source) {
-    var id = 'pairs_' + source.src;
-    pumpWs.send(JSON.stringify({
-      id: id,
-      type: 'start',
-      payload: { query: buildPairQuery(source) }
-    }));
-  });
+  pumpWs.send(JSON.stringify({
+    id: 'pairs_all',
+    type: 'start',
+    payload: { query: buildCombinedPairQuery() }
+  }));
   bqPairSubActive = true;
   log('New pair stream active (' + BQ_SOURCES.map(function(s){return s.src;}).join(', ') + ')', 'pump');
 
@@ -583,12 +582,12 @@ function sendBQSubscriptions() {
   bqTradeSubActive = true;
   log('Swap stream active — all sources', 'pump');
 
-  sendBQPoolSubscription();
-  // LetsBonk graduation subscription intentionally NOT sent — plan allows only
-  // 2 concurrent streams (trade stream + this one already uses both). Enable
-  // sendBQLetsBonkGradSubscription() once graduation sniper is actually turned
-  // on and a 3rd stream slot is available, or once Pump.fun's graduation
-  // subscription is retired/merged to free up room.
+  // Both graduation subscriptions (Pump.fun DEXPools, LetsBonk migrate events)
+  // are intentionally NOT sent — 2 streams are already fully used by the
+  // combined pair-launch and trade subscriptions above. Graduation sniper is
+  // currently off anyway (see gradEnabled). Re-enable one of these once a 3rd
+  // stream slot is available, or once graduation is actually needed and we
+  // can afford to drop one of the two active streams temporarily.
 }
 
 // LetsBonk/Raydium LaunchLab new-pair handler. Confirmed via research: the
@@ -620,11 +619,17 @@ async function handleNewPairFromInstruction(i) {
   bqInstrLogCount++;
   var instr = (i.Instruction || {});
   var accounts = instr.Accounts || [];
-  var programArgs = (instr.Program || {}).Arguments || [];
+  var program = instr.Program || {};
+  var programArgs = program.Arguments || [];
+  var programAddress = program.Address || '';
 
   if (bqInstrLogCount <= 5) {
-    log('BQ INSTR #' + bqInstrLogCount + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 500), 'warn');
+    log('BQ INSTR #' + bqInstrLogCount + ' addr=' + programAddress.slice(0,8) + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 400), 'warn');
   }
+
+  var matchedSource = BQ_SOURCES.filter(function(s) { return s.programAddress === programAddress; })[0];
+  if (!matchedSource) return; // event from a program we didn't ask for — shouldn't happen, but don't guess a source
+  var src = matchedSource.src;
 
   var mint = null;
   for (var k = 0; k < accounts.length; k++) {
@@ -638,7 +643,7 @@ async function handleNewPairFromInstruction(i) {
 
   S.pumpCount++;
   S.sources['BITQUERY'] = 'live:' + S.pumpCount;
-  if (S.pumpCount % 20 === 0) log('LetsBonk: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+  if (S.pumpCount % 20 === 0) log(src + ': ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
 
   if (isBanned(mint)) return;
   if (S.tokens.has(mint)) return;
@@ -654,7 +659,7 @@ async function handleNewPairFromInstruction(i) {
     if (worstKey) S.tokens.delete(worstKey);
   }
 
-  // Same conservative safety-checklist behavior as Pump.fun entries — real
+  // Same conservative safety-checklist behavior for both sources — real
   // mint/freeze authority not available from this instruction shape either.
   var tokenData = {
     mintAuthority: null,
@@ -669,7 +674,7 @@ async function handleNewPairFromInstruction(i) {
     mint: mint,
     price: null,
     n: name,
-    src: 'BONK',
+    src: src,
     chain: 'solana',
     liq: 0,
     mcap: 0,
@@ -682,7 +687,7 @@ async function handleNewPairFromInstruction(i) {
     isNew: true,
   });
 
-  log('NEW TOKEN ' + name + ' | LetsBonk | Added to pool', 'info');
+  log('NEW TOKEN ' + name + ' | ' + src + ' | Added to pool', 'info');
 }
 
 async function handleNewPair(u) {
