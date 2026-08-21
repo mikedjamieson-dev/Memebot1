@@ -554,7 +554,7 @@ function buildPairQuery(source) {
     var platformFilter = source.platformConfigAddress
       ? ', Accounts: {includes: {Address: {is: "' + source.platformConfigAddress + '"}}}'
       : '';
-    return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}' + platformFilter + '}, Transaction: {Result: {Success: true}}}) { Instruction { Accounts { Address Token { Mint Owner } } Program { Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } }';
+    return 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}' + platformFilter + '}, Transaction: {Result: {Success: true}}}) { Instruction { Accounts { Address Token { Mint Owner } } Program { Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } } }';
   }
   // default: tokenSupplyUpdate shape (Pump.fun-style create)
   return 'subscription { Solana { TokenSupplyUpdates(where: {Instruction: {Program: {Address: {is: "' + source.programAddress + '"}, Method: {in: [' + methods + ']}}}}) { TokenSupplyUpdate { Currency { Symbol Name MintAddress } } } } }';
@@ -584,7 +584,11 @@ function sendBQSubscriptions() {
   log('Swap stream active — all sources', 'pump');
 
   sendBQPoolSubscription();
-  sendBQLetsBonkGradSubscription();
+  // LetsBonk graduation subscription intentionally NOT sent — plan allows only
+  // 2 concurrent streams (trade stream + this one already uses both). Enable
+  // sendBQLetsBonkGradSubscription() once graduation sniper is actually turned
+  // on and a 3rd stream slot is available, or once Pump.fun's graduation
+  // subscription is retired/merged to free up room.
 }
 
 // LetsBonk/Raydium LaunchLab new-pair handler. Confirmed via research: the
@@ -796,6 +800,7 @@ function handleSwap(t) {
       }
 
       trade.currentPrice = priceUsd;
+      trade.currentMcap = mcap;
       trade.priceUpdates = (trade.priceUpdates || 0) + 1;
       if (!trade.firstUpdateAt) trade.firstUpdateAt = Date.now();
       if (priceUsd > (trade.peakPrice || 0)) trade.peakPrice = priceUsd;
@@ -1054,7 +1059,7 @@ function closeTradeReal(id, reason) {
     slip: tr.slip || 0,
     mint: tr.mint || '',
     entryMcap: (tr.src === 'PUMP') ? (tr.entryMcap || 0) : 0,
-    exitMcap: (tr.src === 'PUMP' && tr.currentPrice) ? tr.currentPrice * 1000000000 : 0,
+    exitMcap: tr.currentMcap || 0,
     entryBuys: tr.entryBuys || 0,
     entrySells: tr.entrySells || 0,
     openedAt: tr.openedAt,
@@ -1088,7 +1093,7 @@ function closeTradeReal(id, reason) {
     fees: parseFloat(feePaid.toFixed(4)),
     priceUpdates: tr.priceUpdates || 0,
     entryMcap: (tr.src === 'PUMP') ? (tr.entryMcap || 0) : 0,
-    exitMcap: (tr.src === 'PUMP' && tr.currentPrice) ? tr.currentPrice * 1000000000 : 0,
+    exitMcap: tr.currentMcap || 0,
     entryBuys: tr.entryBuys || 0,
     entrySells: tr.entrySells || 0,
     peakGainPct: (tr.peakPrice && tr.entryPrice)
