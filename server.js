@@ -120,6 +120,8 @@ const S = {
   solEnabled: true,
   baseEnabled: true,
   gradEnabled: false,
+  autoLockEnabled: false,
+  sessionHighFund: 0,
   chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
   bestTrade: null,
 };
@@ -599,7 +601,6 @@ function sendBQSubscriptions() {
 // key names rather than assuming one exact match, and logs the raw Arguments
 // array on the first several calls so the real shape can be confirmed and
 // this tightened up if needed.
-var bqInstrLogCount = 0;
 
 function findArgValue(args, candidateNames) {
   if (!args) return null;
@@ -615,20 +616,24 @@ function findArgValue(args, candidateNames) {
   return null;
 }
 
+var bqInstrLogCounts = { PUMP: 0, BONK: 0, unknown: 0 };
+
 async function handleNewPairFromInstruction(i) {
-  bqInstrLogCount++;
   var instr = (i.Instruction || {});
   var accounts = instr.Accounts || [];
   var program = instr.Program || {};
   var programArgs = program.Arguments || [];
   var programAddress = program.Address || '';
 
-  if (bqInstrLogCount <= 5) {
-    log('BQ INSTR #' + bqInstrLogCount + ' addr=' + programAddress.slice(0,8) + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 400), 'warn');
+  var matchedSource = BQ_SOURCES.filter(function(s) { return s.programAddress === programAddress; })[0];
+  var srcKey = matchedSource ? matchedSource.src : 'unknown';
+  bqInstrLogCounts[srcKey] = (bqInstrLogCounts[srcKey] || 0) + 1;
+
+  if (bqInstrLogCounts[srcKey] <= 5) {
+    log('BQ INSTR [' + srcKey + '] #' + bqInstrLogCounts[srcKey] + ' addr=' + programAddress.slice(0,8) + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 400), 'warn');
   }
 
-  var matchedSource = BQ_SOURCES.filter(function(s) { return s.programAddress === programAddress; })[0];
-  if (!matchedSource) return; // event from a program we didn't ask for — shouldn't happen, but don't guess a source
+  if (!matchedSource) return; // event from a program we didn't ask for — now logged above instead of silently dropped
   var src = matchedSource.src;
 
   var mint = null;
@@ -1052,6 +1057,15 @@ function closeTradeReal(id, reason) {
 
   S.stats.t++;
 
+  if (S.autoLockEnabled && S.fund > S.sessionHighFund) {
+    S.sessionHighFund = S.fund;
+    var oldBase = S.dayStartFund;
+    S.dayStartFund = S.fund;
+    S.windingDown = false;
+    var newTrigger = S.fund * (1 - S.fundStopLossPct / 100);
+    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' — stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  }
+
   S.closed.unshift({
     tok: tr.tok,
     closeReason: closeReason,
@@ -1430,6 +1444,8 @@ function startBot() {
   S.gradCount = 0;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
+  S.autoLockEnabled = false;
+  S.sessionHighFund = S.sessionFund;
 
   connectBQ();
   fetchDSTokens();
@@ -1529,6 +1545,7 @@ app.get('/api/state', function(req, res) {
     solEnabled: S.solEnabled,
     baseEnabled: S.baseEnabled,
     gradEnabled: S.gradEnabled,
+    autoLockEnabled: S.autoLockEnabled,
     maxPool: S.maxPool,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
@@ -1599,6 +1616,10 @@ app.post('/api/settings', function(req, res) {
   if (req.body.gradEnabled !== undefined) {
     S.gradEnabled = req.body.gradEnabled === true || req.body.gradEnabled === 'true';
     log('Graduation sniper: ' + (S.gradEnabled ? 'ON' : 'OFF'), 'info');
+  }
+  if (req.body.autoLockEnabled !== undefined) {
+    S.autoLockEnabled = req.body.autoLockEnabled === true || req.body.autoLockEnabled === 'true';
+    log('Auto fund protection: ' + (S.autoLockEnabled ? 'ON' : 'OFF'), 'info');
   }
   res.json({ success: true });
 });
