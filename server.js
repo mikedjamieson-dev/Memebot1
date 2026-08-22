@@ -558,7 +558,7 @@ function buildCombinedPairQuery() {
     return '{ Instruction: { Program: { Address: { is: "' + source.programAddress + '" }, Method: { in: [' + methods + '] } } } }';
   }).join(' ');
 
-  return 'subscription { Solana { Instructions(where: { Transaction: { Result: { Success: true } }, any: [' + conditions + '] }) { Instruction { Accounts { Address Token { Mint Owner } } Program { Address Method Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } } }';
+  return 'subscription { Solana { Instructions(where: { Transaction: { Result: { Success: true } }, any: [' + conditions + '] }) { Instruction { Accounts { Address Token { Mint Owner } } Program { Address Method Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } ... on Solana_ABI_Json_Value_Arg { json } } } } } } } }';
 }
 
 function sendBQSubscriptions() {
@@ -613,6 +613,34 @@ function findArgValue(args, candidateNames) {
   return null;
 }
 
+// Extracts name/symbol from a nested JSON struct argument (e.g. LetsBonk's
+// base_mint_param, a MintParams struct) rather than a flat top-level value.
+// Confirmed via Bitquery's own docs: struct-typed arguments return as a
+// stringified JSON blob under Value.json, which must be parsed separately.
+function findStructNameSymbol(args, structArgNames) {
+  if (!args) return { name: null, symbol: null };
+  for (var i = 0; i < args.length; i++) {
+    var argName = (args[i].Name || '').toLowerCase();
+    for (var j = 0; j < structArgNames.length; j++) {
+      if (argName === structArgNames[j]) {
+        var v = args[i].Value || {};
+        if (v.json) {
+          try {
+            var parsed = typeof v.json === 'string' ? JSON.parse(v.json) : v.json;
+            return {
+              name: parsed.name || parsed.Name || null,
+              symbol: parsed.symbol || parsed.Symbol || parsed.ticker || null,
+            };
+          } catch (e) {
+            return { name: null, symbol: null };
+          }
+        }
+      }
+    }
+  }
+  return { name: null, symbol: null };
+}
+
 var bqInstrLogCounts = { PUMP: 0, BONK: 0, unknown: 0 };
 
 async function handleNewPairFromInstruction(i) {
@@ -641,6 +669,11 @@ async function handleNewPairFromInstruction(i) {
 
   var symbol = findArgValue(programArgs, ['symbol', 'ticker']);
   var tokenName = findArgValue(programArgs, ['name']);
+  if (!symbol && !tokenName) {
+    var structResult = findStructNameSymbol(programArgs, ['base_mint_param']);
+    symbol = structResult.symbol;
+    tokenName = structResult.name;
+  }
   var name = ((symbol || tokenName || 'NEW') + '').toUpperCase().slice(0, 12);
 
   S.pumpCount++;
