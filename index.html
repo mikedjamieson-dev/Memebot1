@@ -288,6 +288,16 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
         <button class="settings-save" onclick="lockFund()" style="border-color:var(--yellow);background:rgba(255,194,51,0.08);color:var(--yellow);">🔒 RAISE STOP LOSS TO CURRENT FUND</button>
         <div class="settings-status" id="status-lockfund"></div>
       </div>
+      <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
+        <div class="settings-lbl" style="margin-top:0;">🔁 AUTOMATIC FUND PROTECTION</div>
+        <div class="settings-hint">When ON, every time the fund reaches a NEW all-time high for this session, the stop loss automatically raises to <span id="current-fundloss-display-3">10</span>% below that new high — locking in gains as they happen instead of you doing it manually. Only ever moves up, never down. Turns OFF at the start of every new session — must be re-enabled each time.</div>
+        <div class="tp-mode-row">
+          <button class="tp-btn" id="btn-autolock-on" onclick="setAutoLock(true)">● ON</button>
+          <button class="tp-btn active" id="btn-autolock-off" onclick="setAutoLock(false)">○ OFF</button>
+        </div>
+        <button class="settings-save" onclick="saveAutoLock()">SAVE AUTO PROTECTION SETTING</button>
+        <div class="settings-status" id="status-autolock"></div>
+      </div>
     </div>
 
     <!-- Pool Size -->
@@ -654,6 +664,7 @@ var currentTPMode = 'TRAIL';
 var currentSolEnabled = true;
 var currentBaseEnabled = false;
 var currentGradEnabled = false;
+var currentAutoLockEnabled = false;
 var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
 var ptLimit = 50;
@@ -760,6 +771,12 @@ function setGrad(enabled) {
   document.getElementById('btn-grad-off').classList.toggle('active', !enabled);
 }
 
+function setAutoLock(enabled) {
+  currentAutoLockEnabled = enabled;
+  document.getElementById('btn-autolock-on').classList.toggle('active', enabled);
+  document.getElementById('btn-autolock-off').classList.toggle('active', !enabled);
+}
+
 function toggleWalletChain(chain) {
   var panel = document.getElementById(chain + '-wallet-panel');
   var arrow = document.getElementById(chain + '-wallet-arrow');
@@ -854,6 +871,13 @@ async function saveGrad() {
   var el = document.getElementById('status-grad');
   var ok = await apiPost({ gradEnabled: currentGradEnabled });
   el.textContent = ok ? '✅ Graduation sniper: ' + (currentGradEnabled ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveAutoLock() {
+  var el = document.getElementById('status-autolock');
+  var ok = await apiPost({ autoLockEnabled: currentAutoLockEnabled });
+  el.textContent = ok ? '✅ Auto fund protection: ' + (currentAutoLockEnabled ? 'ON' : 'OFF') : '❌ Failed';
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
@@ -1057,6 +1081,12 @@ async function fetchState() {
       currentGradEnabled = gradOn;
       document.getElementById('btn-grad-on').classList.toggle('active', gradOn);
       document.getElementById('btn-grad-off').classList.toggle('active', !gradOn);
+
+      // Sync auto-lock toggle — same default-OFF pattern
+      var autoLockOn = data.autoLockEnabled === true;
+      currentAutoLockEnabled = autoLockOn;
+      document.getElementById('btn-autolock-on').classList.toggle('active', autoLockOn);
+      document.getElementById('btn-autolock-off').classList.toggle('active', !autoLockOn);
     }
 
     // Settings hints
@@ -1070,6 +1100,8 @@ async function fetchState() {
     if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 10;
     var fundLossDisp2 = document.getElementById('current-fundloss-display-2');
     if (fundLossDisp2) fundLossDisp2.textContent = data.fundStopLossPct || 10;
+    var fundLossDisp3 = document.getElementById('current-fundloss-display-3');
+    if (fundLossDisp3) fundLossDisp3.textContent = data.fundStopLossPct || 10;
     var fundLiveDisp = document.getElementById('current-fund-live');
     if (fundLiveDisp) fundLiveDisp.textContent = f2(data.fund || 0);
     var poolSizeDisp = document.getElementById('current-poolsize-display');
