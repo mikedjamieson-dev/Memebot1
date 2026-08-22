@@ -555,10 +555,7 @@ function handleBQMessage(msg) {
 function buildCombinedPairQuery() {
   var conditions = BQ_SOURCES.map(function(source) {
     var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
-    var accountsFilter = source.platformConfigAddress
-      ? ', Accounts: {includes: {Address: {is: "' + source.platformConfigAddress + '"}}}'
-      : '';
-    return '{ Instruction: { Program: { Address: { is: "' + source.programAddress + '" }, Method: { in: [' + methods + '] } }' + accountsFilter + ' } }';
+    return '{ Instruction: { Program: { Address: { is: "' + source.programAddress + '" }, Method: { in: [' + methods + '] } } } }';
   }).join(' ');
 
   return 'subscription { Solana { Instructions(where: { Transaction: { Result: { Success: true } }, any: [' + conditions + '] }) { Instruction { Accounts { Address Token { Mint Owner } } Program { Address Method Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } } } } } } } }';
