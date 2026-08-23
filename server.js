@@ -819,6 +819,9 @@ function handleSwap(t) {
   if (poolTok) {
     if (t.Side === 'Buy') poolTok.buys = (poolTok.buys || 0) + 1;
     else if (t.Side === 'Sell') poolTok.sells = (poolTok.sells || 0) + 1;
+    if (poolTok.src === 'BONK') {
+      log('BONK BUYS ' + poolTok.n + ' | buys=' + poolTok.buys + ' sells=' + (poolTok.sells||0) + ' (need buys>=3)', 'info');
+    }
     if (priceUsd) {
       poolTok.price = priceUsd;
       poolTok.mcap = mcap;
@@ -1138,6 +1141,8 @@ function closeTradeReal(id, reason) {
     closedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
     closedDate: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
     closedTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+    sessionStartedAt: S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
+    sessionEndedAt: S.lastStopTime ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
     priceUpdates: tr.priceUpdates || 0,
@@ -1494,6 +1499,7 @@ function startBot() {
 
 function stopBot() {
   S.running = false;
+  S.lastStopTime = Date.now();
   if (scanI) clearInterval(scanI);
   if (gradI) clearInterval(gradI);
   if (exitI) clearInterval(exitI);
@@ -1681,7 +1687,7 @@ app.get('/api/portfolio/trades', function(req, res) {
 
 app.get('/api/portfolio/export', function(req, res) {
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1706,6 +1712,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.exitMcap || 0,
       t.entryBuys || 0,
       t.entrySells || 0,
+      csvSafe(t.sessionStartedAt),
+      csvSafe(t.sessionEndedAt),
     ].join(','));
   });
   var csv = rows.join('\n');
