@@ -575,7 +575,7 @@ function sendBQSubscriptions() {
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Trader { Address } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
@@ -789,6 +789,14 @@ function handleSwap(t) {
   var mint = token.Address;
   if (!mint) return;
 
+  var traderAddress = (t.Trader || {}).Address || null;
+  var swapUsd = 0;
+  if (t.AmountsInUsd) {
+    var baseUsd = parseFloat(t.AmountsInUsd.Base || 0);
+    var quoteUsd = parseFloat(t.AmountsInUsd.Quote || 0);
+    swapUsd = Math.max(baseUsd, quoteUsd) || 0;
+  }
+
   bqTradeLogCount++;
   if (bqTradeLogCount <= 3) log('BQ SWAP #' + bqTradeLogCount + ' | ' + (t.Side || '?') + ' | ' + mint.slice(0, 8) + '...', 'info');
 
@@ -845,6 +853,13 @@ function handleSwap(t) {
       trade.currentPrice = priceUsd;
       trade.currentMcap = mcap;
       trade.priceUpdates = (trade.priceUpdates || 0) + 1;
+      if (t.Side === 'Sell' && swapUsd > 0) {
+        if (swapUsd > (trade.largestSellUsd || 0)) trade.largestSellUsd = swapUsd;
+        if (traderAddress) {
+          trade.sellerWallets = trade.sellerWallets || {};
+          trade.sellerWallets[traderAddress] = (trade.sellerWallets[traderAddress] || 0) + 1;
+        }
+      }
       if (!trade.firstUpdateAt) trade.firstUpdateAt = Date.now();
       if (priceUsd > (trade.peakPrice || 0)) trade.peakPrice = priceUsd;
       if (trade.entryPrice > 0) {
@@ -1154,6 +1169,10 @@ function closeTradeReal(id, reason) {
       ? parseFloat(((tr.peakPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
     secToFirstUpdate: (tr.firstUpdateAt && tr.startTime)
       ? parseFloat(((tr.firstUpdateAt - tr.startTime) / 1000).toFixed(1)) : null,
+    largestSellUsd: parseFloat((tr.largestSellUsd || 0).toFixed(2)),
+    maxRepeatSellerCount: tr.sellerWallets
+      ? Math.max.apply(null, Object.values(tr.sellerWallets).concat([0]))
+      : 0,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1689,7 +1708,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1716,6 +1735,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.entrySells || 0,
       csvSafe(sessionStartedAtStr),
       csvSafe(sessionEndedAtStr),
+      t.largestSellUsd || 0,
+      t.maxRepeatSellerCount || 0,
     ].join(','));
   });
   var csv = rows.join('\n');
