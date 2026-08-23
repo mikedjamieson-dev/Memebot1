@@ -1141,8 +1141,8 @@ function closeTradeReal(id, reason) {
     closedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
     closedDate: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
     closedTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
-    sessionStartedAt: S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
-    sessionEndedAt: S.lastStopTime ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
+    sessionStartedAt: '',
+    sessionEndedAt: '',
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
     priceUpdates: tr.priceUpdates || 0,
@@ -1686,6 +1686,8 @@ app.get('/api/portfolio/trades', function(req, res) {
 });
 
 app.get('/api/portfolio/export', function(req, res) {
+  var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
+  var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
     ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt'].join(',')
   ];
@@ -1712,8 +1714,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.exitMcap || 0,
       t.entryBuys || 0,
       t.entrySells || 0,
-      csvSafe(t.sessionStartedAt),
-      csvSafe(t.sessionEndedAt),
+      csvSafe(sessionStartedAtStr),
+      csvSafe(sessionEndedAtStr),
     ].join(','));
   });
   var csv = rows.join('\n');
