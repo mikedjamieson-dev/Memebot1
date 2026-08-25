@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 3000;
 // ── API KEYS ──────────────────────────────────────────────────
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
 const BITQUERY_TOKEN = process.env.BITQUERY_TOKEN || '';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
@@ -30,7 +31,6 @@ const CFG = {
   STOP_LOSS: 0.10,
   STALE_TIME: 120000,
   NO_PRICE_TIMEOUT: 180000,
-  LOSS_LIM: 0.10,
   MIN_SPLIT_WIN: 0.05,
   SAVINGS_PCT: 0.20,
   MIN_LIQ_USD: 5000,
@@ -49,6 +49,10 @@ const CFG = {
   BAN_TEMP_MS: 43200000,
   DS_INTERVAL: 300000,
   WIN_COOLDOWN_MS: 300000,
+  MAX_DEV_HOLD_PCT: 0.10,
+  EVICT_SAMPLE_SIZE: 200,
+  PORTFOLIO_SAVE_EVERY: 3,
+  PORTFOLIO_AUTOSAVE_MS: 300000,
 };
 
 // ── PORTFOLIO DATA ────────────────────────────────────────────
@@ -66,11 +70,21 @@ function loadPortfolio() {
   try {
     if (fs.existsSync(PORTFOLIO_FILE)) {
       var raw = fs.readFileSync(PORTFOLIO_FILE, 'utf8');
-      P = JSON.parse(raw);
-      log('Portfolio loaded — ' + P.trades.length + ' trades in history', 'info');
+      try {
+        P = JSON.parse(raw);
+        log('Portfolio loaded — ' + P.trades.length + ' trades in history', 'info');
+      } catch (parseErr) {
+        // File exists but is corrupted — do NOT silently discard it as if it never
+        // existed. Back it up so the trade history isn't lost forever, and log
+        // loudly since this is a real data integrity problem, not a fresh start.
+        log('PORTFOLIO FILE CORRUPTED — could not parse ' + PORTFOLIO_FILE + '. Backing up and starting fresh.', 'rug');
+        try { fs.copyFileSync(PORTFOLIO_FILE, PORTFOLIO_FILE + '.corrupted.' + Date.now()); } catch(e2) {}
+      }
+    } else {
+      log('No portfolio file found — starting fresh', 'info');
     }
   } catch(e) {
-    log('Portfolio file not found — starting fresh', 'info');
+    log('Portfolio load error: ' + (e && e.message ? e.message : 'unknown'), 'warn');
   }
 }
 
@@ -189,12 +203,8 @@ function recheckExpiredBans() {
 }
 
 // ── WALLET CONCENTRATION CHECK ────────────────────────────────
-// One-off HTTP query (not the WebSocket stream) — only called on tokens that
-// already passed every other filter, right before entry, to avoid spending
-// extra calls on candidates we'd reject anyway.
-// SOLANA_INCINERATOR is a known burn address: tokens sent here are permanently
-// destroyed and can never be sold, but still count as a "holder" balance-wise —
-// must be excluded or we'd wrongly reject tokens that burned supply this way.
+// Held for later per user's explicit instruction: not needed while paper
+// trading, to be addressed before real money is used. Left unchanged.
 var SOLANA_INCINERATOR = '1nc1nerator11111111111111111111111111111111';
 var pendingConcentrationChecks = new Set();
 
@@ -217,7 +227,7 @@ async function checkWalletConcentration(mint) {
     updates.forEach(function(u) {
       var addr = u.BalanceUpdate.Account.Address;
       var bal = parseFloat(u.BalanceUpdate.Holding || 0);
-      if (addr === SOLANA_INCINERATOR) return; // burned supply, not a real holder risk
+      if (addr === SOLANA_INCINERATOR) return;
       totalHeld += bal;
       holders.push({ addr: addr, bal: bal });
     });
@@ -234,39 +244,117 @@ async function checkWalletConcentration(mint) {
   }
 }
 
-// ── SAFETY CHECKLIST ──────────────────────────────────────────
-async function runSafetyChecklist(mint, tokenData, isPumpFun) {
-  if (tokenData.mintAuthority &&
-      tokenData.mintAuthority !== 'null' &&
-      tokenData.mintAuthority !== '') {
-    tempBan(mint, 'Mint authority not renounced');
-    return false;
+// ── MINT / FREEZE AUTHORITY CHECK (real, via Solana RPC) ───────
+// Research-confirmed (standard getAccountInfo/getMint pattern): a single,
+// low-cost Solana RPC call returns a mint's current mintAuthority and
+// freezeAuthority directly. Fails OPEN (allows the trade through) on any
+// RPC error or missing data — same design philosophy as the existing
+// wallet-concentration check — since public RPC flakiness is common and
+// blocking every trade on an infra hiccup would defeat the bot's purpose.
+// This is a deliberate design choice, not an oversight.
+async function checkMintFreezeAuthority(mint) {
+  try {
+    var res = await fetch(SOLANA_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getAccountInfo',
+        params: [mint, { encoding: 'jsonParsed' }],
+      }),
+      timeout: 4000,
+    });
+    if (!res.ok) return { safe: true, reason: 'RPC query failed, allowing through' };
+    var data = await res.json();
+    var value = data && data.result && data.result.value;
+    var info = value && value.data && value.data.parsed && value.data.parsed.info;
+    if (!info) return { safe: true, reason: 'no mint account data, allowing through' };
+    if (info.mintAuthority) return { safe: false, reason: 'mint authority not renounced' };
+    if (info.freezeAuthority) return { safe: false, reason: 'freeze authority retained' };
+    return { safe: true, reason: 'authorities renounced' };
+  } catch (e) {
+    return { safe: true, reason: 'authority check errored, allowing through' };
   }
-  if (tokenData.freezeAuthority &&
-      tokenData.freezeAuthority !== 'null' &&
-      tokenData.freezeAuthority !== '') {
-    permanentBan(mint, 'Freeze authority retained — honeypot');
-    return false;
-  }
-  if (tokenData.lpBurn !== undefined && tokenData.lpBurn !== null && tokenData.lpBurn < 80) {
-    tempBan(mint, 'LP burn too low: ' + tokenData.lpBurn + '%');
-    return false;
-  }
-  if (tokenData.dev !== undefined && tokenData.dev !== null && tokenData.dev > 5) {
-    tempBan(mint, 'Dev holding too high: ' + tokenData.dev + '%');
-    return false;
-  }
-  if (!isPumpFun) {
-    var isHoneypot = await checkHoneypot(mint);
-    if (isHoneypot) {
-      permanentBan(mint, 'Honeypot confirmed — sell simulation failed');
-      return false;
+}
+
+// ── DEV WALLET HOLDING % CHECK (real) ───────────────────────────
+// Dev/creator wallet is approximated as the transaction Signer on the
+// create instruction — a well-established heuristic (the wallet that
+// submits the create transaction is virtually always the deploying dev),
+// but NOT the same as a guaranteed "creator" field. Known limitation,
+// stated plainly per user's research discussion: sophisticated bad actors
+// split holdings across many wallets (bundlers) specifically to defeat a
+// single-wallet check like this one. This catches unsophisticated cases,
+// not all of them. Estimated total supply is derived from mcap/price
+// (works for both PUMP and BONK) rather than assuming a fixed 1B supply.
+async function checkDevHoldingPct(mint, devWallet, mcap, price) {
+  if (!BITQUERY_TOKEN || !devWallet) return { safe: true, reason: 'no dev wallet available, allowing through' };
+  try {
+    var query = 'query { Solana { BalanceUpdates(limit: {count: 1} where: {BalanceUpdate: {Currency: {MintAddress: {is: "' + mint + '"}}, Account: {Address: {is: "' + devWallet + '"}}}, Transaction: {Result: {Success: true}}}) { BalanceUpdate { Holding: PostBalance(maximum: Block_Slot) } } } }';
+    var res = await fetch('https://streaming.bitquery.io/graphql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BITQUERY_TOKEN },
+      body: JSON.stringify({ query: query }),
+    });
+    if (!res.ok) return { safe: true, reason: 'dev query failed, allowing through' };
+    var data = await res.json();
+    var updates = data && data.data && data.data.Solana && data.data.Solana.BalanceUpdates;
+    if (!updates || !updates.length) return { safe: true, reason: 'no dev balance data' };
+    var devBalance = parseFloat(updates[0].BalanceUpdate.Holding || 0);
+    if (devBalance <= 0) return { safe: true, reason: 'dev holds 0' };
+    var estSupply = (mcap && price) ? (mcap / price) : 1000000000;
+    if (!estSupply || estSupply <= 0) return { safe: true, reason: 'supply unknown, allowing through' };
+    var devPct = devBalance / estSupply;
+    if (devPct >= CFG.MAX_DEV_HOLD_PCT) {
+      return { safe: false, reason: 'dev holds ' + (devPct * 100).toFixed(1) + '% of supply' };
     }
+    return { safe: true, reason: 'dev holding OK (' + (devPct * 100).toFixed(1) + '%)' };
+  } catch (e) {
+    return { safe: true, reason: 'dev check errored, allowing through' };
   }
-  return true;
+}
+
+// ── SAFETY CHECKLIST (now real for every source) ────────────────
+// isPumpFun parameter and the old lpBurn/dev-null checks are removed —
+// research confirmed: (1) Jupiter routes pre-graduation bonding-curve
+// tokens on BOTH Pump.fun and LetsBonk, so the honeypot check is valid
+// for both sources, not just a hypothetical "non-PumpFun" path; (2) LP
+// burn does not apply pre-graduation on either platform — there is no LP
+// yet while a token trades against the bonding curve, so that check is
+// dropped rather than faked. mintAuthority/freezeAuthority/dev-holding are
+// now populated from real checks instead of always being null/undefined.
+async function runSafetyChecklist(mint, devWallet, mcap, price) {
+  var authCheck = await checkMintFreezeAuthority(mint);
+  if (!authCheck.safe) {
+    if (authCheck.reason.indexOf('freeze') >= 0) permanentBan(mint, authCheck.reason);
+    else tempBan(mint, authCheck.reason);
+    return { safe: false, reason: authCheck.reason };
+  }
+
+  var devCheck = await checkDevHoldingPct(mint, devWallet, mcap, price);
+  if (!devCheck.safe) {
+    tempBan(mint, devCheck.reason);
+    return { safe: false, reason: devCheck.reason };
+  }
+
+  var isHoneypot = await checkHoneypot(mint);
+  if (isHoneypot) {
+    permanentBan(mint, 'Honeypot confirmed — sell simulation failed');
+    return { safe: false, reason: 'honeypot confirmed' };
+  }
+
+  return { safe: true, reason: 'passed' };
 }
 
 // ── SOLANA HONEYPOT CHECK ─────────────────────────────────────
+// Research-confirmed applicable pre-graduation on both Pump.fun and
+// LetsBonk (Jupiter's own changelog documents optimized pre-graduation
+// bonding-curve routing; LetsBonk's own docs state Jupiter routing from
+// launch). Fails CLOSED (treats errors as a honeypot) — kept as-is from
+// the original design, since this is the actual scam-detection signal
+// and erring toward caution here is the safer default, unlike the
+// infra-availability checks above.
 async function checkHoneypot(mint) {
   try {
     var res = await fetch(
@@ -369,9 +457,8 @@ async function fetchDSChain(query, chainId) {
         var isHp = await checkBaseHoneypot(mint);
         if (isHp) { permanentBan(mint, 'Base honeypot detected'); continue; }
       } else {
-        var tokenData = { mintAuthority: null, freezeAuthority: null, lpBurn: undefined, dev: undefined };
-        var safe = await runSafetyChecklist(mint, tokenData, true);
-        if (!safe) continue;
+        var safe = await runSafetyChecklist(mint, null, mcap, price);
+        if (!safe.safe) continue;
       }
 
       S.tokens.set(mint, {
@@ -415,16 +502,31 @@ async function fetchDSTokens() {
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
+// ── POOL EVICTION (shared, sampled instead of full scan) ───────
+// Previously ran a full forEach over the entire pool (up to maxPool, i.e.
+// up to 10,000 entries) on EVERY new token once the pool was full — real,
+// frequent CPU cost given discovery rate. Now samples a bounded number of
+// candidates instead of scanning everything; still evicts a genuinely low
+// BSR token, just doesn't guarantee finding the single global worst one.
+function evictWorstToken() {
+  var worstKey = null;
+  var worstBSR = Infinity;
+  var sampled = 0;
+  for (var entry of S.tokens) {
+    if (sampled >= CFG.EVICT_SAMPLE_SIZE) break;
+    var key = entry[0];
+    var tok = entry[1];
+    if (S.open.find(function(t) { return t.mint === key; })) continue;
+    sampled++;
+    var bsr = tok.buys / Math.max(tok.sells || 1, 1);
+    if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
+  }
+  if (worstKey) S.tokens.delete(worstKey);
+}
+
 // ── BITQUERY — REAL TIME DATA ─────────────────────────────────
-// One WebSocket connection: wss://streaming.bitquery.io/graphql
-// Auth: OAuth2 bearer token in URL query param — token lives in Render environment only
-// GraphQL subscriptions over the same connection: new pair launches + all trades
-// Designed for multiple sources/chains: each subscription carries its own SRC label
-// and Bitquery protocol filter, so adding LetsBonk/Base/BSC later means adding a
-// new subscription entry, not rewriting the handlers.
 var pumpPrices = {};
 var pumpWs = null;
-var bqSubId = 1;
 var bqPairSubActive = false;
 var bqTradeSubActive = false;
 var bqReconnectDelay = 3000;
@@ -432,9 +534,6 @@ var bqDeliberateStop = false;
 var bqPingI = null;
 var bqTradeLogCount = 0;
 
-// Sources to subscribe to. protocolFamily matches Bitquery's Market.ProtocolFamily field.
-// programAddress/createMethods drive the new-pair-launch query for that source.
-// Add a new entry here to extend coverage — handlers below branch on source.queryShape.
 var BQ_SOURCES = [
   {
     src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun',
@@ -502,7 +601,6 @@ function connectBQ() {
   } catch(e) { setTimeout(connectBQ, 5000); }
 }
 
-// graphql-ws protocol handshake — required before subscriptions are accepted
 function sendBQConnectionInit() {
   pumpWs.send(JSON.stringify({ type: 'connection_init' }));
 }
@@ -517,7 +615,7 @@ function handleBQMessage(msg) {
     sendBQSubscriptions();
     return;
   }
-  if (msg.type === 'ka') return; // keepalive
+  if (msg.type === 'ka') return;
   if (msg.type === 'error') {
     log('BQ ERROR: ' + JSON.stringify(msg.payload || msg).slice(0, 200), 'warn');
     return;
@@ -527,9 +625,6 @@ function handleBQMessage(msg) {
     var payload = msg.payload || msg;
     var data = payload.data;
     if (!data) return;
-    if (data.Solana && data.Solana.TokenSupplyUpdates) {
-      data.Solana.TokenSupplyUpdates.forEach(function(u) { handleNewPair(u); });
-    }
     if (data.Solana && data.Solana.Instructions) {
       data.Solana.Instructions.forEach(function(i) { handleNewPairFromInstruction(i); });
     }
@@ -542,23 +637,17 @@ function handleBQMessage(msg) {
   }
 }
 
-// One subscription per source for new launches, one shared subscription for all trades.
-// Extending to LetsBonk: add an entry to BQ_SOURCES with queryShape: 'instructions',
-// its programAddress ("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"), and createMethods
-// (["initialize_v2"]) — buildPairQuery below already branches on queryShape.
-// Builds ONE combined Instructions query covering every source's create-event
-// via the documented `any:` array pattern (Bitquery's own official
-// multi-launchpad example). Each source contributes one condition to the
-// array rather than getting its own separate subscription — this is what
-// keeps us at 1 subscription for pair-launch discovery regardless of how
-// many sources are added, instead of 1-per-source like the old design.
+// Combined new-pair query now also requests Transaction { Signer } — needed
+// as the dev/creator wallet heuristic for the new dev-holding % check.
+// This did not exist in the query before; it's a real addition, not just a
+// re-read of existing data.
 function buildCombinedPairQuery() {
   var conditions = BQ_SOURCES.map(function(source) {
     var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
     return '{ Instruction: { Program: { Address: { is: "' + source.programAddress + '" }, Method: { in: [' + methods + '] } } } }';
   }).join(' ');
 
-  return 'subscription { Solana { Instructions(where: { Transaction: { Result: { Success: true } }, any: [' + conditions + '] }) { Instruction { Accounts { Address Token { Mint Owner } } Program { Address Method Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } ... on Solana_ABI_Json_Value_Arg { json } } } } } } } }';
+  return 'subscription { Solana { Instructions(where: { Transaction: { Result: { Success: true } }, any: [' + conditions + '] }) { Instruction { Accounts { Address Token { Mint Owner } } Program { Address Method Arguments { Name Type Value { ... on Solana_ABI_String_Value_Arg { string } ... on Solana_ABI_Address_Value_Arg { address } ... on Solana_ABI_Integer_Value_Arg { integer } ... on Solana_ABI_BigInt_Value_Arg { bigInteger } ... on Solana_ABI_Json_Value_Arg { json } } } } } Transaction { Signer } } } }';
 }
 
 function sendBQSubscriptions() {
@@ -580,24 +669,7 @@ function sendBQSubscriptions() {
   }));
   bqTradeSubActive = true;
   log('Swap stream active — all sources', 'pump');
-
-  // Both graduation subscriptions (Pump.fun DEXPools, LetsBonk migrate events)
-  // are intentionally NOT sent — 2 streams are already fully used by the
-  // combined pair-launch and trade subscriptions above. Graduation sniper is
-  // currently off anyway (see gradEnabled). Re-enable one of these once a 3rd
-  // stream slot is available, or once graduation is actually needed and we
-  // can afford to drop one of the two active streams temporarily.
 }
-
-// LetsBonk/Raydium LaunchLab new-pair handler. Confirmed via research: the
-// initialize_v2 instruction's decoded Arguments carry the token's name/symbol
-// (base_mint_param.name/symbol per Raydium's own SDK and Bitquery's field
-// docs), but the EXACT argument key name as Bitquery serializes it was not
-// confirmed through documentation alone — this is the one piece we agreed to
-// verify against live data. Extraction below searches defensively by likely
-// key names rather than assuming one exact match, and logs the raw Arguments
-// array on the first several calls so the real shape can be confirmed and
-// this tightened up if needed.
 
 function findArgValue(args, candidateNames) {
   if (!args) return null;
@@ -613,10 +685,6 @@ function findArgValue(args, candidateNames) {
   return null;
 }
 
-// Extracts name/symbol from a nested JSON struct argument (e.g. LetsBonk's
-// base_mint_param, a MintParams struct) rather than a flat top-level value.
-// Confirmed via Bitquery's own docs: struct-typed arguments return as a
-// stringified JSON blob under Value.json, which must be parsed separately.
 function findStructNameSymbol(args, structArgNames) {
   if (!args) return { name: null, symbol: null };
   for (var i = 0; i < args.length; i++) {
@@ -649,6 +717,7 @@ async function handleNewPairFromInstruction(i) {
   var program = instr.Program || {};
   var programArgs = program.Arguments || [];
   var programAddress = program.Address || '';
+  var signer = (i.Transaction || {}).Signer || null;
 
   var matchedSource = BQ_SOURCES.filter(function(s) { return s.programAddress === programAddress; })[0];
   var srcKey = matchedSource ? matchedSource.src : 'unknown';
@@ -658,7 +727,7 @@ async function handleNewPairFromInstruction(i) {
     log('BQ INSTR [' + srcKey + '] #' + bqInstrLogCounts[srcKey] + ' addr=' + programAddress.slice(0,8) + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 400), 'warn');
   }
 
-  if (!matchedSource) return; // event from a program we didn't ask for — now logged above instead of silently dropped
+  if (!matchedSource) return;
   var src = matchedSource.src;
 
   var mint = null;
@@ -683,27 +752,15 @@ async function handleNewPairFromInstruction(i) {
   if (isBanned(mint)) return;
   if (S.tokens.has(mint)) return;
 
-  if (S.tokens.size >= S.maxPool) {
-    var worstKey = null;
-    var worstBSR = Infinity;
-    S.tokens.forEach(function(tok, key) {
-      if (S.open.find(function(t) { return t.mint === key; })) return;
-      var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-      if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
-    });
-    if (worstKey) S.tokens.delete(worstKey);
-  }
+  if (S.tokens.size >= S.maxPool) evictWorstToken();
 
-  // Same conservative safety-checklist behavior for both sources — real
-  // mint/freeze authority not available from this instruction shape either.
-  var tokenData = {
-    mintAuthority: null,
-    freezeAuthority: null,
-    lpBurn: undefined,
-    dev: undefined,
-  };
-  var safe = await runSafetyChecklist(mint, tokenData, true);
-  if (!safe) return;
+  // Real safety checklist now — no more hardcoded nulls/isPumpFun=true.
+  // mcap/price aren't known yet at discovery time for a brand new token,
+  // so the dev-holding check (which needs them) runs again at entry time
+  // in tryEnterToken where real price/mcap exist; this discovery-time call
+  // covers mint/freeze authority + honeypot, which don't need price data.
+  var safe = await runSafetyChecklist(mint, signer, 0, 0);
+  if (!safe.safe) return;
 
   S.tokens.set(mint, {
     mint: mint,
@@ -720,67 +777,146 @@ async function handleNewPairFromInstruction(i) {
     pairAddress: null,
     addedAt: Date.now(),
     isNew: true,
+    dev: signer,
   });
 
   log('NEW TOKEN ' + name + ' | ' + src + ' | Added to pool', 'info');
 }
 
-async function handleNewPair(u) {
-  var update = u.TokenSupplyUpdate || {};
-  var currency = update.Currency || {};
-  var mint = currency.MintAddress;
-  if (!mint) return;
+// ── ENTRY LOGIC (shared — event-driven AND scanner both call this) ─────
+// Previously entry was decided ONLY by runScan() polling one token every
+// 500ms round-robin, requiring the cached price to be under 1 second old
+// at the exact moment that token's turn came up. With large pools this
+// created a real, structural miss window — worse for BONK specifically,
+// since its swaps arrive less often than PUMP's. This function now runs
+// the SAME rules (unchanged — no filter thresholds were touched) but can
+// be triggered the instant a fresh swap price arrives for a token, not
+// just when the round-robin scanner happens to land on it. runScan() below
+// still calls this too, as a backup path using its cached-price check.
+var pendingEntryChecks = new Set();
 
-  var name = ((currency.Symbol || currency.Name || 'NEW') + '').toUpperCase().slice(0, 12);
+async function tryEnterToken(tok, freshPrice) {
+  if (!S.running || S.windingDown) return;
+  if (!tok || !tok.mint) return;
+  if (pendingEntryChecks.has(tok.mint)) return;
+  if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
 
-  S.pumpCount++;
-  S.sources['BITQUERY'] = 'live:' + S.pumpCount;
-  if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+  pendingEntryChecks.add(tok.mint);
+  try {
+    await tryEnterTokenInner(tok, freshPrice);
+  } finally {
+    pendingEntryChecks.delete(tok.mint);
+  }
+}
 
-  if (isBanned(mint)) return;
-  if (S.tokens.has(mint)) return;
+async function tryEnterTokenInner(tok, freshPrice) {
+  if (S.fund < 1) return;
+  if (S.open.length >= S.maxOpen) return;
+  if (isBanned(tok.mint)) { S.tokens.delete(tok.mint); return; }
 
-  if (S.tokens.size >= S.maxPool) {
-    var worstKey = null;
-    var worstBSR = Infinity;
-    S.tokens.forEach(function(tok, key) {
-      if (S.open.find(function(t) { return t.mint === key; })) return;
-      var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-      if (bsr < worstBSR) { worstBSR = bsr; worstKey = key; }
-    });
-    if (worstKey) S.tokens.delete(worstKey);
+  if (tok.chain === 'base' && !S.baseEnabled) return;
+  if (tok.chain === 'solana' && !S.solEnabled) return;
+  if (!tok.chain && !S.solEnabled) return;
+
+  var bsr = tok.buys / Math.max(tok.sells || 1, 1);
+  if (bsr < 0.8) { S.rejectCount++; return; }
+
+  if ((tok.src === 'PUMP' || tok.src === 'BONK') && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) return;
+
+  var cooldownKey = tok.n + tok.mint;
+  var lastCooldown = S.cooldowns.get(cooldownKey);
+  if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) return;
+
+  if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
+  if (tok.buys < 3) return;
+
+  var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
+  if (size < 0.50) { S.rejectCount++; return; }
+
+  if (tok.src === 'DSC') return;
+
+  var entryPrice = freshPrice;
+  if (!entryPrice || entryPrice <= 0) {
+    if (tok.src === 'PUMP' || tok.src === 'BONK') {
+      var cached = pumpPrices[tok.mint];
+      if (cached && (Date.now() - cached.ts) <= 1000) entryPrice = cached.price;
+    } else {
+      entryPrice = await getDSPrice(tok.mint, tok.pairAddress, tok.chain);
+    }
+  }
+  if (!entryPrice || entryPrice <= 0) { S.rejectCount++; return; }
+
+  if (tok.src === 'PUMP' || tok.src === 'BONK') {
+    // Real honeypot/authority checklist already ran at discovery time.
+    // Dev-holding % needs real price/mcap, which we have now — check it
+    // here, right before entry.
+    var devCheck = await checkDevHoldingPct(tok.mint, tok.dev, tok.mcap, entryPrice);
+    if (!devCheck.safe) {
+      S.rejectCount++;
+      log('DIAG ' + tok.n + ' | SKIP: ' + devCheck.reason, 'info');
+      return;
+    }
+
+    if (pendingConcentrationChecks.has(tok.mint)) return;
+    pendingConcentrationChecks.add(tok.mint);
+    var concCheck = await checkWalletConcentration(tok.mint);
+    pendingConcentrationChecks.delete(tok.mint);
+    if (!concCheck.safe) {
+      S.rejectCount++;
+      log('DIAG ' + tok.n + ' | SKIP: ' + concCheck.reason, 'info');
+      return;
+    }
   }
 
-  // Bitquery's TokenSupplyUpdates for a fresh Pump.fun create doesn't carry
-  // mint/freeze authority directly — safety checklist runs with nulls here,
-  // same conservative behavior as before real authority data was available.
-  var tokenData = {
-    mintAuthority: null,
-    freezeAuthority: null,
-    lpBurn: undefined,
-    dev: undefined,
+  var slip = parseFloat(
+    Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
+  );
+  S.fund = parseFloat((S.fund - size * slip).toFixed(4));
+
+  var trade = {
+    id: Math.random().toString(36).substr(2, 9),
+    tok: Object.assign({}, tok),
+    sc: 85,
+    size: parseFloat(size.toFixed(4)),
+    tpl: S.takeProfitMode,
+    tpPct: S.takeProfitPct,
+    sl: S.stopLossPct / 100,
+    slip: slip,
+    mint: tok.mint,
+    src: tok.src,
+    chain: tok.chain || 'solana',
+    ammAccount: tok.ammAccount || null,
+    pairAddress: tok.pairAddress || null,
+    entryPrice: entryPrice,
+    entryMcap: tok.mcap || 0,
+    entryBuys: tok.buys || 0,
+    entrySells: tok.sells || 0,
+    currentPrice: entryPrice,
+    currentMcap: tok.mcap || 0,
+    peakPrice: entryPrice,
+    lastPrice: entryPrice,
+    lastPriceChange: Date.now(),
+    realPnl: 0,
+    realPnlPct: 0,
+    isGrad: false,
+    priceUpdates: 0,
+    firstUpdateAt: null,
+    openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+    startTime: Date.now(),
+    sessionId: S.startTime,
   };
-  var safe = await runSafetyChecklist(mint, tokenData, true);
-  if (!safe) return;
 
-  S.tokens.set(mint, {
-    mint: mint,
-    price: null,
-    n: name,
-    src: 'PUMP',
-    chain: 'solana',
-    liq: 0,
-    mcap: 0,
-    vol1h: 0,
-    buys: 1,
-    sells: 0,
-    age: 0,
-    pairAddress: null,
-    addedAt: Date.now(),
-    isNew: true,
-  });
+  S.open.push(trade);
+  log('ENTER ' + tok.n + ' [' + tok.src + '] | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+}
 
-  log('NEW TOKEN ' + name + ' | Added to pool', 'info');
+async function handleNewPair(u) {
+  // Dead path removed — no subscription sends the TokenSupplyUpdates shape
+  // this function was written for; buildCombinedPairQuery() (the only
+  // pair-launch subscription actually sent) uses the Instructions shape
+  // handled by handleNewPairFromInstruction() above. Left as a no-op stub
+  // rather than fully deleted in case a future TokenSupplyUpdates
+  // subscription is intentionally reintroduced.
 }
 
 function handleSwap(t) {
@@ -813,13 +949,9 @@ function handleSwap(t) {
     var mc = parseFloat(t.Supply.MarketCap);
     if (!isNaN(mc) && mc > 0) mcap = mc;
   } else if (t.Supply && t.Supply.TotalSupply && priceUsd) {
-    // Use actual reported supply when available, regardless of source
     var ts = parseFloat(t.Supply.TotalSupply);
     if (!isNaN(ts) && ts > 0) mcap = priceUsd * ts;
   } else if (protocolFamily === 'Pumpfun' && priceUsd) {
-    // Only apply the fixed 1B supply assumption for confirmed Pump.fun trades —
-    // other sources (LetsBonk/Raydium, etc.) have different supply models and
-    // must not silently reuse this number.
     mcap = priceUsd * 1000000000;
   }
 
@@ -839,8 +971,21 @@ function handleSwap(t) {
   if (priceUsd) {
     pumpPrices[mint] = { price: priceUsd, solInCurve: 0, ts: Date.now() };
 
+    // Event-driven entry: the instant a fresh swap price arrives for a
+    // pool token that isn't open yet, try entering right here — instead of
+    // waiting for the round-robin scanner to eventually land on it. Fire
+    // and forget (async, guarded against re-entrancy inside tryEnterToken)
+    // so this never blocks processing of the next incoming swap message.
+    if (poolTok && !S.open.find(function(t2) { return t2.mint === mint; })) {
+      tryEnterToken(poolTok, priceUsd);
+    }
+
+    // Real-time open-trade tracking — previously gated to src === 'PUMP'
+    // only, meaning BONK trades never got instant swap-driven price/trail/
+    // stop-loss updates at all. That restriction is removed: any open
+    // trade sourced from the swap stream (PUMP or BONK) gets tracked here.
     S.open.forEach(function(trade) {
-      if (trade.mint !== mint || trade.src !== 'PUMP') return;
+      if (trade.mint !== mint || (trade.src !== 'PUMP' && trade.src !== 'BONK')) return;
 
       if (trade.currentPrice && trade.currentPrice > 0) {
         var change = Math.abs(priceUsd - trade.currentPrice) / trade.currentPrice;
@@ -903,8 +1048,7 @@ function handleSwap(t) {
 }
 
 // ── GRADUATION TRACKING ────────────────────────────────────────
-// Separate subscription: DEXPools gives bonding curve reserves needed to
-// compute graduation progress. Trading.Trades does not carry this field.
+// On hold per user — left unchanged, still dormant (subscriptions not sent).
 function sendBQPoolSubscription() {
   pumpWs.send(JSON.stringify({
     id: 'pools_pump',
@@ -927,8 +1071,6 @@ function handleBQPool(p) {
   var quoteReserveSol = parseFloat((pool.Quote || {}).PostAmount || 0);
   if (!baseReserve) return;
 
-  // Pump.fun graduates when the base (token) reserve drops to ~206,900,000
-  // out of an initial ~793,100,000 tradeable in the curve.
   var progressPct = Math.max(0, Math.min(100, ((793100000 - (baseReserve - 206900000)) / 793100000) * 100));
   var solInCurve = quoteReserveSol;
 
@@ -957,13 +1099,6 @@ function handleBQPool(p) {
   }
 }
 
-// LetsBonk graduation: unlike Pump.fun's fixed curve, LetsBonk's raise target
-// (min 30 SOL, creator-adjustable) and curve % sold (51-80%) both vary per
-// token — there's no single fixed math we can replicate the way we do for
-// Pump.fun. Instead we treat migration as a clean binary event: the
-// migrate_to_amm/migrate_to_cpswap instruction firing on a LetsBonk-tagged
-// token IS the graduation signal, confirmed via the platform config address
-// filter, same pattern already verified for LetsBonk new-pair detection.
 function sendBQLetsBonkGradSubscription() {
   var bonkSource = BQ_SOURCES.filter(function(s) { return s.src === 'BONK'; })[0];
   if (!bonkSource) return;
@@ -990,17 +1125,20 @@ function handleBQLetsBonkGraduation(i) {
   var name = tok ? tok.n : mint.slice(0, 8);
   log('LETSBONK GRADUATED ' + name + ' | migrated to Raydium AMM', 'pump');
 
-  // Mark as graduated on the pool entry so entry logic can see it if needed.
-  // Not wired into GRAD_ENTRY_SOL/GRAD_MAX_SOL candidate tracking since that
-  // system is Pump.fun-curve-specific — this is intentionally a separate,
-  // simpler signal for now, consistent with graduation sniper being paused.
   if (tok) tok.graduated = true;
 }
 
 
 // ── OPEN TRADE PRICE TRACKING ─────────────────────────────────
+// Previously filtered t.src !== 'PUMP', meaning every non-PUMP trade
+// (including BONK) fell back to this 2-second DexScreener HTTP poll — a
+// fundamentally slower, weaker tracking path than the instant swap-driven
+// updates in handleSwap(). BONK now gets real-time updates there instead
+// (see handleSwap above), so this poll is now correctly scoped to ONLY the
+// sources that genuinely have no swap-stream coverage (DSC/DexScreener-
+// discovered tokens on Solana or Base).
 async function updateOpenTradePrices() {
-  var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.mint; });
+  var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.src !== 'BONK' && t.mint; });
   if (trades.length === 0) return;
 
   for (var i = 0; i < trades.length; i++) {
@@ -1138,6 +1276,13 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
+  // sessionStartedAt is now captured per-trade at close time from the
+  // trade's own sessionId (set to S.startTime when the trade was opened),
+  // NOT recomputed from whatever the server's CURRENT session state
+  // happens to be at CSV export time. sessionEndedAt is filled in later by
+  // stopBot() for every trade sharing that sessionId. This fixes the
+  // export previously showing wrong/blank session boundaries for older
+  // trades after any server restart.
   var portfolioTrade = {
     id: tr.id,
     name: tr.tok && tr.tok.n ? tr.tok.n : '?',
@@ -1156,7 +1301,8 @@ function closeTradeReal(id, reason) {
     closedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
     closedDate: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
     closedTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
-    sessionStartedAt: '',
+    sessionId: tr.sessionId || S.startTime || null,
+    sessionStartedAt: tr.sessionId ? new Date(tr.sessionId).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '',
     sessionEndedAt: '',
     slip: tr.slip || 0,
     fees: parseFloat(feePaid.toFixed(4)),
@@ -1184,7 +1330,9 @@ function closeTradeReal(id, reason) {
   if (pnl < P.allTime.worstPnl) P.allTime.worstPnl = parseFloat(pnl.toFixed(4));
   if (!P.bestTrade || pnl > P.bestTrade.pnl) P.bestTrade = portfolioTrade;
   if (!P.worstTrade || pnl < P.worstTrade.pnl) P.worstTrade = portfolioTrade;
-  if (P.allTime.t % 10 === 0) savePortfolio();
+  // Save cadence tightened from every 10 trades to every 3 — reduces the
+  // data-loss window on an unexpected restart/crash between saves.
+  if (P.allTime.t % CFG.PORTFOLIO_SAVE_EVERY === 0) savePortfolio();
 
   if (!S.bestTrade || pnl > S.bestTrade.pnl) {
     S.bestTrade = {
@@ -1265,6 +1413,7 @@ function checkExitCriteria() {
 }
 
 // ── GRADUATION SNIPER ─────────────────────────────────────────
+// On hold per user — left entirely unchanged.
 async function runGradSniper() {
   if (!S.gradEnabled) return;
   if (!S.running || S.fund < 1) return;
@@ -1318,6 +1467,7 @@ async function runGradSniper() {
       gradSolAtEntry: cand.solInCurve,
       openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
       startTime: Date.now(),
+      sessionId: S.startTime,
     };
 
     S.open.push(trade);
@@ -1328,6 +1478,11 @@ async function runGradSniper() {
 }
 
 // ── MAIN SCANNER ──────────────────────────────────────────────
+// Still runs as a backup/fallback path (and the only path for DSC, though
+// DSC entries remain disabled) — but entry logic itself now lives in
+// tryEnterToken()/tryEnterTokenInner(), shared with the event-driven path
+// in handleSwap(). No filter thresholds changed here; this just stopped
+// duplicating the entry rules inline and calls the shared function instead.
 var scanI = null;
 var scanIdx = 0;
 
@@ -1346,104 +1501,10 @@ async function runScan() {
 
   if (!tok || !tok.mint) return;
 
-  // Diagnostic log every 200 scans — shows why current token is rejected
   var diag = (S.scanCount % 200 === 0);
+  if (diag) log('DIAG ' + tok.n + ' | scanner pass (backup path — entry also tried live on each swap)', 'info');
 
-  if (isBanned(tok.mint)) { S.tokens.delete(tok.mint); return; }
-
-  if (tok.chain === 'base' && !S.baseEnabled) { if(diag) log('DIAG '+tok.n+' | SKIP: base disabled', 'info'); return; }
-  if (tok.chain === 'solana' && !S.solEnabled) { if(diag) log('DIAG '+tok.n+' | SKIP: sol disabled', 'info'); return; }
-  if (!tok.chain && !S.solEnabled) { if(diag) log('DIAG '+tok.n+' | SKIP: no chain + sol disabled', 'info'); return; }
-
-  var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-  if (bsr < 0.8) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: BSR '+bsr.toFixed(2)+' buys='+tok.buys+' sells='+tok.sells, 'info'); return; }
-
-  if ((tok.src === 'PUMP' || tok.src === 'BONK') && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) {
-    if(diag) log('DIAG '+tok.n+' | SKIP: mcap $'+tok.mcap.toFixed(0)+' below floor $'+CFG.MIN_MCAP_USD, 'info');
-    return;
-  }
-
-  var cooldownKey = tok.n + tok.mint;
-  var lastCooldown = S.cooldowns.get(cooldownKey);
-  if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) { if(diag) log('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
-
-  if (S.open.find(function(t) { return t.mint === tok.mint; })) { if(diag) log('DIAG '+tok.n+' | SKIP: already open', 'info'); return; }
-
-  if (tok.buys < 3) { if(diag) log('DIAG '+tok.n+' | SKIP: buys='+tok.buys+' (need 3)', 'info'); return; }
-
-  var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
-  if (size < 0.50) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
-
-  if (tok.src === 'DSC') { if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
-
-  var entryPrice = null;
-  if (tok.src === 'PUMP' || tok.src === 'BONK') {
-    // Only enter on a FRESH price — under 1 second old
-    // Guarantees entry price is real AND token is actively trading right now
-    var cached = pumpPrices[tok.mint];
-    if (cached && (Date.now() - cached.ts) <= 1000) {
-      entryPrice = cached.price;
-    } else {
-      if(diag) log('DIAG '+tok.n+' | SKIP: price stale ('+(cached ? ((Date.now()-cached.ts)/1000).toFixed(1)+'s old' : 'no cache')+')', 'info');
-      S.rejectCount++;
-      return;
-    }
-  } else {
-    entryPrice = await getDSPrice(tok.mint, tok.pairAddress, tok.chain);
-  }
-
-  if (!entryPrice || entryPrice <= 0) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
-
-  if (tok.src === 'PUMP' || tok.src === 'BONK') {
-    if (pendingConcentrationChecks.has(tok.mint)) return;
-    pendingConcentrationChecks.add(tok.mint);
-    var concCheck = await checkWalletConcentration(tok.mint);
-    pendingConcentrationChecks.delete(tok.mint);
-    if (!concCheck.safe) {
-      S.rejectCount++;
-      if(diag) log('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
-      return;
-    }
-  }
-
-  var slip = parseFloat(
-    Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
-  );
-  S.fund = parseFloat((S.fund - size * slip).toFixed(4));
-
-  var trade = {
-    id: Math.random().toString(36).substr(2, 9),
-    tok: Object.assign({}, tok),
-    sc: 85,
-    size: parseFloat(size.toFixed(4)),
-    tpl: S.takeProfitMode,
-    tpPct: S.takeProfitPct,
-    sl: S.stopLossPct / 100,
-    slip: slip,
-    mint: tok.mint,
-    src: tok.src,
-    chain: tok.chain || 'solana',
-    ammAccount: tok.ammAccount || null,
-    pairAddress: tok.pairAddress || null,
-    entryPrice: entryPrice,
-    entryMcap: tok.mcap || 0,
-    entryBuys: tok.buys || 0,
-    entrySells: tok.sells || 0,
-    currentPrice: entryPrice,
-    peakPrice: entryPrice,
-    lastPrice: entryPrice,
-    lastPriceChange: Date.now(),
-    realPnl: 0,
-    realPnlPct: 0,
-    isGrad: false,
-    priceUpdates: 0,
-    firstUpdateAt: null,
-    openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
-    startTime: Date.now(),
-  };
-
-  S.open.push(trade);
-  log('ENTER ' + tok.n + ' [' + tok.src + '] | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+  await tryEnterToken(tok, null);
 }
 
 // ── POOL CLEANUP ──────────────────────────────────────────────
@@ -1475,7 +1536,7 @@ function cleanPool() {
 }
 
 // ── BOT CONTROL ───────────────────────────────────────────────
-var gradI = null, exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
+var gradI = null, exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null, portfolioSaveI = null;
 
 function startBot() {
   if (S.running) return;
@@ -1512,6 +1573,7 @@ function startBot() {
   dsI = setInterval(fetchDSTokens, CFG.DS_INTERVAL);
   cleanI = setInterval(cleanPool, 3600000);
   solPriceI = setInterval(updateSolPrice, 600000);
+  portfolioSaveI = setInterval(savePortfolio, CFG.PORTFOLIO_AUTOSAVE_MS);
 
   log('BunkerBuster STARTED | Fund: $' + S.sessionFund + ' | SL: ' + S.stopLossPct + '% | Max: ' + S.maxOpen, 'info');
 }
@@ -1526,11 +1588,23 @@ function stopBot() {
   if (dsI) clearInterval(dsI);
   if (cleanI) clearInterval(cleanI);
   if (solPriceI) clearInterval(solPriceI);
+  if (portfolioSaveI) clearInterval(portfolioSaveI);
   if (pumpWs) {
     bqDeliberateStop = true;
     try { pumpWs.close(); } catch(e) {}
     pumpWs = null;
   }
+
+  // Fill in sessionEndedAt for every trade from this session that doesn't
+  // have it yet, instead of recomputing session boundaries from current
+  // server state at CSV-export time. This is the real fix for the export
+  // showing wrong/blank session timestamps after any restart.
+  var endedAtStr = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  P.trades.forEach(function(t) {
+    if (t.sessionId === S.startTime && !t.sessionEndedAt) {
+      t.sessionEndedAt = endedAtStr;
+    }
+  });
 
   if (S.stats.t > 0) {
     var session = {
@@ -1548,6 +1622,8 @@ function stopBot() {
       totalFees: parseFloat(S.totalFees.toFixed(4)),
     };
     P.sessions.unshift(session);
+    savePortfolio();
+  } else {
     savePortfolio();
   }
 
@@ -1705,8 +1781,6 @@ app.get('/api/portfolio/trades', function(req, res) {
 });
 
 app.get('/api/portfolio/export', function(req, res) {
-  var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
-  var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
     ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount'].join(',')
   ];
@@ -1733,8 +1807,10 @@ app.get('/api/portfolio/export', function(req, res) {
       t.exitMcap || 0,
       t.entryBuys || 0,
       t.entrySells || 0,
-      csvSafe(sessionStartedAtStr),
-      csvSafe(sessionEndedAtStr),
+      // Now reads the per-trade stored session fields set at close/stop
+      // time, not a recomputation from current server state.
+      csvSafe(t.sessionStartedAt || ''),
+      csvSafe(t.sessionEndedAt || ''),
       t.largestSellUsd || 0,
       t.maxRepeatSellerCount || 0,
     ].join(','));
