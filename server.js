@@ -315,15 +315,24 @@ async function checkDevHoldingPct(mint, devWallet, mcap, price) {
   }
 }
 
-// ── SAFETY CHECKLIST (now real for every source) ────────────────
+// ── SAFETY CHECKLIST (discovery-time — authority + dev holding only) ────
 // isPumpFun parameter and the old lpBurn/dev-null checks are removed —
-// research confirmed: (1) Jupiter routes pre-graduation bonding-curve
-// tokens on BOTH Pump.fun and LetsBonk, so the honeypot check is valid
-// for both sources, not just a hypothetical "non-PumpFun" path; (2) LP
-// burn does not apply pre-graduation on either platform — there is no LP
-// yet while a token trades against the bonding curve, so that check is
-// dropped rather than faked. mintAuthority/freezeAuthority/dev-holding are
-// now populated from real checks instead of always being null/undefined.
+// research confirmed LP burn does not apply pre-graduation on either
+// platform. mintAuthority/freezeAuthority/dev-holding are populated from
+// real checks instead of always being null/undefined.
+//
+// The honeypot (Jupiter quote) check is DELIBERATELY NOT run here anymore.
+// A token this function evaluates is often milliseconds old — Jupiter has
+// no real trading activity to route against yet, so "no quote available"
+// was being treated as "confirmed honeypot" and permanently banning
+// almost every brand-new token before it ever had a chance to trade. This
+// is why the pool got stuck near-empty. Mint/freeze authority is static
+// metadata set at creation, so it's still safe and correct to check here.
+// The honeypot check itself now runs at entry time instead, in
+// tryEnterTokenInner(), once the token has real buys (buys >= 3 already
+// required to reach entry) for Jupiter to actually have something to quote.
+var pendingDiscoveryChecks = new Set();
+
 async function runSafetyChecklist(mint, devWallet, mcap, price) {
   var authCheck = await checkMintFreezeAuthority(mint);
   if (!authCheck.safe) {
@@ -336,12 +345,6 @@ async function runSafetyChecklist(mint, devWallet, mcap, price) {
   if (!devCheck.safe) {
     tempBan(mint, devCheck.reason);
     return { safe: false, reason: devCheck.reason };
-  }
-
-  var isHoneypot = await checkHoneypot(mint);
-  if (isHoneypot) {
-    permanentBan(mint, 'Honeypot confirmed — sell simulation failed');
-    return { safe: false, reason: 'honeypot confirmed' };
   }
 
   return { safe: true, reason: 'passed' };
@@ -752,15 +755,30 @@ async function handleNewPairFromInstruction(i) {
   if (isBanned(mint)) return;
   if (S.tokens.has(mint)) return;
 
+  // Guard against the same brand-new mint's discovery event firing more
+  // than once in quick succession (duplicate stream delivery, or a
+  // genuinely duplicated on-chain instruction) and running the safety
+  // checklist — and therefore a permanent ban — twice concurrently. This
+  // was confirmed happening (same mint banned twice in the same second).
+  if (pendingDiscoveryChecks.has(mint)) return;
+  pendingDiscoveryChecks.add(mint);
+
   if (S.tokens.size >= S.maxPool) evictWorstToken();
 
   // Real safety checklist now — no more hardcoded nulls/isPumpFun=true.
   // mcap/price aren't known yet at discovery time for a brand new token,
-  // so the dev-holding check (which needs them) runs again at entry time
-  // in tryEnterToken where real price/mcap exist; this discovery-time call
-  // covers mint/freeze authority + honeypot, which don't need price data.
-  var safe = await runSafetyChecklist(mint, signer, 0, 0);
+  // so the dev-holding check runs again at entry time too (where real
+  // price/mcap exist and matter more); this discovery-time call covers
+  // mint/freeze authority, which is static and doesn't need price data.
+  // Honeypot check no longer runs here — see runSafetyChecklist comment.
+  var safe;
+  try {
+    safe = await runSafetyChecklist(mint, signer, 0, 0);
+  } finally {
+    pendingDiscoveryChecks.delete(mint);
+  }
   if (!safe.safe) return;
+  if (S.tokens.has(mint)) return; // re-check: another path may have added it while we awaited
 
   S.tokens.set(mint, {
     mint: mint,
@@ -847,13 +865,25 @@ async function tryEnterTokenInner(tok, freshPrice) {
   if (!entryPrice || entryPrice <= 0) { S.rejectCount++; return; }
 
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
-    // Real honeypot/authority checklist already ran at discovery time.
-    // Dev-holding % needs real price/mcap, which we have now — check it
-    // here, right before entry.
+    // Mint/freeze authority already ran at discovery time (static data,
+    // no need to re-check). Dev-holding % needs real price/mcap, which we
+    // have now — check it here, right before entry.
     var devCheck = await checkDevHoldingPct(tok.mint, tok.dev, tok.mcap, entryPrice);
     if (!devCheck.safe) {
       S.rejectCount++;
       log('DIAG ' + tok.n + ' | SKIP: ' + devCheck.reason, 'info');
+      return;
+    }
+
+    // Honeypot check moved here from discovery time — by entry, the token
+    // has already cleared buys >= 3, meaning real trades have happened, so
+    // Jupiter has actual activity to route/quote against. Running this at
+    // discovery (when a token is often milliseconds old) was causing
+    // near-100% false-positive bans since Jupiter had nothing to quote yet.
+    var isHoneypot = await checkHoneypot(tok.mint);
+    if (isHoneypot) {
+      permanentBan(tok.mint, 'Honeypot confirmed — sell simulation failed');
+      S.rejectCount++;
       return;
     }
 
