@@ -612,6 +612,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="filter-row" style="margin-top:6px;">
       <button class="filter-btn active" onclick="setFilter2('src','all',this)">ALL SOURCES</button>
       <button class="filter-btn" onclick="setFilter2('src','PUMP',this)">PUMP</button>
+      <button class="filter-btn" onclick="setFilter2('src','BONK',this)">BONK</button>
       <button class="filter-btn" onclick="setFilter2('src','DSC',this)">DSC</button>
       <button class="filter-btn" onclick="setFilter2('src','GRAD',this)">GRAD</button>
     </div>
@@ -1075,14 +1076,11 @@ async function fetchState() {
       document.getElementById('base-status').textContent = baseOn ? '● ON' : '○ OFF';
       document.getElementById('base-status').style.color = baseOn ? 'var(--green)' : 'var(--red)';
 
-      // Sync graduation toggle — defaults to OFF (opposite of chain toggles), so the
-      // missing-field fallback must be false, not true
       var gradOn = data.gradEnabled === true;
       currentGradEnabled = gradOn;
       document.getElementById('btn-grad-on').classList.toggle('active', gradOn);
       document.getElementById('btn-grad-off').classList.toggle('active', !gradOn);
 
-      // Sync auto-lock toggle — same default-OFF pattern
       var autoLockOn = data.autoLockEnabled === true;
       currentAutoLockEnabled = autoLockOn;
       document.getElementById('btn-autolock-on').classList.toggle('active', autoLockOn);
@@ -1278,8 +1276,6 @@ async function loadPortfolioPage() {
       document.getElementById('pt-fees').textContent = '$'+f2(at.totalFees||0);
       document.getElementById('pt-wins').textContent = at.w||0;
       document.getElementById('pt-losses').textContent = at.l||0;
-      // All Time spans many sessions with different starting funds — a single % return
-      // figure would be misleading, so we show dollar totals only in this mode.
       document.getElementById('pt-return-pct').textContent = '—';
       document.getElementById('pt-return-pct').style.color = 'var(--dim)';
     } else {
