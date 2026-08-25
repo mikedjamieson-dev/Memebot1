@@ -798,7 +798,7 @@ async function handleNewPairFromInstruction(i) {
     dev: signer,
   });
 
-  log('NEW TOKEN ' + name + ' | ' + src + ' | Added to pool', 'info');
+  log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
 }
 
 // ── ENTRY LOGIC (shared — event-driven AND scanner both call this) ─────
@@ -937,7 +937,7 @@ async function tryEnterTokenInner(tok, freshPrice) {
   };
 
   S.open.push(trade);
-  log('ENTER ' + tok.n + ' [' + tok.src + '] | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+  log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
 }
 
 async function handleNewPair(u) {
