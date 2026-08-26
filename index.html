@@ -612,7 +612,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="filter-row" style="margin-top:6px;">
       <button class="filter-btn active" onclick="setFilter2('src','all',this)">ALL SOURCES</button>
       <button class="filter-btn" onclick="setFilter2('src','PUMP',this)">PUMP</button>
-      <button class="filter-btn" onclick="setFilter2('src','BONK',this)">BONK</button>
       <button class="filter-btn" onclick="setFilter2('src','DSC',this)">DSC</button>
       <button class="filter-btn" onclick="setFilter2('src','GRAD',this)">GRAD</button>
     </div>
@@ -907,18 +906,6 @@ function setFilter(f) {
   if (!frozen) renderLog();
 }
 
-// Detects a Solana mint address (base58, 32-44 chars) inside a log
-// message and wraps it as a one-click copy element, reusing the same
-// copyCA() function already used for open/closed trades — so the same
-// tap-to-copy behavior now works for addresses appearing in the activity
-// log (e.g. "NEW TOKEN X | PUMP | <mint> | Added to pool").
-function linkifyMint(msg) {
-  var mintPattern = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
-  return msg.replace(mintPattern, function(match) {
-    return '<span class="ca-addr" style="cursor:pointer;text-decoration:underline;" onclick="copyCA(\'' + match + '\', event)">' + match + ' <span class="ca-copy" id="ca-copy-' + match + '">📋</span></span>';
-  });
-}
-
 function renderLog() {
   var el = document.getElementById('log-list');
   var fl = logFilter === 'all' ? allLogs : allLogs.filter(function(e) { return e.type === logFilter; });
@@ -926,7 +913,7 @@ function renderLog() {
   fl.slice(0, 150).forEach(function(e) {
     var d = document.createElement('div');
     d.className = 'le ' + (e.type || 'info');
-    d.innerHTML = '<span class="lt">' + e.time + '</span>' + linkifyMint(e.msg);
+    d.innerHTML = '<span class="lt">' + e.time + '</span>' + e.msg;
     el.appendChild(d);
   });
 }
@@ -1088,11 +1075,14 @@ async function fetchState() {
       document.getElementById('base-status').textContent = baseOn ? '● ON' : '○ OFF';
       document.getElementById('base-status').style.color = baseOn ? 'var(--green)' : 'var(--red)';
 
+      // Sync graduation toggle — defaults to OFF (opposite of chain toggles), so the
+      // missing-field fallback must be false, not true
       var gradOn = data.gradEnabled === true;
       currentGradEnabled = gradOn;
       document.getElementById('btn-grad-on').classList.toggle('active', gradOn);
       document.getElementById('btn-grad-off').classList.toggle('active', !gradOn);
 
+      // Sync auto-lock toggle — same default-OFF pattern
       var autoLockOn = data.autoLockEnabled === true;
       currentAutoLockEnabled = autoLockOn;
       document.getElementById('btn-autolock-on').classList.toggle('active', autoLockOn);
@@ -1288,6 +1278,8 @@ async function loadPortfolioPage() {
       document.getElementById('pt-fees').textContent = '$'+f2(at.totalFees||0);
       document.getElementById('pt-wins').textContent = at.w||0;
       document.getElementById('pt-losses').textContent = at.l||0;
+      // All Time spans many sessions with different starting funds — a single % return
+      // figure would be misleading, so we show dollar totals only in this mode.
       document.getElementById('pt-return-pct').textContent = '—';
       document.getElementById('pt-return-pct').style.color = 'var(--dim)';
     } else {
