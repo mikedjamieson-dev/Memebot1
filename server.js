@@ -252,6 +252,19 @@ async function checkWalletConcentration(mint) {
 // wallet-concentration check — since public RPC flakiness is common and
 // blocking every trade on an infra hiccup would defeat the bot's purpose.
 // This is a deliberate design choice, not an oversight.
+// ── MINT SAFETY CHECK — authority + Token-2022 extensions ───────
+// Single real Solana RPC call (getAccountInfo, jsonParsed encoding) — no
+// simulation, no third-party API key. Checks two real, documented things:
+// (1) mint/freeze authority not renounced (classic SPL Token risk), and
+// (2) if the mint uses the Token-2022 program, whether it carries any of
+// the extensions known to let a creator block or tax transfers after the
+// fact — transferHook (custom code can block a transfer), permanentDelegate
+// (creator can move tokens without the holder's signature), or
+// transferFeeConfig (a transfer/sell tax, which can be set arbitrarily
+// high). All three are real, documented Token-2022 mechanisms, not
+// inferred or simulated. Fails OPEN on any RPC error or missing data —
+// same deliberate design as before: public RPC flakiness is common, and
+// blocking every trade on an infra hiccup would defeat the bot's purpose.
 async function checkMintFreezeAuthority(mint) {
   try {
     var res = await fetch(SOLANA_RPC_URL, {
@@ -268,11 +281,38 @@ async function checkMintFreezeAuthority(mint) {
     if (!res.ok) return { safe: true, reason: 'RPC query failed, allowing through' };
     var data = await res.json();
     var value = data && data.result && data.result.value;
-    var info = value && value.data && value.data.parsed && value.data.parsed.info;
+    var parsed = value && value.data && value.data.parsed;
+    var info = parsed && parsed.info;
     if (!info) return { safe: true, reason: 'no mint account data, allowing through' };
     if (info.mintAuthority) return { safe: false, reason: 'mint authority not renounced' };
     if (info.freezeAuthority) return { safe: false, reason: 'freeze authority retained' };
-    return { safe: true, reason: 'authorities renounced' };
+
+    // Token-2022 extension check — only present when the mint is owned by
+    // the Token-2022 program (value.owner); classic SPL Token mints simply
+    // won't have an extensions array, and that's a normal, safe case.
+    var extensions = info.extensions || [];
+    for (var i = 0; i < extensions.length; i++) {
+      var extType = extensions[i].extension;
+      if (extType === 'transferHook') {
+        return { safe: false, reason: 'Token-2022 transfer hook present — can block sells' };
+      }
+      if (extType === 'permanentDelegate') {
+        return { safe: false, reason: 'Token-2022 permanent delegate present — creator can move tokens without signature' };
+      }
+      if (extType === 'transferFeeConfig') {
+        var feeState = extensions[i].state || {};
+        var newerFeeBps = parseInt((feeState.newerTransferFee || {}).transferFeeBasisPoints || 0);
+        var olderFeeBps = parseInt((feeState.olderTransferFee || {}).transferFeeBasisPoints || 0);
+        var feeBps = Math.max(newerFeeBps, olderFeeBps);
+        // 1000 basis points = 10% — a real, high transfer tax that could
+        // functionally block profitable selling even without a hard block.
+        if (feeBps >= 1000) {
+          return { safe: false, reason: 'Token-2022 transfer fee ' + (feeBps / 100).toFixed(1) + '% — high sell tax' };
+        }
+      }
+    }
+
+    return { safe: true, reason: 'authorities renounced, no risky extensions' };
   } catch (e) {
     return { safe: true, reason: 'authority check errored, allowing through' };
   }
@@ -315,28 +355,20 @@ async function checkDevHoldingPct(mint, devWallet, mcap, price) {
   }
 }
 
-// ── SAFETY CHECKLIST (discovery-time — authority + dev holding only) ────
+// ── SAFETY CHECKLIST (discovery-time — authority, extensions, dev holding) ──
 // isPumpFun parameter and the old lpBurn/dev-null checks are removed —
 // research confirmed LP burn does not apply pre-graduation on either
-// platform. mintAuthority/freezeAuthority/dev-holding are populated from
-// real checks instead of always being null/undefined.
-//
-// The honeypot (Jupiter quote) check is DELIBERATELY NOT run here anymore.
-// A token this function evaluates is often milliseconds old — Jupiter has
-// no real trading activity to route against yet, so "no quote available"
-// was being treated as "confirmed honeypot" and permanently banning
-// almost every brand-new token before it ever had a chance to trade. This
-// is why the pool got stuck near-empty. Mint/freeze authority is static
-// metadata set at creation, so it's still safe and correct to check here.
-// The honeypot check itself now runs at entry time instead, in
-// tryEnterTokenInner(), once the token has real buys (buys >= 3 already
-// required to reach entry) for Jupiter to actually have something to quote.
+// platform. mintAuthority/freezeAuthority/Token-2022 extensions/dev-holding
+// are populated from real on-chain checks instead of always being
+// null/undefined. There is no honeypot/sell-simulation check anywhere in
+// this bot anymore — it was removed entirely, per explicit instruction, in
+// favor of the real, non-simulated checks below.
 var pendingDiscoveryChecks = new Set();
 
 async function runSafetyChecklist(mint, devWallet, mcap, price) {
   var authCheck = await checkMintFreezeAuthority(mint);
   if (!authCheck.safe) {
-    if (authCheck.reason.indexOf('freeze') >= 0) permanentBan(mint, authCheck.reason);
+    if (authCheck.reason.indexOf('freeze') >= 0 || authCheck.reason.indexOf('Token-2022') >= 0) permanentBan(mint, authCheck.reason);
     else tempBan(mint, authCheck.reason);
     return { safe: false, reason: authCheck.reason };
   }
@@ -348,31 +380,6 @@ async function runSafetyChecklist(mint, devWallet, mcap, price) {
   }
 
   return { safe: true, reason: 'passed' };
-}
-
-// ── SOLANA HONEYPOT CHECK ─────────────────────────────────────
-// Research-confirmed applicable pre-graduation on both Pump.fun and
-// LetsBonk (Jupiter's own changelog documents optimized pre-graduation
-// bonding-curve routing; LetsBonk's own docs state Jupiter routing from
-// launch). Fails CLOSED (treats errors as a honeypot) — kept as-is from
-// the original design, since this is the actual scam-detection signal
-// and erring toward caution here is the safer default, unlike the
-// infra-availability checks above.
-async function checkHoneypot(mint) {
-  try {
-    var res = await fetch(
-      'https://quote-api.jup.ag/v6/quote?inputMint=' + mint +
-      '&outputMint=So11111111111111111111111111111111111111112' +
-      '&amount=1000000&slippageBps=5000',
-      { timeout: 5000 }
-    );
-    if (!res.ok) return true;
-    var data = await res.json();
-    if (!data || !data.outAmount || parseInt(data.outAmount) === 0) return true;
-    return false;
-  } catch(e) {
-    return true;
-  }
 }
 
 // ── BASE HONEYPOT CHECK ───────────────────────────────────────
@@ -405,6 +412,28 @@ async function getDSPrice(mint, pairAddress, chain) {
     var pairs = data.pairs || (Array.isArray(data) ? data : []);
     if (pairs.length > 0 && pairs[0].priceUsd) {
       return parseFloat(pairs[0].priceUsd);
+    }
+    return null;
+  } catch(e) {
+    return null;
+  }
+}
+
+// Real reported liquidity-in-USD for a mint, from the same DexScreener
+// pair data already used for price above. Returns null when no data is
+// available yet (e.g. not indexed) rather than 0 — 0 and "unknown" are
+// different things and must not be treated the same by the liquidity
+// floor check that calls this.
+async function getDSLiquidity(mint, chain) {
+  try {
+    var chainId = chain || 'solana';
+    var url = 'https://api.dexscreener.com/tokens/v1/' + chainId + '/' + mint;
+    var res = await fetch(url, { timeout: 5000 });
+    if (!res.ok) return null;
+    var data = await res.json();
+    var pairs = data.pairs || (Array.isArray(data) ? data : []);
+    if (pairs.length > 0 && pairs[0].liquidity && pairs[0].liquidity.usd !== undefined) {
+      return parseFloat(pairs[0].liquidity.usd);
     }
     return null;
   } catch(e) {
@@ -875,17 +904,27 @@ async function tryEnterTokenInner(tok, freshPrice) {
       return;
     }
 
-    // Honeypot check moved here from discovery time — by entry, the token
-    // has already cleared buys >= 3, meaning real trades have happened, so
-    // Jupiter has actual activity to route/quote against. Running this at
-    // discovery (when a token is often milliseconds old) was causing
-    // near-100% false-positive bans since Jupiter had nothing to quote yet.
-    var isHoneypot = await checkHoneypot(tok.mint);
-    if (isHoneypot) {
-      permanentBan(tok.mint, 'Honeypot confirmed — sell simulation failed');
+    // Liquidity floor — previously this only applied to DSC tokens (which
+    // never actually trade), so PUMP/BONK had no liquidity floor at all.
+    // Now applies here, using DexScreener's real reported liquidity-in-USD
+    // figure for this mint — the same real data source already used for
+    // price elsewhere in this bot. No simulation, no estimate: a real
+    // number reported by an actual market data provider.
+    var liqUsd = await getDSLiquidity(tok.mint, tok.chain);
+    if (liqUsd === null) {
+      // No liquidity data available yet for this token — treat as not
+      // ready rather than banning it outright; it may simply not be
+      // indexed by DexScreener yet.
       S.rejectCount++;
+      log('DIAG ' + tok.n + ' | SKIP: no liquidity data available yet', 'info');
       return;
     }
+    if (liqUsd < CFG.MIN_LIQ_USD) {
+      S.rejectCount++;
+      log('DIAG ' + tok.n + ' | SKIP: liquidity $' + liqUsd.toFixed(0) + ' below floor $' + CFG.MIN_LIQ_USD, 'info');
+      return;
+    }
+    tok.liq = liqUsd;
 
     if (pendingConcentrationChecks.has(tok.mint)) return;
     pendingConcentrationChecks.add(tok.mint);
