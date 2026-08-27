@@ -95,6 +95,7 @@ const S = {
   pumpCount: 0,
   scanCount: 0,
   rejectCount: 0,
+  rejectReasons: {},
   logs: [],
   sources: {},
   startTime: null,
@@ -416,12 +417,6 @@ async function fetchDSTokens() {
 }
 
 // ── BITQUERY — REAL TIME DATA ─────────────────────────────────
-// One WebSocket connection: wss://streaming.bitquery.io/graphql
-// Auth: OAuth2 bearer token in URL query param — token lives in Render environment only
-// GraphQL subscriptions over the same connection: new pair launches + all trades
-// Designed for multiple sources/chains: each subscription carries its own SRC label
-// and Bitquery protocol filter, so adding LetsBonk/Base/BSC later means adding a
-// new subscription entry, not rewriting the handlers.
 var pumpPrices = {};
 var pumpWs = null;
 var bqSubId = 1;
@@ -432,9 +427,6 @@ var bqDeliberateStop = false;
 var bqPingI = null;
 var bqTradeLogCount = 0;
 
-// Sources to subscribe to. protocolFamily matches Bitquery's Market.ProtocolFamily field.
-// programAddress/createMethods drive the new-pair-launch query for that source.
-// Add a new entry here to extend coverage — handlers below branch on source.queryShape.
 var BQ_SOURCES = [
   {
     src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun',
@@ -502,7 +494,6 @@ function connectBQ() {
   } catch(e) { setTimeout(connectBQ, 5000); }
 }
 
-// graphql-ws protocol handshake — required before subscriptions are accepted
 function sendBQConnectionInit() {
   pumpWs.send(JSON.stringify({ type: 'connection_init' }));
 }
@@ -517,7 +508,7 @@ function handleBQMessage(msg) {
     sendBQSubscriptions();
     return;
   }
-  if (msg.type === 'ka') return; // keepalive
+  if (msg.type === 'ka') return;
   if (msg.type === 'error') {
     log('BQ ERROR: ' + JSON.stringify(msg.payload || msg).slice(0, 200), 'warn');
     return;
@@ -542,16 +533,6 @@ function handleBQMessage(msg) {
   }
 }
 
-// One subscription per source for new launches, one shared subscription for all trades.
-// Extending to LetsBonk: add an entry to BQ_SOURCES with queryShape: 'instructions',
-// its programAddress ("LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"), and createMethods
-// (["initialize_v2"]) — buildPairQuery below already branches on queryShape.
-// Builds ONE combined Instructions query covering every source's create-event
-// via the documented `any:` array pattern (Bitquery's own official
-// multi-launchpad example). Each source contributes one condition to the
-// array rather than getting its own separate subscription — this is what
-// keeps us at 1 subscription for pair-launch discovery regardless of how
-// many sources are added, instead of 1-per-source like the old design.
 function buildCombinedPairQuery() {
   var conditions = BQ_SOURCES.map(function(source) {
     var methods = source.createMethods.map(function(m) { return '"' + m + '"'; }).join(', ');
@@ -580,24 +561,7 @@ function sendBQSubscriptions() {
   }));
   bqTradeSubActive = true;
   log('Swap stream active — all sources', 'pump');
-
-  // Both graduation subscriptions (Pump.fun DEXPools, LetsBonk migrate events)
-  // are intentionally NOT sent — 2 streams are already fully used by the
-  // combined pair-launch and trade subscriptions above. Graduation sniper is
-  // currently off anyway (see gradEnabled). Re-enable one of these once a 3rd
-  // stream slot is available, or once graduation is actually needed and we
-  // can afford to drop one of the two active streams temporarily.
 }
-
-// LetsBonk/Raydium LaunchLab new-pair handler. Confirmed via research: the
-// initialize_v2 instruction's decoded Arguments carry the token's name/symbol
-// (base_mint_param.name/symbol per Raydium's own SDK and Bitquery's field
-// docs), but the EXACT argument key name as Bitquery serializes it was not
-// confirmed through documentation alone — this is the one piece we agreed to
-// verify against live data. Extraction below searches defensively by likely
-// key names rather than assuming one exact match, and logs the raw Arguments
-// array on the first several calls so the real shape can be confirmed and
-// this tightened up if needed.
 
 function findArgValue(args, candidateNames) {
   if (!args) return null;
@@ -613,10 +577,6 @@ function findArgValue(args, candidateNames) {
   return null;
 }
 
-// Extracts name/symbol from a nested JSON struct argument (e.g. LetsBonk's
-// base_mint_param, a MintParams struct) rather than a flat top-level value.
-// Confirmed via Bitquery's own docs: struct-typed arguments return as a
-// stringified JSON blob under Value.json, which must be parsed separately.
 function findStructNameSymbol(args, structArgNames) {
   if (!args) return { name: null, symbol: null };
   for (var i = 0; i < args.length; i++) {
@@ -658,7 +618,7 @@ async function handleNewPairFromInstruction(i) {
     log('BQ INSTR [' + srcKey + '] #' + bqInstrLogCounts[srcKey] + ' addr=' + programAddress.slice(0,8) + ' Arguments: ' + JSON.stringify(programArgs).slice(0, 400), 'warn');
   }
 
-  if (!matchedSource) return; // event from a program we didn't ask for — now logged above instead of silently dropped
+  if (!matchedSource) return;
   var src = matchedSource.src;
 
   var mint = null;
@@ -694,8 +654,6 @@ async function handleNewPairFromInstruction(i) {
     if (worstKey) S.tokens.delete(worstKey);
   }
 
-  // Same conservative safety-checklist behavior for both sources — real
-  // mint/freeze authority not available from this instruction shape either.
   var tokenData = {
     mintAuthority: null,
     freezeAuthority: null,
@@ -722,7 +680,7 @@ async function handleNewPairFromInstruction(i) {
     isNew: true,
   });
 
-  log('NEW TOKEN ' + name + ' | ' + src + ' | Added to pool', 'info');
+  log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
 }
 
 async function handleNewPair(u) {
@@ -751,9 +709,6 @@ async function handleNewPair(u) {
     if (worstKey) S.tokens.delete(worstKey);
   }
 
-  // Bitquery's TokenSupplyUpdates for a fresh Pump.fun create doesn't carry
-  // mint/freeze authority directly — safety checklist runs with nulls here,
-  // same conservative behavior as before real authority data was available.
   var tokenData = {
     mintAuthority: null,
     freezeAuthority: null,
@@ -780,7 +735,7 @@ async function handleNewPair(u) {
     isNew: true,
   });
 
-  log('NEW TOKEN ' + name + ' | Added to pool', 'info');
+  log('NEW TOKEN ' + name + ' | ' + mint + ' | Added to pool', 'info');
 }
 
 function handleSwap(t) {
@@ -813,13 +768,9 @@ function handleSwap(t) {
     var mc = parseFloat(t.Supply.MarketCap);
     if (!isNaN(mc) && mc > 0) mcap = mc;
   } else if (t.Supply && t.Supply.TotalSupply && priceUsd) {
-    // Use actual reported supply when available, regardless of source
     var ts = parseFloat(t.Supply.TotalSupply);
     if (!isNaN(ts) && ts > 0) mcap = priceUsd * ts;
   } else if (protocolFamily === 'Pumpfun' && priceUsd) {
-    // Only apply the fixed 1B supply assumption for confirmed Pump.fun trades —
-    // other sources (LetsBonk/Raydium, etc.) have different supply models and
-    // must not silently reuse this number.
     mcap = priceUsd * 1000000000;
   }
 
@@ -902,9 +853,6 @@ function handleSwap(t) {
   }
 }
 
-// ── GRADUATION TRACKING ────────────────────────────────────────
-// Separate subscription: DEXPools gives bonding curve reserves needed to
-// compute graduation progress. Trading.Trades does not carry this field.
 function sendBQPoolSubscription() {
   pumpWs.send(JSON.stringify({
     id: 'pools_pump',
@@ -927,8 +875,6 @@ function handleBQPool(p) {
   var quoteReserveSol = parseFloat((pool.Quote || {}).PostAmount || 0);
   if (!baseReserve) return;
 
-  // Pump.fun graduates when the base (token) reserve drops to ~206,900,000
-  // out of an initial ~793,100,000 tradeable in the curve.
   var progressPct = Math.max(0, Math.min(100, ((793100000 - (baseReserve - 206900000)) / 793100000) * 100));
   var solInCurve = quoteReserveSol;
 
@@ -957,13 +903,6 @@ function handleBQPool(p) {
   }
 }
 
-// LetsBonk graduation: unlike Pump.fun's fixed curve, LetsBonk's raise target
-// (min 30 SOL, creator-adjustable) and curve % sold (51-80%) both vary per
-// token — there's no single fixed math we can replicate the way we do for
-// Pump.fun. Instead we treat migration as a clean binary event: the
-// migrate_to_amm/migrate_to_cpswap instruction firing on a LetsBonk-tagged
-// token IS the graduation signal, confirmed via the platform config address
-// filter, same pattern already verified for LetsBonk new-pair detection.
 function sendBQLetsBonkGradSubscription() {
   var bonkSource = BQ_SOURCES.filter(function(s) { return s.src === 'BONK'; })[0];
   if (!bonkSource) return;
@@ -990,10 +929,6 @@ function handleBQLetsBonkGraduation(i) {
   var name = tok ? tok.n : mint.slice(0, 8);
   log('LETSBONK GRADUATED ' + name + ' | migrated to Raydium AMM', 'pump');
 
-  // Mark as graduated on the pool entry so entry logic can see it if needed.
-  // Not wired into GRAD_ENTRY_SOL/GRAD_MAX_SOL candidate tracking since that
-  // system is Pump.fun-curve-specific — this is intentionally a separate,
-  // simpler signal for now, consistent with graduation sniper being paused.
   if (tok) tok.graduated = true;
 }
 
@@ -1080,23 +1015,35 @@ function closeTradeReal(id, reason) {
   var feePaid = tr.size * (tr.slip || 0.005) + CFG.SOL_GAS;
   S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
 
+  // Tracks exactly how this trade's PnL was actually split between the
+  // trading fund and savings (80/20 on qualifying wins), so the CSV can
+  // show the real fund-vs-savings breakdown per trade instead of only the
+  // combined PnL — this was the exact confusion that caused the $12.32
+  // (combined) vs $1.53 (fund-only) mismatch to require manual investigation.
+  var fundAmount = 0;
+  var savingsAmount = 0;
+
   if (pnl > CFG.MIN_SPLIT_WIN) {
     var savings = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
     var trading = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
     S.fund = parseFloat((S.fund + trading).toFixed(4));
     S.savings = parseFloat((S.savings + savings).toFixed(4));
+    fundAmount = trading;
+    savingsAmount = savings;
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' | saved $' + savings.toFixed(2) + ' | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
     if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else if (pnl > 0) {
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
+    fundAmount = pnl;
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' (below split min) | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
     if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else {
     S.fund = parseFloat((S.fund + pnl).toFixed(4));
+    fundAmount = pnl;
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' -$' + Math.abs(pnl).toFixed(2) + ' | ' + closeReason, 'loss');
     S.stats.l++;
     if (tr.isGrad) S.stats.gl++;
@@ -1173,6 +1120,33 @@ function closeTradeReal(id, reason) {
     maxRepeatSellerCount: tr.sellerWallets
       ? Math.max.apply(null, Object.values(tr.sellerWallets).concat([0]))
       : 0,
+    // Change 1: entry-side slippage/gas — previously charged to the fund
+    // but never exported anywhere, so PnL summed across trades never
+    // matched the actual fund change (that gap caused a real, confusing
+    // reconciliation problem — see session review 8/26).
+    entrySlipCost: parseFloat((tr.entrySlipCost || 0).toFixed(4)),
+    // Change 2: Net Fund Impact — the trade's true effect on the trading
+    // fund specifically (fundAmount, i.e. PnL after the fund/savings split)
+    // minus the entry-side cost that was never in PnL to begin with. This
+    // is the number that should always sum to match the fund's real
+    // all-time change — this exact check is what would have caught the
+    // $12.32-vs-$1.53 confusion immediately instead of requiring a
+    // manual investigation.
+    netFundImpact: parseFloat((fundAmount - (tr.entrySlipCost || 0)).toFixed(4)),
+    // Change 3: explicit fund vs savings split, per trade — not just the
+    // combined PnL. Zero savingsAmount on losses/small wins is correct,
+    // not a display bug.
+    fundAmount: parseFloat(fundAmount.toFixed(4)),
+    savingsAmount: parseFloat(savingsAmount.toFixed(4)),
+    // Change 4: total time the trade was open, in seconds — distinct from
+    // secToFirstUpdate (time to first price tick). Lets fast-crash losses
+    // be separated from slow-bleed losses, which are likely different
+    // failure modes needing different fixes.
+    holdTimeSec: tr.startTime ? parseFloat(((Date.now() - tr.startTime) / 1000).toFixed(1)) : null,
+    // Change 5: pool size and scan count at the moment this trade entered
+    // — lets performance be checked against how congested the pool was.
+    poolSizeAtEntry: tr.poolSizeAtEntry || 0,
+    scanCountAtEntry: tr.scanCountAtEntry || 0,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1318,6 +1292,9 @@ async function runGradSniper() {
       gradSolAtEntry: cand.solInCurve,
       openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
       startTime: Date.now(),
+      entrySlipCost: parseFloat((size * slip).toFixed(4)),
+      poolSizeAtEntry: S.tokens.size,
+      scanCountAtEntry: S.scanCount,
     };
 
     S.open.push(trade);
@@ -1328,6 +1305,15 @@ async function runGradSniper() {
 }
 
 // ── MAIN SCANNER ──────────────────────────────────────────────
+// Change 6: reject/skip reason tracking at the session level — the raw
+// "SKIPPED" count on the dashboard never said WHY tokens were being
+// skipped, which made it impossible to tell filters working as intended
+// apart from filters silently blocking almost everything (exactly what
+// happened with the Jupiter honeypot deprecation in a parallel build).
+function trackSkip(reason) {
+  S.rejectReasons[reason] = (S.rejectReasons[reason] || 0) + 1;
+}
+
 var scanI = null;
 var scanIdx = 0;
 
@@ -1346,44 +1332,43 @@ async function runScan() {
 
   if (!tok || !tok.mint) return;
 
-  // Diagnostic log every 200 scans — shows why current token is rejected
   var diag = (S.scanCount % 200 === 0);
 
   if (isBanned(tok.mint)) { S.tokens.delete(tok.mint); return; }
 
-  if (tok.chain === 'base' && !S.baseEnabled) { if(diag) log('DIAG '+tok.n+' | SKIP: base disabled', 'info'); return; }
-  if (tok.chain === 'solana' && !S.solEnabled) { if(diag) log('DIAG '+tok.n+' | SKIP: sol disabled', 'info'); return; }
-  if (!tok.chain && !S.solEnabled) { if(diag) log('DIAG '+tok.n+' | SKIP: no chain + sol disabled', 'info'); return; }
+  if (tok.chain === 'base' && !S.baseEnabled) { trackSkip('chain_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: base disabled', 'info'); return; }
+  if (tok.chain === 'solana' && !S.solEnabled) { trackSkip('chain_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: sol disabled', 'info'); return; }
+  if (!tok.chain && !S.solEnabled) { trackSkip('chain_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: no chain + sol disabled', 'info'); return; }
 
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
-  if (bsr < 0.8) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: BSR '+bsr.toFixed(2)+' buys='+tok.buys+' sells='+tok.sells, 'info'); return; }
+  if (bsr < 0.8) { S.rejectCount++; trackSkip('bsr_too_low'); if(diag) log('DIAG '+tok.n+' | SKIP: BSR '+bsr.toFixed(2)+' buys='+tok.buys+' sells='+tok.sells, 'info'); return; }
 
   if ((tok.src === 'PUMP' || tok.src === 'BONK') && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) {
+    trackSkip('mcap_below_floor');
     if(diag) log('DIAG '+tok.n+' | SKIP: mcap $'+tok.mcap.toFixed(0)+' below floor $'+CFG.MIN_MCAP_USD, 'info');
     return;
   }
 
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
-  if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) { if(diag) log('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
+  if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) { trackSkip('cooldown_active'); if(diag) log('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
 
-  if (S.open.find(function(t) { return t.mint === tok.mint; })) { if(diag) log('DIAG '+tok.n+' | SKIP: already open', 'info'); return; }
+  if (S.open.find(function(t) { return t.mint === tok.mint; })) { trackSkip('already_open'); if(diag) log('DIAG '+tok.n+' | SKIP: already open', 'info'); return; }
 
-  if (tok.buys < 3) { if(diag) log('DIAG '+tok.n+' | SKIP: buys='+tok.buys+' (need 3)', 'info'); return; }
+  if (tok.buys < 3) { trackSkip('buys_below_3'); if(diag) log('DIAG '+tok.n+' | SKIP: buys='+tok.buys+' (need 3)', 'info'); return; }
 
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
-  if (size < 0.50) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
+  if (size < 0.50) { S.rejectCount++; trackSkip('position_too_small'); if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
 
-  if (tok.src === 'DSC') { if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
+  if (tok.src === 'DSC') { trackSkip('dsc_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
 
   var entryPrice = null;
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
-    // Only enter on a FRESH price — under 1 second old
-    // Guarantees entry price is real AND token is actively trading right now
     var cached = pumpPrices[tok.mint];
     if (cached && (Date.now() - cached.ts) <= 1000) {
       entryPrice = cached.price;
     } else {
+      trackSkip('price_stale');
       if(diag) log('DIAG '+tok.n+' | SKIP: price stale ('+(cached ? ((Date.now()-cached.ts)/1000).toFixed(1)+'s old' : 'no cache')+')', 'info');
       S.rejectCount++;
       return;
@@ -1392,7 +1377,7 @@ async function runScan() {
     entryPrice = await getDSPrice(tok.mint, tok.pairAddress, tok.chain);
   }
 
-  if (!entryPrice || entryPrice <= 0) { S.rejectCount++; if(diag) log('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
+  if (!entryPrice || entryPrice <= 0) { S.rejectCount++; trackSkip('no_price'); if(diag) log('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
 
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
     if (pendingConcentrationChecks.has(tok.mint)) return;
@@ -1401,6 +1386,7 @@ async function runScan() {
     pendingConcentrationChecks.delete(tok.mint);
     if (!concCheck.safe) {
       S.rejectCount++;
+      trackSkip('wallet_concentration');
       if(diag) log('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
       return;
     }
@@ -1409,7 +1395,8 @@ async function runScan() {
   var slip = parseFloat(
     Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
   );
-  S.fund = parseFloat((S.fund - size * slip).toFixed(4));
+  var entrySlipCost = parseFloat((size * slip).toFixed(4));
+  S.fund = parseFloat((S.fund - entrySlipCost).toFixed(4));
 
   var trade = {
     id: Math.random().toString(36).substr(2, 9),
@@ -1440,10 +1427,13 @@ async function runScan() {
     firstUpdateAt: null,
     openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
     startTime: Date.now(),
+    entrySlipCost: entrySlipCost,
+    poolSizeAtEntry: S.tokens.size,
+    scanCountAtEntry: S.scanCount,
   };
 
   S.open.push(trade);
-  log('ENTER ' + tok.n + ' [' + tok.src + '] | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+  log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
 }
 
 // ── POOL CLEANUP ──────────────────────────────────────────────
@@ -1494,6 +1484,7 @@ function startBot() {
   S.solEnabled = true;
   S.scanCount = 0;
   S.rejectCount = 0;
+  S.rejectReasons = {};
   S.pumpCount = 0;
   S.gradCount = 0;
   S.dayStartFund = S.sessionFund;
@@ -1566,6 +1557,7 @@ app.get('/api/state', function(req, res) {
     poolSize: S.tokens.size,
     scanCount: S.scanCount,
     rejectCount: S.rejectCount,
+    rejectReasons: S.rejectReasons,
     openTrades: S.open.map(function(t) {
       return {
         id: t.id, sc: t.sc, size: t.size, tpl: t.tpl, tpPct: t.tpPct,
@@ -1708,7 +1700,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1737,6 +1729,13 @@ app.get('/api/portfolio/export', function(req, res) {
       csvSafe(sessionEndedAtStr),
       t.largestSellUsd || 0,
       t.maxRepeatSellerCount || 0,
+      t.entrySlipCost || 0,
+      t.netFundImpact !== undefined ? t.netFundImpact : '',
+      t.fundAmount !== undefined ? t.fundAmount : '',
+      t.savingsAmount !== undefined ? t.savingsAmount : '',
+      t.holdTimeSec !== null && t.holdTimeSec !== undefined ? t.holdTimeSec : '',
+      t.poolSizeAtEntry || 0,
+      t.scanCountAtEntry || 0,
     ].join(','));
   });
   var csv = rows.join('\n');
