@@ -801,6 +801,14 @@ function handleSwap(t) {
         }
       }
 
+      // Change: capture the price immediately before this tick is applied,
+      // so we can measure exactly how big the single tick that triggers a
+      // stop loss actually was — distinct from the trade's overall PnL%,
+      // which mixes this together with every prior tick. This is what lets
+      // us tell "one violent trade" apart from "a series of smaller ticks
+      // adding up" for well-covered trades that still overshoot badly.
+      var priceBeforeThisTick = trade.currentPrice || trade.entryPrice;
+
       trade.currentPrice = priceUsd;
       trade.currentMcap = mcap;
       trade.priceUpdates = (trade.priceUpdates || 0) + 1;
@@ -844,7 +852,10 @@ function handleSwap(t) {
         }
 
         if (pct <= -(trade.sl || 0.10)) {
-          log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'loss');
+          if (priceBeforeThisTick && priceBeforeThisTick > 0) {
+            trade.triggerTickJumpPct = parseFloat((((priceUsd - priceBeforeThisTick) / priceBeforeThisTick) * 100).toFixed(2));
+          }
+          log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0) + ' | trigger tick: ' + (trade.triggerTickJumpPct !== undefined ? trade.triggerTickJumpPct.toFixed(1)+'%' : 'n/a'), 'loss');
           closeTradeReal(trade.id, 'Stop loss hit');
           return;
         }
@@ -951,6 +962,8 @@ async function updateOpenTradePrices() {
       }
     }
 
+    var priceBeforeThisTick = trade.currentPrice || trade.entryPrice;
+
     trade.currentPrice = price;
     trade.priceUpdates = (trade.priceUpdates || 0) + 1;
     if (!trade.firstUpdateAt) trade.firstUpdateAt = Date.now();
@@ -990,6 +1003,9 @@ async function updateOpenTradePrices() {
     }
 
     if (pct <= -(trade.sl || 0.10)) {
+      if (priceBeforeThisTick && priceBeforeThisTick > 0) {
+        trade.triggerTickJumpPct = parseFloat((((price - priceBeforeThisTick) / priceBeforeThisTick) * 100).toFixed(2));
+      }
       log('SL HIT ' + trade.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'loss');
       closeTradeReal(trade.id, 'Stop loss hit');
     }
@@ -1147,6 +1163,13 @@ function closeTradeReal(id, reason) {
     // — lets performance be checked against how congested the pool was.
     poolSizeAtEntry: tr.poolSizeAtEntry || 0,
     scanCountAtEntry: tr.scanCountAtEntry || 0,
+    // Change (overshoot investigation): the % price move on the single
+    // tick that actually crossed the stop-loss threshold, distinct from
+    // the trade's overall PnL%. Only set on stop-loss exits — blank for
+    // trail/stale/TP exits, since this investigation is specifically
+    // about whether SL overshoots are one violent single trade vs. a
+    // series of smaller ticks adding up.
+    triggerTickJumpPct: tr.triggerTickJumpPct !== undefined ? tr.triggerTickJumpPct : null,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1700,7 +1723,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1736,6 +1759,7 @@ app.get('/api/portfolio/export', function(req, res) {
       t.holdTimeSec !== null && t.holdTimeSec !== undefined ? t.holdTimeSec : '',
       t.poolSizeAtEntry || 0,
       t.scanCountAtEntry || 0,
+      t.triggerTickJumpPct !== null && t.triggerTickJumpPct !== undefined ? t.triggerTickJumpPct : '',
     ].join(','));
   });
   var csv = rows.join('\n');
