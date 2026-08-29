@@ -785,6 +785,32 @@ function handleSwap(t) {
       poolTok.price = priceUsd;
       poolTok.mcap = mcap;
     }
+
+    // Data collection only — not used as a filter yet. Every current
+    // entry-time metric (buy/sell counts, BSR, mcap, pool size) was
+    // checked against real stop-loss vs. trail-exit outcomes and showed
+    // no consistent predictive pattern across two full sessions. These
+    // two are genuinely different dimensions never tested before:
+    // unique wallet count (raw tx counts can't tell a token with 15 real
+    // buyers apart from one with 300 buys from a handful of wallets
+    // trading back and forth) and transaction size (a $2 dust swap counts
+    // the same as a $500 real one in every existing count).
+    if (traderAddress) {
+      if (t.Side === 'Buy') {
+        poolTok.uniqueBuyers = poolTok.uniqueBuyers || new Set();
+        poolTok.uniqueBuyers.add(traderAddress);
+      } else if (t.Side === 'Sell') {
+        poolTok.uniqueSellers = poolTok.uniqueSellers || new Set();
+        poolTok.uniqueSellers.add(traderAddress);
+      }
+    }
+    if (swapUsd > 0) {
+      if (swapUsd < 5) {
+        poolTok.dustSwaps = (poolTok.dustSwaps || 0) + 1;
+      } else {
+        poolTok.realSwaps = (poolTok.realSwaps || 0) + 1;
+      }
+    }
   }
 
   if (priceUsd) {
@@ -1170,6 +1196,15 @@ function closeTradeReal(id, reason) {
     // about whether SL overshoots are one violent single trade vs. a
     // series of smaller ticks adding up.
     triggerTickJumpPct: tr.triggerTickJumpPct !== undefined ? tr.triggerTickJumpPct : null,
+    // New data-collection fields (not yet used as a filter) — testing
+    // whether unique wallet count or transaction-size distribution at
+    // entry predicts stop-loss vs. trail-exit outcomes, since every
+    // metric checked so far (mcap, buy/sell counts, BSR, pool size) showed
+    // no consistent pattern across two full sessions.
+    entryUniqueBuyers: tr.entryUniqueBuyers || 0,
+    entryUniqueSellers: tr.entryUniqueSellers || 0,
+    entryDustSwaps: tr.entryDustSwaps || 0,
+    entryRealSwaps: tr.entryRealSwaps || 0,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1453,6 +1488,10 @@ async function runScan() {
     entrySlipCost: entrySlipCost,
     poolSizeAtEntry: S.tokens.size,
     scanCountAtEntry: S.scanCount,
+    entryUniqueBuyers: tok.uniqueBuyers ? tok.uniqueBuyers.size : 0,
+    entryUniqueSellers: tok.uniqueSellers ? tok.uniqueSellers.size : 0,
+    entryDustSwaps: tok.dustSwaps || 0,
+    entryRealSwaps: tok.realSwaps || 0,
   };
 
   S.open.push(trade);
@@ -1723,7 +1762,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1760,6 +1799,10 @@ app.get('/api/portfolio/export', function(req, res) {
       t.poolSizeAtEntry || 0,
       t.scanCountAtEntry || 0,
       t.triggerTickJumpPct !== null && t.triggerTickJumpPct !== undefined ? t.triggerTickJumpPct : '',
+      t.entryUniqueBuyers || 0,
+      t.entryUniqueSellers || 0,
+      t.entryDustSwaps || 0,
+      t.entryRealSwaps || 0,
     ].join(','));
   });
   var csv = rows.join('\n');
