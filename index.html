@@ -397,6 +397,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="sbar" id="status" style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:12px;color:var(--dim);margin-bottom:8px;">CONNECTING...</div>
     <div class="g3" style="margin-bottom:8px;">
       <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">BONK LIVE</div><div class="stat-val" id="bonk-cnt" style="color:var(--yellow);font-size:14px;">0</div></div>
       <div class="stat"><div class="stat-lbl">DSC FOUND</div><div class="stat-val" id="dsc-key" style="color:var(--blue);font-size:14px;">0</div></div>
     </div>
     <div class="g2" style="margin-bottom:8px;">
@@ -1008,6 +1009,7 @@ async function fetchState() {
     document.getElementById('pool').textContent = data.poolSize;
     document.getElementById('scanned').textContent = data.scanCount;
     document.getElementById('pump-cnt').textContent = data.pumpCount;
+    document.getElementById('bonk-cnt').textContent = data.bonkCount || 0;
     document.getElementById('sol-pool').textContent = data.solPool || 0;
     document.getElementById('base-pool').textContent = data.basePool || 0;
     document.getElementById('dsc-key').textContent = data.dscKey || 0;
