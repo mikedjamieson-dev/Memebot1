@@ -93,6 +93,7 @@ const S = {
   running: false,
   pumpLive: false,
   pumpCount: 0,
+  bonkCount: 0,
   scanCount: 0,
   rejectCount: 0,
   rejectReasons: {},
@@ -429,13 +430,13 @@ var bqTradeLogCount = 0;
 
 var BQ_SOURCES = [
   {
-    src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun',
+    src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun', protocol: 'pump',
     programAddress: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
     createMethods: ['create', 'create_v2'],
     queryShape: 'tokenSupplyUpdate',
   },
   {
-    src: 'BONK', chain: 'solana', protocolFamily: 'raydium_launchpad',
+    src: 'BONK', chain: 'solana', protocolFamily: 'raydium_launchpad', protocol: 'raydium_launchpad',
     programAddress: 'LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj',
     platformConfigAddress: 'FfYek5vEz23cMkWsdJwG2oa6EphsvXSHrGpdALN4g6W1',
     createMethods: ['initialize_v2'],
@@ -551,12 +552,22 @@ function sendBQSubscriptions() {
   bqPairSubActive = true;
   log('New pair stream active (' + BQ_SOURCES.map(function(s){return s.src;}).join(', ') + ')', 'pump');
 
-  var families = BQ_SOURCES.map(function(s) { return '"' + s.protocolFamily + '"'; }).join(', ');
+  // Fix confirmed directly with Bitquery: "raydium_launchpad" is a
+  // Market.Protocol value, not a Market.ProtocolFamily value — its real
+  // ProtocolFamily is "Raydium". The old filter matched nothing for BONK
+  // (silently, since these are free-text strings that don't error on a
+  // wrong value) and only appeared to work for Pump.fun because "Pumpfun"
+  // happens to be a genuine ProtocolFamily value too. Filtering on
+  // Protocol with the correct values ("pump", "raydium_launchpad") was
+  // verified live by Bitquery against real trade counts before this fix.
+  // Market cap floor (CFG.BQ_SUBSCRIBE_MIN_MCAP) is deliberately left
+  // unchanged — not touching trade quality just to see more volume.
+  var protocols = BQ_SOURCES.map(function(s) { return '"' + s.protocol + '"'; }).join(', ');
   pumpWs.send(JSON.stringify({
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {ProtocolFamily: {in: [' + families + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Trader { Address } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {Protocol: {in: [' + protocols + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Trader { Address } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd } } }'
     }
   }));
   bqTradeSubActive = true;
@@ -637,6 +648,7 @@ async function handleNewPairFromInstruction(i) {
   var name = ((symbol || tokenName || 'NEW') + '').toUpperCase().slice(0, 12);
 
   S.pumpCount++;
+  if (src === 'BONK') S.bonkCount++;
   S.sources['BITQUERY'] = 'live:' + S.pumpCount;
   if (S.pumpCount % 20 === 0) log(src + ': ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
 
@@ -1348,7 +1360,7 @@ async function runGradSniper() {
       firstUpdateAt: null,
       isGrad: true,
       gradSolAtEntry: cand.solInCurve,
-      openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+      openedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
       startTime: Date.now(),
       entrySlipCost: parseFloat((size * slip).toFixed(4)),
       poolSizeAtEntry: S.tokens.size,
@@ -1483,7 +1495,7 @@ async function runScan() {
     isGrad: false,
     priceUpdates: 0,
     firstUpdateAt: null,
-    openedAt: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+    openedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
     startTime: Date.now(),
     entrySlipCost: entrySlipCost,
     poolSizeAtEntry: S.tokens.size,
@@ -1548,6 +1560,7 @@ function startBot() {
   S.rejectCount = 0;
   S.rejectReasons = {};
   S.pumpCount = 0;
+  S.bonkCount = 0;
   S.gradCount = 0;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
@@ -1616,6 +1629,7 @@ app.get('/api/state', function(req, res) {
     running: S.running,
     pumpLive: S.pumpLive,
     pumpCount: S.pumpCount,
+    bonkCount: S.bonkCount,
     poolSize: S.tokens.size,
     scanCount: S.scanCount,
     rejectCount: S.rejectCount,
