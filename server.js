@@ -823,6 +823,20 @@ function handleSwap(t) {
         poolTok.realSwaps = (poolTok.realSwaps || 0) + 1;
       }
     }
+
+    // New investigation: everything tracked so far measures activity
+    // COUNTS at entry (buys, sells, wallets) — none of it measures how
+    // fast price was already moving right before entry. A token that's
+    // calm at entry could behave very differently from one already
+    // whipping around violently, even with identical buy/wallet counts.
+    // Keep a short rolling window of recent prices per pool token so we
+    // can measure pre-entry volatility directly, distinct from anything
+    // checked before.
+    if (priceUsd) {
+      poolTok.recentPrices = poolTok.recentPrices || [];
+      poolTok.recentPrices.push(priceUsd);
+      if (poolTok.recentPrices.length > 10) poolTok.recentPrices.shift();
+    }
   }
 
   if (priceUsd) {
@@ -1217,6 +1231,14 @@ function closeTradeReal(id, reason) {
     entryUniqueSellers: tr.entryUniqueSellers || 0,
     entryDustSwaps: tr.entryDustSwaps || 0,
     entryRealSwaps: tr.entryRealSwaps || 0,
+    // New investigation: how much price was already swinging tick-to-tick
+    // right before entry, distinct from every activity-count metric
+    // checked so far (all of which showed no consistent pattern across
+    // multiple sessions). entryPreVolTickCount tells you how solid the
+    // reading is — a low count means the volatility number is based on
+    // very little data.
+    entryPreVolatilityPct: tr.entryPreVolatilityPct !== undefined && tr.entryPreVolatilityPct !== null ? tr.entryPreVolatilityPct : null,
+    entryPreVolTickCount: tr.entryPreVolTickCount || 0,
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1380,6 +1402,21 @@ async function runGradSniper() {
 // skipped, which made it impossible to tell filters working as intended
 // apart from filters silently blocking almost everything (exactly what
 // happened with the Jupiter honeypot deprecation in a parallel build).
+// Biggest single tick-to-tick % swing across a token's recent price
+// window, used to measure how volatile a token already was right before
+// entry — distinct from every activity-count metric checked so far.
+function computeMaxTickSwing(prices) {
+  if (!prices || prices.length < 2) return null;
+  var maxSwing = 0;
+  for (var i = 1; i < prices.length; i++) {
+    var prev = prices[i - 1];
+    if (!prev || prev <= 0) continue;
+    var swing = Math.abs((prices[i] - prev) / prev) * 100;
+    if (swing > maxSwing) maxSwing = swing;
+  }
+  return parseFloat(maxSwing.toFixed(2));
+}
+
 function trackSkip(reason) {
   S.rejectReasons[reason] = (S.rejectReasons[reason] || 0) + 1;
 }
@@ -1504,6 +1541,8 @@ async function runScan() {
     entryUniqueSellers: tok.uniqueSellers ? tok.uniqueSellers.size : 0,
     entryDustSwaps: tok.dustSwaps || 0,
     entryRealSwaps: tok.realSwaps || 0,
+    entryPreVolatilityPct: computeMaxTickSwing(tok.recentPrices),
+    entryPreVolTickCount: tok.recentPrices ? tok.recentPrices.length : 0,
   };
 
   S.open.push(trade);
@@ -1776,7 +1815,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1817,6 +1856,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.entryUniqueSellers || 0,
       t.entryDustSwaps || 0,
       t.entryRealSwaps || 0,
+      t.entryPreVolatilityPct !== null && t.entryPreVolatilityPct !== undefined ? t.entryPreVolatilityPct : '',
+      t.entryPreVolTickCount || 0,
     ].join(','));
   });
   var csv = rows.join('\n');
