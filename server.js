@@ -1239,6 +1239,17 @@ function closeTradeReal(id, reason) {
     // very little data.
     entryPreVolatilityPct: tr.entryPreVolatilityPct !== undefined && tr.entryPreVolatilityPct !== null ? tr.entryPreVolatilityPct : null,
     entryPreVolTickCount: tr.entryPreVolTickCount || 0,
+    // Diagnostic tracking for the autolock investigation — snapshotted
+    // from real server-side state at the exact moment THIS trade closes,
+    // not something read from the UI. If autolock is genuinely working,
+    // FundSLTriggerAt should climb in step with FundAfterTrade as new
+    // highs are made. If FundAfterTrade ever drops below FundSLTriggerAt
+    // without the bot stopping, or AutoLockStatus ever reads OFF when it
+    // should be ON, that pinpoints exactly which trade it happened on —
+    // no need to catch it live in the activity log.
+    fundAfterTrade: parseFloat(S.fund.toFixed(4)),
+    fundSLTriggerAt: parseFloat((S.dayStartFund * (1 - S.fundStopLossPct / 100)).toFixed(4)),
+    autoLockStatus: S.autoLockEnabled ? 'ON' : 'OFF',
   };
 
   P.trades.unshift(portfolioTrade);
@@ -1815,7 +1826,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1858,6 +1869,9 @@ app.get('/api/portfolio/export', function(req, res) {
       t.entryRealSwaps || 0,
       t.entryPreVolatilityPct !== null && t.entryPreVolatilityPct !== undefined ? t.entryPreVolatilityPct : '',
       t.entryPreVolTickCount || 0,
+      t.fundAfterTrade !== undefined ? t.fundAfterTrade : '',
+      t.fundSLTriggerAt !== undefined ? t.fundSLTriggerAt : '',
+      csvSafe(t.autoLockStatus || ''),
     ].join(','));
   });
   var csv = rows.join('\n');
