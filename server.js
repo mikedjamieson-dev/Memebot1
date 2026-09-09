@@ -1614,7 +1614,6 @@ function startBot() {
   S.gradCount = 0;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
-  S.autoLockEnabled = false;
   S.sessionHighFund = S.sessionFund;
 
   connectBQ();
@@ -1635,6 +1634,13 @@ function startBot() {
 function stopBot() {
   S.running = false;
   S.lastStopTime = Date.now();
+  // Reset moved here from startBot() — the bug was that pressing Start
+  // unconditionally wiped autolock back to off every single time, even
+  // when the user had just turned it on beforehand, so it never actually
+  // took effect once trading began. Resetting here instead means it turns
+  // off once a session ends, ready to be explicitly turned on again before
+  // the next one — matching the user's confirmed intended workflow.
+  S.autoLockEnabled = false;
   if (scanI) clearInterval(scanI);
   if (gradI) clearInterval(gradI);
   if (exitI) clearInterval(exitI);
