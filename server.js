@@ -896,6 +896,9 @@ function handleSwap(t) {
           if (peakGain >= CFG.TRAIL_ACT) {
             var pullback = (trade.peakPrice - priceUsd) / trade.peakPrice;
             if (pullback >= CFG.TRAIL_PB) {
+              if (priceBeforeThisTick && priceBeforeThisTick > 0) {
+                trade.trailTriggerTickJumpPct = parseFloat((((priceUsd - priceBeforeThisTick) / priceBeforeThisTick) * 100).toFixed(2));
+              }
               log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | Pullback -' + (pullback * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
               closeTradeReal(trade.id, 'Trail exit');
               return;
@@ -1047,6 +1050,9 @@ async function updateOpenTradePrices() {
       if (peakGain >= CFG.TRAIL_ACT) {
         var pullback = (trade.peakPrice - price) / trade.peakPrice;
         if (pullback >= CFG.TRAIL_PB) {
+          if (priceBeforeThisTick && priceBeforeThisTick > 0) {
+            trade.trailTriggerTickJumpPct = parseFloat((((price - priceBeforeThisTick) / priceBeforeThisTick) * 100).toFixed(2));
+          }
           log('TRAIL EXIT ' + trade.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
           closeTradeReal(trade.id, 'Trail exit');
           continue;
@@ -1222,6 +1228,13 @@ function closeTradeReal(id, reason) {
     // about whether SL overshoots are one violent single trade vs. a
     // series of smaller ticks adding up.
     triggerTickJumpPct: tr.triggerTickJumpPct !== undefined ? tr.triggerTickJumpPct : null,
+    // New investigation: same concept as triggerTickJumpPct above, but for
+    // trail exits — the % move on the single tick that crossed the 2%
+    // pullback line, distinct from the trade's overall giveback (peak
+    // minus final exit %). Testing whether trail-exit giveback is mostly
+    // one violent tick (matching the stop-loss pattern, nothing to fix)
+    // or gradual multi-tick decline (real room to tighten the pullback).
+    trailTriggerTickJumpPct: tr.trailTriggerTickJumpPct !== undefined ? tr.trailTriggerTickJumpPct : null,
     // New data-collection fields (not yet used as a filter) — testing
     // whether unique wallet count or transaction-size distribution at
     // entry predicts stop-loss vs. trail-exit outcomes, since every
@@ -1832,7 +1845,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1878,6 +1891,7 @@ app.get('/api/portfolio/export', function(req, res) {
       t.fundAfterTrade !== undefined ? t.fundAfterTrade : '',
       t.fundSLTriggerAt !== undefined ? t.fundSLTriggerAt : '',
       csvSafe(t.autoLockStatus || ''),
+      t.trailTriggerTickJumpPct !== null && t.trailTriggerTickJumpPct !== undefined ? t.trailTriggerTickJumpPct : '',
     ].join(','));
   });
   var csv = rows.join('\n');
