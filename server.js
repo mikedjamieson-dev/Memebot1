@@ -878,6 +878,11 @@ function handleSwap(t) {
       // eventual big winners first dipped hard before recovering, which
       // is needed before considering tightening the stop loss.
       if (!trade.troughPrice || priceUsd < trade.troughPrice) trade.troughPrice = priceUsd;
+      if (trade.entryPrice > 0 && trade.priceHistory && trade.priceHistory.length < 300) {
+        var secSinceEntry = parseFloat(((Date.now() - trade.startTime) / 1000).toFixed(1));
+        var gainPctNow = parseFloat((((priceUsd - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2));
+        trade.priceHistory.push({ t: secSinceEntry, pct: gainPctNow });
+      }
       if (trade.entryPrice > 0) {
         trade.realPnlPct = (priceUsd - trade.entryPrice) / trade.entryPrice;
         trade.realPnl = trade.size * trade.realPnlPct;
@@ -1044,6 +1049,11 @@ async function updateOpenTradePrices() {
     trade.realPnl = trade.size * pct;
     if (price > (trade.peakPrice || 0)) trade.peakPrice = price;
     if (!trade.troughPrice || price < trade.troughPrice) trade.troughPrice = price;
+    if (trade.entryPrice > 0 && trade.priceHistory && trade.priceHistory.length < 300) {
+      var secSinceEntry2 = parseFloat(((Date.now() - trade.startTime) / 1000).toFixed(1));
+      var gainPctNow2 = parseFloat((((price - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2));
+      trade.priceHistory.push({ t: secSinceEntry2, pct: gainPctNow2 });
+    }
 
     if (trade.tpl === 'FIXED' && pct >= (trade.tpPct / 100)) {
       log('TP HIT ' + trade.tok.n + ' | +' + (pct * 100).toFixed(1) + '% | ticks:' + (trade.priceUpdates||0), 'win');
@@ -1249,6 +1259,15 @@ function closeTradeReal(id, reason) {
     // rarely pass through a deep dip first.
     lowestPricePct: (tr.troughPrice && tr.entryPrice)
       ? parseFloat((((tr.troughPrice - tr.entryPrice) / tr.entryPrice) * 100).toFixed(2)) : null,
+    // Full tick-by-tick price path for this trade, serialized as
+    // "secondsSinceEntry:pctGain" pairs separated by "|" — e.g.
+    // "0:0|1.2:3.4|2.8:9.1|5.0:-2.1". Lets the actual growth SHAPE of a
+    // coin be studied directly (continuous surge vs. stair-steps vs.
+    // sudden spike) rather than only summary numbers like peak/trough.
+    // Temporary, focused data-gathering field — not a permanent column.
+    priceHistory: tr.priceHistory
+      ? tr.priceHistory.map(function(p) { return p.t + ':' + p.pct; }).join('|')
+      : '',
     // New data-collection fields (not yet used as a filter) — testing
     // whether unique wallet count or transaction-size distribution at
     // entry predicts stop-loss vs. trail-exit outcomes, since every
@@ -1413,6 +1432,7 @@ async function runGradSniper() {
       currentPrice: cand.price,
       peakPrice: cand.price,
       troughPrice: cand.price,
+      priceHistory: [{ t: 0, pct: 0 }],
       lastPrice: cand.price,
       lastPriceChange: Date.now(),
       realPnl: 0,
@@ -1565,6 +1585,12 @@ async function runScan() {
     currentPrice: entryPrice,
     peakPrice: entryPrice,
     troughPrice: entryPrice,
+    // Full tick-by-tick history for this investigation — recorded as
+    // (seconds since entry, % gain at that moment) pairs, so the actual
+    // SHAPE of a coin's growth is visible, not just entry/peak/trough/exit
+    // summary numbers. Capped at 300 ticks per trade to keep file size
+    // sane; no trade so far in this project has come close to that.
+    priceHistory: [{ t: 0, pct: 0 }],
     lastPrice: entryPrice,
     lastPriceChange: Date.now(),
     realPnl: 0,
@@ -1861,7 +1887,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1909,6 +1935,7 @@ app.get('/api/portfolio/export', function(req, res) {
       csvSafe(t.autoLockStatus || ''),
       t.trailTriggerTickJumpPct !== null && t.trailTriggerTickJumpPct !== undefined ? t.trailTriggerTickJumpPct : '',
       t.lowestPricePct !== null && t.lowestPricePct !== undefined ? t.lowestPricePct : '',
+      csvSafe(t.priceHistory || ''),
     ].join(','));
   });
   var csv = rows.join('\n');
