@@ -34,7 +34,6 @@ const CFG = {
   MIN_SPLIT_WIN: 0.05,
   SAVINGS_PCT: 0.20,
   MIN_LIQ_USD: 5000,
-  MIN_ENTRY_LIQ_USD: 1000,
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 2750,
   BQ_SUBSCRIBE_MIN_MCAP: 2750,
@@ -317,29 +316,6 @@ async function getDSPrice(mint, pairAddress, chain) {
     var pairs = data.pairs || (Array.isArray(data) ? data : []);
     if (pairs.length > 0 && pairs[0].priceUsd) {
       return parseFloat(pairs[0].priceUsd);
-    }
-    return null;
-  } catch(e) {
-    return null;
-  }
-}
-
-// Real reported liquidity-in-USD for a mint, from the same DexScreener
-// pair data used for price above — no simulation or estimate, the exact
-// number DexScreener itself reports. Called right before entry, so this
-// is checked live at the moment of the trade, not cached beforehand.
-// Returns null (not 0) when no data is available, so "no data" and
-// "genuinely zero liquidity" are never confused by the caller.
-async function getDSLiquidity(mint, chain) {
-  try {
-    var chainId = chain || 'solana';
-    var url = 'https://api.dexscreener.com/tokens/v1/' + chainId + '/' + mint;
-    var res = await fetch(url, { timeout: 5000 });
-    if (!res.ok) return null;
-    var data = await res.json();
-    var pairs = data.pairs || (Array.isArray(data) ? data : []);
-    if (pairs.length > 0 && pairs[0].liquidity && pairs[0].liquidity.usd !== undefined) {
-      return parseFloat(pairs[0].liquidity.usd);
     }
     return null;
   } catch(e) {
@@ -1580,27 +1556,6 @@ async function runScan() {
       if(diag) log('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
       return;
     }
-
-    // Real liquidity check — DexScreener's actual reported figure, fetched
-    // live at the moment of entry, no estimating. Fail CLOSED per explicit
-    // instruction: if the check errors, times out, or returns no data, the
-    // trade is skipped rather than let through blind. $1000 floor chosen
-    // deliberately lower than the DSC-only $5000 floor, since these tokens
-    // are much newer — real data will show whether $1000 is still too high.
-    var liqUsd = await getDSLiquidity(tok.mint, tok.chain);
-    if (liqUsd === null) {
-      S.rejectCount++;
-      trackSkip('liquidity_check_failed');
-      if(diag) log('DIAG '+tok.n+' | SKIP: liquidity check failed (no data)', 'info');
-      return;
-    }
-    if (liqUsd < CFG.MIN_ENTRY_LIQ_USD) {
-      S.rejectCount++;
-      trackSkip('liquidity_too_low');
-      if(diag) log('DIAG '+tok.n+' | SKIP: liquidity $'+liqUsd.toFixed(0)+' below floor $'+CFG.MIN_ENTRY_LIQ_USD, 'info');
-      return;
-    }
-    tok.liq = liqUsd;
   }
 
   var slip = parseFloat(
