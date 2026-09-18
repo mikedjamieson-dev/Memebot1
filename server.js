@@ -323,6 +323,31 @@ async function getDSPrice(mint, pairAddress, chain) {
   }
 }
 
+// Real reported liquidity-in-USD for a mint, from the same DexScreener
+// pair data used for price above. IMPORTANT DIFFERENCE from the earlier,
+// reverted attempt: this is ONLY ever called in the background at
+// discovery time (fire-and-forget, never awaited by anything else), never
+// in the entry path. It cannot block, delay, or fail an entry — it just
+// populates a value on the pool token whenever it happens to come back,
+// for data collection only. No filter behavior anywhere depends on this.
+async function fetchLiquidityInBackground(mint, chain) {
+  try {
+    var chainId = chain || 'solana';
+    var url = 'https://api.dexscreener.com/tokens/v1/' + chainId + '/' + mint;
+    var res = await fetch(url, { timeout: 8000 });
+    if (!res.ok) return;
+    var data = await res.json();
+    var pairs = data.pairs || (Array.isArray(data) ? data : []);
+    if (pairs.length > 0 && pairs[0].liquidity && pairs[0].liquidity.usd !== undefined) {
+      var tok = S.tokens.get(mint);
+      if (tok) tok.liquidityUsd = parseFloat(pairs[0].liquidity.usd);
+    }
+  } catch(e) {
+    // Silent failure by design — this is background data collection, not
+    // a gate. A token simply keeps its liquidityUsd as null/unknown.
+  }
+}
+
 // ── DEXSCREENER TOKEN DISCOVERY ───────────────────────────────
 var SOL_QUERIES = [
   'solana meme', 'pump fun sol', 'pepe sol', 'dog sol',
@@ -693,6 +718,11 @@ async function handleNewPairFromInstruction(i) {
   });
 
   log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
+
+  // Fire-and-forget — no await here. Whatever comes back (or doesn't)
+  // just populates tok.liquidityUsd whenever it happens to arrive, with
+  // zero effect on discovery, scanning, or entry timing.
+  fetchLiquidityInBackground(mint, 'solana');
 }
 
 async function handleNewPair(u) {
@@ -1285,6 +1315,13 @@ function closeTradeReal(id, reason) {
     // very little data.
     entryPreVolatilityPct: tr.entryPreVolatilityPct !== undefined && tr.entryPreVolatilityPct !== null ? tr.entryPreVolatilityPct : null,
     entryPreVolTickCount: tr.entryPreVolTickCount || 0,
+    // Real DexScreener liquidity at the moment of entry — fetched in the
+    // BACKGROUND at discovery time, never blocking anything. Null means
+    // the background fetch simply hadn't returned yet when this trade
+    // opened, not that liquidity was zero. Pure data collection: testing
+    // whether thin liquidity correlates with blow-through severity before
+    // building anything that acts on it (e.g. scaling position size).
+    entryLiquidityUsd: tr.entryLiquidityUsd !== undefined ? tr.entryLiquidityUsd : null,
     // Diagnostic tracking for the autolock investigation — snapshotted
     // from real server-side state at the exact moment THIS trade closes,
     // not something read from the UI. If autolock is genuinely working,
@@ -1608,6 +1645,7 @@ async function runScan() {
     entryDustSwaps: tok.dustSwaps || 0,
     entryRealSwaps: tok.realSwaps || 0,
     entryPreVolatilityPct: computeMaxTickSwing(tok.recentPrices),
+    entryLiquidityUsd: tok.liquidityUsd !== undefined ? tok.liquidityUsd : null,
     entryPreVolTickCount: tok.recentPrices ? tok.recentPrices.length : 0,
   };
 
@@ -1887,7 +1925,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1936,6 +1974,7 @@ app.get('/api/portfolio/export', function(req, res) {
       t.trailTriggerTickJumpPct !== null && t.trailTriggerTickJumpPct !== undefined ? t.trailTriggerTickJumpPct : '',
       t.lowestPricePct !== null && t.lowestPricePct !== undefined ? t.lowestPricePct : '',
       csvSafe(t.priceHistory || ''),
+      t.entryLiquidityUsd !== null && t.entryLiquidityUsd !== undefined ? t.entryLiquidityUsd : '',
     ].join(','));
   });
   var csv = rows.join('\n');
