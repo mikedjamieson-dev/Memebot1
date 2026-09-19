@@ -931,7 +931,13 @@ function handleSwap(t) {
           return;
         }
 
-        if (trade.tpl === 'TRAIL' && trade.peakPrice) {
+        if (trade.tpl === 'TIERED' && !trade.tieredSold && pct >= 1.0) {
+          performTierOneSale(trade, priceUsd);
+          // Do not return — the trade stays open, remaining half continues
+          // to be checked against the trail/SL logic below on this same tick.
+        }
+
+        if ((trade.tpl === 'TRAIL' || trade.tpl === 'TIERED') && trade.peakPrice) {
           var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
           if (peakGain >= CFG.TRAIL_ACT) {
             var pullback = (trade.peakPrice - priceUsd) / trade.peakPrice;
@@ -1091,7 +1097,11 @@ async function updateOpenTradePrices() {
       continue;
     }
 
-    if (trade.tpl === 'TRAIL' && trade.peakPrice && trade.entryPrice) {
+    if (trade.tpl === 'TIERED' && !trade.tieredSold && pct >= 1.0) {
+      performTierOneSale(trade, price);
+    }
+
+    if ((trade.tpl === 'TRAIL' || trade.tpl === 'TIERED') && trade.peakPrice && trade.entryPrice) {
       var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
         var pullback = (trade.peakPrice - price) / trade.peakPrice;
@@ -1117,6 +1127,67 @@ async function updateOpenTradePrices() {
 }
 
 // ── CLOSE TRADE ───────────────────────────────────────────────
+// ── TIERED PROFIT-TAKING — partial close ────────────────────────
+// New capability, not previously possible: closes HALF of a trade's
+// position immediately when it reaches +100% gain, banking that profit
+// right away — slippage, fees, and the fund/savings split all applied
+// at that exact moment, not deferred. The other half keeps running under
+// the same trail-stop logic as every other trade. Built from a retroactive
+// simulation against 553 real trades showing this specific rule (single
+// tier at +100%, sell 50%) gives real protection against a winner fully
+// reversing into a loss, while costing much less of the upside on clean
+// winners than a two-tier version would.
+function performTierOneSale(trade, currentPriceUsd) {
+  if (trade.tieredSold) return;
+  var sellSize = parseFloat((trade.originalSize * 0.5).toFixed(4));
+  var pricePct = (currentPriceUsd - trade.entryPrice) / trade.entryPrice;
+  var slip = trade.slip || 0.005;
+  var pnl = parseFloat((sellSize * pricePct - sellSize * slip - CFG.SOL_GAS).toFixed(4));
+  var feePaid = parseFloat((sellSize * slip + CFG.SOL_GAS).toFixed(4));
+  S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
+
+  var fundAmount = 0;
+  var savingsAmount = 0;
+  if (pnl > CFG.MIN_SPLIT_WIN) {
+    savingsAmount = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
+    fundAmount = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
+  } else {
+    fundAmount = pnl;
+  }
+  S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
+  S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
+
+  // Reduce the trade's remaining live size — everything downstream (the
+  // eventual trail/SL close of the other half) now naturally operates on
+  // just the remaining half, since it reads trade.size directly.
+  trade.size = parseFloat((trade.size - sellSize).toFixed(4));
+
+  trade.tieredSold = true;
+  trade.tier1Size = sellSize;
+  trade.tier1ExitPrice = currentPriceUsd;
+  trade.tier1RealizedPnl = pnl;
+  trade.tier1RealizedPct = parseFloat((pricePct * 100).toFixed(2));
+  trade.tier1ClosedAt = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  trade.tier1SlipCost = feePaid;
+  trade.tier1FundAmount = fundAmount;
+  trade.tier1SavingsAmount = savingsAmount;
+
+  log('TIER SALE ' + trade.tok.n + ' | sold 50% at +' + (pricePct * 100).toFixed(1) + '% | realized $' + pnl.toFixed(2) + ' | remaining 50% still running', 'win');
+
+  // Auto-lock ratchet — same logic as in closeTradeReal. This is a real,
+  // immediately realized profit event and can create a genuine new fund
+  // high the instant it happens, per explicit instruction: protect
+  // profits as soon as they exist, don't wait for the whole trade to close.
+  if (S.autoLockEnabled && S.fund > S.sessionHighFund) {
+    S.sessionHighFund = S.fund;
+    var oldBase = S.dayStartFund;
+    S.dayStartFund = S.fund;
+    S.windingDown = false;
+    var newTrigger = S.fund * (1 - S.fundStopLossPct / 100);
+    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' — stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  }
+}
+
 function closeTradeReal(id, reason) {
   var i = S.open.findIndex(function(t) { return t.id === id; });
   if (i === -1) return;
@@ -1135,6 +1206,15 @@ function closeTradeReal(id, reason) {
   var feePaid = tr.size * (tr.slip || 0.005) + CFG.SOL_GAS;
   S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
 
+  // For a TIERED trade, tier 1's profit was already realized and banked
+  // the instant it happened — this "pnl" here is only the REMAINING
+  // half's own result. Win/loss classification and logging need to
+  // reflect the TRUE overall outcome of the whole original trade, so a
+  // trade that banked real profit on tier 1 and then gives back a little
+  // on the remaining half is correctly counted as a win, not a loss.
+  var tier1Pnl = tr.tieredSold ? tr.tier1RealizedPnl : 0;
+  var blendedPnl = parseFloat((tier1Pnl + pnl).toFixed(4));
+
   // Tracks exactly how this trade's PnL was actually split between the
   // trading fund and savings (80/20 on qualifying wins), so the CSV can
   // show the real fund-vs-savings breakdown per trade instead of only the
@@ -1146,25 +1226,27 @@ function closeTradeReal(id, reason) {
   if (pnl > CFG.MIN_SPLIT_WIN) {
     var savings = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
     var trading = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
-    S.fund = parseFloat((S.fund + trading).toFixed(4));
-    S.savings = parseFloat((S.savings + savings).toFixed(4));
     fundAmount = trading;
     savingsAmount = savings;
-    log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' | saved $' + savings.toFixed(2) + ' | ' + closeReason, 'win');
-    S.stats.w++;
-    if (tr.isGrad) S.stats.gw++;
-    if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
-  } else if (pnl > 0) {
-    S.fund = parseFloat((S.fund + pnl).toFixed(4));
+  } else {
     fundAmount = pnl;
-    log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + pnl.toFixed(2) + ' (below split min) | ' + closeReason, 'win');
+  }
+  S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
+  S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
+
+  // Win/loss classification and the log message use blendedPnl — the
+  // TRUE overall result of the original trade — not just this leg's own
+  // number, since a tiered trade's tier-1 profit is real money already
+  // banked, regardless of what the remaining half does afterward.
+  if (blendedPnl > 0) {
+    var tierNote = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' : '';
+    log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + blendedPnl.toFixed(2) + tierNote + ' | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
     if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else {
-    S.fund = parseFloat((S.fund + pnl).toFixed(4));
-    fundAmount = pnl;
-    log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' -$' + Math.abs(pnl).toFixed(2) + ' | ' + closeReason, 'loss');
+    var tierNoteLoss = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' : '';
+    log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' -$' + Math.abs(blendedPnl).toFixed(2) + tierNoteLoss + ' | ' + closeReason, 'loss');
     S.stats.l++;
     if (tr.isGrad) S.stats.gl++;
     if (tr.chain === 'base') S.chainStats.baseL++; else S.chainStats.solL++;
@@ -1205,6 +1287,12 @@ function closeTradeReal(id, reason) {
   if (S.closed.length > 200) S.closed.pop();
   S.open.splice(i, 1);
 
+  var finalLegPct = (tr.entryPrice && tr.currentPrice)
+    ? ((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100) : 0;
+  var blendedPnlPct = tr.tieredSold
+    ? parseFloat((0.5 * tr.tier1RealizedPct + 0.5 * finalLegPct).toFixed(2))
+    : parseFloat(finalLegPct.toFixed(2));
+
   var portfolioTrade = {
     id: tr.id,
     name: tr.tok && tr.tok.n ? tr.tok.n : '?',
@@ -1213,10 +1301,9 @@ function closeTradeReal(id, reason) {
     src: tr.src || 'unknown',
     entryPrice: tr.entryPrice || 0,
     exitPrice: tr.currentPrice || 0,
-    size: tr.size || 0,
-    pnl: parseFloat(pnl.toFixed(4)),
-    pnlPct: tr.entryPrice && tr.currentPrice
-      ? parseFloat(((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100).toFixed(2)) : 0,
+    size: tr.originalSize || tr.size || 0,
+    pnl: blendedPnl,
+    pnlPct: blendedPnlPct,
     closeReason: closeReason,
     isGrad: tr.isGrad || false,
     openedAt: tr.openedAt || '',
@@ -1226,7 +1313,7 @@ function closeTradeReal(id, reason) {
     sessionStartedAt: '',
     sessionEndedAt: '',
     slip: tr.slip || 0,
-    fees: parseFloat(feePaid.toFixed(4)),
+    fees: parseFloat((feePaid + (tr.tieredSold ? tr.tier1SlipCost : 0)).toFixed(4)),
     priceUpdates: tr.priceUpdates || 0,
     entryMcap: (tr.src === 'PUMP') ? (tr.entryMcap || 0) : 0,
     exitMcap: tr.currentMcap || 0,
@@ -1252,12 +1339,12 @@ function closeTradeReal(id, reason) {
     // all-time change — this exact check is what would have caught the
     // $12.32-vs-$1.53 confusion immediately instead of requiring a
     // manual investigation.
-    netFundImpact: parseFloat((fundAmount - (tr.entrySlipCost || 0)).toFixed(4)),
+    netFundImpact: parseFloat(((fundAmount + (tr.tieredSold ? tr.tier1FundAmount : 0)) - (tr.entrySlipCost || 0)).toFixed(4)),
     // Change 3: explicit fund vs savings split, per trade — not just the
     // combined PnL. Zero savingsAmount on losses/small wins is correct,
     // not a display bug.
-    fundAmount: parseFloat(fundAmount.toFixed(4)),
-    savingsAmount: parseFloat(savingsAmount.toFixed(4)),
+    fundAmount: parseFloat((fundAmount + (tr.tieredSold ? tr.tier1FundAmount : 0)).toFixed(4)),
+    savingsAmount: parseFloat((savingsAmount + (tr.tieredSold ? tr.tier1SavingsAmount : 0)).toFixed(4)),
     // Change 4: total time the trade was open, in seconds — distinct from
     // secToFirstUpdate (time to first price tick). Lets fast-crash losses
     // be separated from slow-bleed losses, which are likely different
@@ -1322,6 +1409,16 @@ function closeTradeReal(id, reason) {
     // whether thin liquidity correlates with blow-through severity before
     // building anything that acts on it (e.g. scaling position size).
     entryLiquidityUsd: tr.entryLiquidityUsd !== undefined ? tr.entryLiquidityUsd : null,
+    // New — Tiered Profits mode: whether this trade's first half was sold
+    // at +100% gain, and the details of that partial sale if so. Lets
+    // tiered trades be reviewed with the same rigor as everything else —
+    // did this actually rescue reversals the way the retroactive
+    // simulation predicted, without meaningfully costing clean winners.
+    tieredSold: tr.tieredSold ? 'Yes' : 'No',
+    tier1ExitPrice: tr.tieredSold ? tr.tier1ExitPrice : null,
+    tier1RealizedPct: tr.tieredSold ? tr.tier1RealizedPct : null,
+    tier1RealizedPnl: tr.tieredSold ? tr.tier1RealizedPnl : null,
+    tier1ClosedAt: tr.tieredSold ? tr.tier1ClosedAt : '',
     // Diagnostic tracking for the autolock investigation — snapshotted
     // from real server-side state at the exact moment THIS trade closes,
     // not something read from the UI. If autolock is genuinely working,
@@ -1458,6 +1555,7 @@ async function runGradSniper() {
       tok: { n: cand.name || mint.slice(0, 8), src: 'GRAD', liq: cand.solInCurve * SOL_PRICE_USD },
       sc: 90,
       size: size,
+      originalSize: size,
       tpl: 'TRAIL',
       tpPct: S.takeProfitPct,
       sl: S.stopLossPct / 100,
@@ -1606,6 +1704,7 @@ async function runScan() {
     tok: Object.assign({}, tok),
     sc: 85,
     size: parseFloat(size.toFixed(4)),
+    originalSize: parseFloat(size.toFixed(4)),
     tpl: S.takeProfitMode,
     tpPct: S.takeProfitPct,
     sl: S.stopLossPct / 100,
@@ -1854,7 +1953,7 @@ app.post('/api/settings', function(req, res) {
     var sf = parseFloat(req.body.sessionFund);
     if (!isNaN(sf) && sf > 0) { S.sessionFund = parseFloat(sf.toFixed(2)); log('Session fund: $' + S.sessionFund, 'info'); }
   }
-  if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED')) {
+  if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
   }
   if (req.body.takeProfitPct !== undefined) {
@@ -1925,7 +2024,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -1975,6 +2074,11 @@ app.get('/api/portfolio/export', function(req, res) {
       t.lowestPricePct !== null && t.lowestPricePct !== undefined ? t.lowestPricePct : '',
       csvSafe(t.priceHistory || ''),
       t.entryLiquidityUsd !== null && t.entryLiquidityUsd !== undefined ? t.entryLiquidityUsd : '',
+      csvSafe(t.tieredSold || 'No'),
+      t.tier1ExitPrice !== null && t.tier1ExitPrice !== undefined ? t.tier1ExitPrice : '',
+      t.tier1RealizedPct !== null && t.tier1RealizedPct !== undefined ? t.tier1RealizedPct : '',
+      t.tier1RealizedPnl !== null && t.tier1RealizedPnl !== undefined ? t.tier1RealizedPnl : '',
+      csvSafe(t.tier1ClosedAt || ''),
     ].join(','));
   });
   var csv = rows.join('\n');
