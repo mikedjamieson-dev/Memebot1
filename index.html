@@ -240,13 +240,14 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <button class="settings-back" onclick="closeSub('sub-tp')">← BACK</button>
       <div class="settings-sub-title">TAKE PROFIT MODE</div>
       <div class="settings-lbl">SELECT MODE</div>
-      <div class="tp-mode-row">
+      <div class="tp-mode-row" style="grid-template-columns:1fr 1fr 1fr;">
         <button class="tp-btn active" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
         <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
+        <button class="tp-btn" id="btn-tiered" onclick="selectTP('TIERED')">TIERED PROFITS</button>
       </div>
       <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET % — SELECT FIXED ABOVE</div>
       <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;"/>
-      <div class="settings-hint">Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.</div>
+      <div class="settings-hint">Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.<br>Tiered: sells 50% of the position the moment it hits +100% gain, banking that profit immediately — the remaining 50% keeps running on the same trail-stop logic.</div>
       <button class="settings-save" onclick="saveTP()">SAVE TAKE PROFIT</button>
       <div class="settings-status" id="status-tp"></div>
     </div>
@@ -742,6 +743,7 @@ function selectTP(mode) {
   currentTPMode = mode;
   document.getElementById('btn-trail').classList.toggle('active', mode === 'TRAIL');
   document.getElementById('btn-fixed').classList.toggle('active', mode === 'FIXED');
+  document.getElementById('btn-tiered').classList.toggle('active', mode === 'TIERED');
   var input = document.getElementById('input-tp-pct');
   var lbl = document.getElementById('tp-pct-lbl');
   if (mode === 'FIXED') {
@@ -1055,6 +1057,9 @@ async function fetchState() {
     if (tpMode === 'TRAIL') {
       badge.textContent = 'TRAIL STOP'; badge.style.borderColor = 'var(--purple)'; badge.style.color = 'var(--purple)';
       desc.textContent = '📈 Trail: activates at 4% gain — exits on 2% pullback | SL: ' + slPct + '%';
+    } else if (tpMode === 'TIERED') {
+      badge.textContent = 'TIERED PROFITS'; badge.style.borderColor = 'var(--yellow)'; badge.style.color = 'var(--yellow)';
+      desc.textContent = '🎯 Tiered: sells 50% at +100% gain, banks it immediately — remaining 50% rides the trail stop | SL: ' + slPct + '%';
     } else {
       badge.textContent = 'FIXED ' + tpPct + '%'; badge.style.borderColor = 'var(--green)'; badge.style.color = 'var(--green)';
       desc.textContent = '🎯 Fixed take profit: exits at ' + tpPct + '% | SL: ' + slPct + '%';
@@ -1066,6 +1071,7 @@ async function fetchState() {
       currentTPMode = tpMode;
       document.getElementById('btn-trail').classList.toggle('active', tpMode === 'TRAIL');
       document.getElementById('btn-fixed').classList.toggle('active', tpMode === 'FIXED');
+      document.getElementById('btn-tiered').classList.toggle('active', tpMode === 'TIERED');
       var tpInput = document.getElementById('input-tp-pct');
       var tpLbl = document.getElementById('tp-pct-lbl');
       if (tpMode === 'FIXED') {
