@@ -872,6 +872,21 @@ function handleSwap(t) {
   if (priceUsd) {
     pumpPrices[mint] = { price: priceUsd, solInCurve: 0, ts: Date.now() };
 
+    // Event-driven entry — the actual fix for the round-robin scanning
+    // bottleneck. Previously a token could only get checked for entry
+    // whenever the fixed 500ms scanner happened to land on it, which at a
+    // large pool could be 30+ minutes between checks — nearly guaranteeing
+    // its price was no longer fresh enough by the time its turn came up.
+    // Now the check happens the instant real trading activity happens on
+    // it, exactly when the price genuinely IS fresh. Fire-and-forget: not
+    // awaited, so this never delays processing of the next incoming swap.
+    // tryEnterToken's own internal guard prevents this from double-firing
+    // against the same mint the 500ms backup scanner might also be
+    // checking at nearly the same moment.
+    if (poolTok && !S.open.find(function(t) { return t.mint === mint; })) {
+      tryEnterToken(poolTok, priceUsd);
+    }
+
     S.open.forEach(function(trade) {
       if (trade.mint !== mint || trade.src !== 'PUMP') return;
 
@@ -1618,19 +1633,34 @@ function trackSkip(reason) {
 var scanI = null;
 var scanIdx = 0;
 
-async function runScan() {
+// ── ENTRY LOGIC (shared — event-driven AND scanner both call this) ─────
+// Extracted from the old inline runScan() body. Every filter and
+// threshold below is UNCHANGED from before — this is purely a structural
+// change in WHEN a token gets checked, not what it's checked against.
+// freshPrice is passed by the event-driven caller (handleSwap) with a
+// price that just arrived, bypassing the "is the cache <=1000ms old"
+// check entirely since we already know it's fresh — it's the exact price
+// that just came in. The backup scanner (runScan) calls this with no
+// freshPrice, falling back to the original cache-freshness check.
+var pendingEntryChecks = new Set();
+
+async function tryEnterToken(tok, freshPrice) {
+  if (!tok || !tok.mint) return;
+  if (pendingEntryChecks.has(tok.mint)) return;
+  if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
+  pendingEntryChecks.add(tok.mint);
+  try {
+    await tryEnterTokenInner(tok, freshPrice);
+  } finally {
+    pendingEntryChecks.delete(tok.mint);
+  }
+}
+
+async function tryEnterTokenInner(tok, freshPrice) {
   if (!S.running || S.tokens.size === 0) return;
   if (S.windingDown) return;
   if (S.fund < 1) { stopBot(); return; }
   if (S.open.length >= S.maxOpen) return;
-
-  var tokens = Array.from(S.tokens.values());
-  if (tokens.length === 0) return;
-
-  var tok = tokens[scanIdx % tokens.length];
-  scanIdx++;
-  S.scanCount++;
-
   if (!tok || !tok.mint) return;
 
   var diag = (S.scanCount % 200 === 0);
@@ -1664,7 +1694,9 @@ async function runScan() {
   if (tok.src === 'DSC') { trackSkip('dsc_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
 
   var entryPrice = null;
-  if (tok.src === 'PUMP' || tok.src === 'BONK') {
+  if (freshPrice && freshPrice > 0) {
+    entryPrice = freshPrice;
+  } else if (tok.src === 'PUMP' || tok.src === 'BONK') {
     var cached = pumpPrices[tok.mint];
     if (cached && (Date.now() - cached.ts) <= 1000) {
       entryPrice = cached.price;
@@ -1750,6 +1782,29 @@ async function runScan() {
 
   S.open.push(trade);
   log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+}
+
+// ── MAIN SCANNER (now a thin backup pass) ───────────────────────
+// Still runs every 500ms as a safety net — covers DSC tokens (though DSC
+// entries remain disabled) and catches anything the event-driven trigger
+// might have missed — but entry logic itself now lives in the shared
+// function above, not duplicated here.
+async function runScan() {
+  if (!S.running || S.tokens.size === 0) return;
+  if (S.windingDown) return;
+  if (S.fund < 1) { stopBot(); return; }
+  if (S.open.length >= S.maxOpen) return;
+
+  var tokens = Array.from(S.tokens.values());
+  if (tokens.length === 0) return;
+
+  var tok = tokens[scanIdx % tokens.length];
+  scanIdx++;
+  S.scanCount++;
+
+  if (!tok || !tok.mint) return;
+
+  await tryEnterToken(tok, null);
 }
 
 // ── POOL CLEANUP ──────────────────────────────────────────────
