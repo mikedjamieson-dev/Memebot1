@@ -884,7 +884,7 @@ function handleSwap(t) {
     // against the same mint the 500ms backup scanner might also be
     // checking at nearly the same moment.
     if (poolTok && !S.open.find(function(t) { return t.mint === mint; })) {
-      tryEnterToken(poolTok, priceUsd);
+      tryEnterToken(poolTok, priceUsd, 'event');
     }
 
     S.open.forEach(function(trade) {
@@ -1434,6 +1434,14 @@ function closeTradeReal(id, reason) {
     tier1RealizedPct: tr.tieredSold ? tr.tier1RealizedPct : null,
     tier1RealizedPnl: tr.tieredSold ? tr.tier1RealizedPnl : null,
     tier1ClosedAt: tr.tieredSold ? tr.tier1ClosedAt : '',
+    // Lets any session be reviewed after the fact to see the real split
+    // between event-driven and backup-scanner entries, instead of only
+    // being checkable live via /api/state while the bot is running.
+    entryTrigger: tr.entryTrigger || 'scanner',
+    // Captures whether the bot was in wind-down mode at the exact moment
+    // this trade closed — lets the auto-resume behavior be verified
+    // directly from the data instead of just trusting the activity log.
+    windingDownAtClose: S.windingDown ? 'Yes' : 'No',
     // Diagnostic tracking for the autolock investigation — snapshotted
     // from real server-side state at the exact moment THIS trade closes,
     // not something read from the UI. If autolock is genuinely working,
@@ -1486,13 +1494,27 @@ function closeTradeReal(id, reason) {
   if (currentLoss >= lossLimit && !S.windingDown) {
     S.windingDown = true;
     log('FUND LOSS LIMIT HIT — ' + S.fundStopLossPct + '% reached — no new entries', 'rug');
-    var windDownCheck = setInterval(function() {
+    S.windDownCheckInterval = setInterval(function() {
       if (S.open.length === 0) {
-        clearInterval(windDownCheck);
+        clearInterval(S.windDownCheckInterval);
+        S.windDownCheckInterval = null;
         log('All trades closed — bot fully stopped', 'info');
         stopBot();
       }
     }, 2000);
+  } else if (S.windingDown && currentLoss < lossLimit) {
+    // Auto-resume: the fund recovered back above the loss line while
+    // still-open trades were finishing out naturally (exactly the
+    // scenario that used to force a full stop even after the fund had
+    // already recovered). Uses the exact same comparison the trigger
+    // itself uses — if that math says we're no longer past the limit,
+    // cancel the wind-down and resume taking new entries.
+    S.windingDown = false;
+    if (S.windDownCheckInterval) {
+      clearInterval(S.windDownCheckInterval);
+      S.windDownCheckInterval = null;
+    }
+    log('FUND RECOVERED — back above ' + S.fundStopLossPct + '% loss limit, resuming entries', 'win');
   }
 }
 
@@ -1644,19 +1666,19 @@ var scanIdx = 0;
 // freshPrice, falling back to the original cache-freshness check.
 var pendingEntryChecks = new Set();
 
-async function tryEnterToken(tok, freshPrice) {
+async function tryEnterToken(tok, freshPrice, triggerSource) {
   if (!tok || !tok.mint) return;
   if (pendingEntryChecks.has(tok.mint)) return;
   if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
   pendingEntryChecks.add(tok.mint);
   try {
-    await tryEnterTokenInner(tok, freshPrice);
+    await tryEnterTokenInner(tok, freshPrice, triggerSource);
   } finally {
     pendingEntryChecks.delete(tok.mint);
   }
 }
 
-async function tryEnterTokenInner(tok, freshPrice) {
+async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   if (!S.running || S.tokens.size === 0) return;
   if (S.windingDown) return;
   if (S.fund < 1) { stopBot(); return; }
@@ -1778,6 +1800,7 @@ async function tryEnterTokenInner(tok, freshPrice) {
     entryPreVolatilityPct: computeMaxTickSwing(tok.recentPrices),
     entryLiquidityUsd: tok.liquidityUsd !== undefined ? tok.liquidityUsd : null,
     entryPreVolTickCount: tok.recentPrices ? tok.recentPrices.length : 0,
+    entryTrigger: triggerSource || 'scanner',
   };
 
   S.open.push(trade);
@@ -1804,7 +1827,7 @@ async function runScan() {
 
   if (!tok || !tok.mint) return;
 
-  await tryEnterToken(tok, null);
+  await tryEnterToken(tok, null, 'scanner');
 }
 
 // ── POOL CLEANUP ──────────────────────────────────────────────
@@ -1894,6 +1917,7 @@ function stopBot() {
   if (priceI) clearInterval(priceI);
   if (dsI) clearInterval(dsI);
   if (cleanI) clearInterval(cleanI);
+  if (S.windDownCheckInterval) { clearInterval(S.windDownCheckInterval); S.windDownCheckInterval = null; }
   if (solPriceI) clearInterval(solPriceI);
   if (pumpWs) {
     bqDeliberateStop = true;
@@ -2079,7 +2103,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -2134,6 +2158,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.tier1RealizedPct !== null && t.tier1RealizedPct !== undefined ? t.tier1RealizedPct : '',
       t.tier1RealizedPnl !== null && t.tier1RealizedPnl !== undefined ? t.tier1RealizedPnl : '',
       csvSafe(t.tier1ClosedAt || ''),
+      csvSafe(t.entryTrigger || 'scanner'),
+      csvSafe(t.windingDownAtClose || 'No'),
     ].join(','));
   });
   var csv = rows.join('\n');
