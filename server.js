@@ -1424,6 +1424,13 @@ function closeTradeReal(id, reason) {
     // whether thin liquidity correlates with blow-through severity before
     // building anything that acts on it (e.g. scaling position size).
     entryLiquidityUsd: tr.entryLiquidityUsd !== undefined ? tr.entryLiquidityUsd : null,
+    // New investigation: how long a token had been sitting in the pool
+    // before we actually entered it. The event-driven entry fix means a
+    // token can now be traded the instant it first qualifies, with zero
+    // time to prove it isn't already dying — testing whether very
+    // freshly-discovered entries perform worse, independent of anything
+    // else already tested (which found no predictive signal).
+    secondsSinceDiscovery: tr.secondsSinceDiscovery !== undefined ? tr.secondsSinceDiscovery : null,
     // New — Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
     // tiered trades be reviewed with the same rigor as everything else —
@@ -1799,6 +1806,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     entryRealSwaps: tok.realSwaps || 0,
     entryPreVolatilityPct: computeMaxTickSwing(tok.recentPrices),
     entryLiquidityUsd: tok.liquidityUsd !== undefined ? tok.liquidityUsd : null,
+    secondsSinceDiscovery: tok.addedAt ? parseFloat(((Date.now() - tok.addedAt) / 1000).toFixed(2)) : null,
     entryPreVolTickCount: tok.recentPrices ? tok.recentPrices.length : 0,
     entryTrigger: triggerSource || 'scanner',
   };
@@ -2103,7 +2111,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -2160,6 +2168,7 @@ app.get('/api/portfolio/export', function(req, res) {
       csvSafe(t.tier1ClosedAt || ''),
       csvSafe(t.entryTrigger || 'scanner'),
       csvSafe(t.windingDownAtClose || 'No'),
+      t.secondsSinceDiscovery !== null && t.secondsSinceDiscovery !== undefined ? t.secondsSinceDiscovery : '',
     ].join(','));
   });
   var csv = rows.join('\n');
