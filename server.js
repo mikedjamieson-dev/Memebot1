@@ -1754,6 +1754,18 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     }
   }
 
+  // Final re-check, right before anything commits — closes the race
+  // window the event-driven entry fix opened. Multiple different tokens
+  // can now have entry checks in flight at once (each passing the
+  // original check at the top of this function before any of them
+  // actually finishes), so the count needs to be verified again one more
+  // time here, with nothing async between this check and the trade
+  // actually being created, so nothing else can slip in between.
+  if (S.open.length >= S.maxOpen) {
+    trackSkip('max_open_reached_race');
+    return;
+  }
+
   var slip = parseFloat(
     Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
   );
