@@ -671,6 +671,13 @@ async function handleNewPairFromInstruction(i) {
     tokenName = structResult.name;
   }
   var name = ((symbol || tokenName || 'NEW') + '').toUpperCase().slice(0, 12);
+  // New investigation: the dev/creator wallet, pulled from the same raw
+  // creation data already used above — confirmed present for Pump.fun,
+  // not yet verified for LetsBonk. Stored so real-time trade activity can
+  // be checked against it (does the dev buy more or sell), a genuinely
+  // different, behavioral signal from the static dev-holding-% already
+  // tested and found non-predictive.
+  var devWallet = findArgValue(programArgs, ['creator']);
 
   S.pumpCount++;
   if (src === 'BONK') S.bonkCount++;
@@ -715,6 +722,7 @@ async function handleNewPairFromInstruction(i) {
     pairAddress: null,
     addedAt: Date.now(),
     isNew: true,
+    devWallet: devWallet || null,
   });
 
   log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
@@ -844,6 +852,10 @@ function handleSwap(t) {
       } else if (t.Side === 'Sell') {
         poolTok.uniqueSellers = poolTok.uniqueSellers || new Set();
         poolTok.uniqueSellers.add(traderAddress);
+      }
+      if (poolTok.devWallet && traderAddress === poolTok.devWallet) {
+        if (t.Side === 'Buy') poolTok.devBought = true;
+        else if (t.Side === 'Sell') poolTok.devSold = true;
       }
     }
     if (swapUsd > 0) {
@@ -1431,6 +1443,15 @@ function closeTradeReal(id, reason) {
     // freshly-discovered entries perform worse, independent of anything
     // else already tested (which found no predictive signal).
     secondsSinceDiscovery: tr.secondsSinceDiscovery !== undefined ? tr.secondsSinceDiscovery : null,
+    // New investigation: real-time dev wallet activity (buying more vs
+    // selling) rather than the static dev-holding-% already tested and
+    // found non-predictive. HasDevWalletData lets us confirm whether the
+    // creator address is actually being captured (confirmed present for
+    // Pump.fun; not yet verified for LetsBonk) before trusting the other
+    // two columns as meaningful.
+    entryDevBought: tr.entryDevBought || 'No',
+    entryDevSold: tr.entryDevSold || 'No',
+    hasDevWalletData: tr.hasDevWalletData || 'No',
     // New — Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
     // tiered trades be reviewed with the same rigor as everything else —
@@ -1819,6 +1840,9 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     entryPreVolatilityPct: computeMaxTickSwing(tok.recentPrices),
     entryLiquidityUsd: tok.liquidityUsd !== undefined ? tok.liquidityUsd : null,
     secondsSinceDiscovery: tok.addedAt ? parseFloat(((Date.now() - tok.addedAt) / 1000).toFixed(2)) : null,
+    entryDevBought: tok.devBought ? 'Yes' : 'No',
+    entryDevSold: tok.devSold ? 'Yes' : 'No',
+    hasDevWalletData: tok.devWallet ? 'Yes' : 'No',
     entryPreVolTickCount: tok.recentPrices ? tok.recentPrices.length : 0,
     entryTrigger: triggerSource || 'scanner',
   };
@@ -2123,7 +2147,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -2181,6 +2205,9 @@ app.get('/api/portfolio/export', function(req, res) {
       csvSafe(t.entryTrigger || 'scanner'),
       csvSafe(t.windingDownAtClose || 'No'),
       t.secondsSinceDiscovery !== null && t.secondsSinceDiscovery !== undefined ? t.secondsSinceDiscovery : '',
+      csvSafe(t.entryDevBought || 'No'),
+      csvSafe(t.entryDevSold || 'No'),
+      csvSafe(t.hasDevWalletData || 'No'),
     ].join(','));
   });
   var csv = rows.join('\n');
