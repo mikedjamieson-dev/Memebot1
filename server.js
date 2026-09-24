@@ -1737,6 +1737,18 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     return;
   }
 
+  // Confirmed with real data, measured specifically within the group that
+  // already passed the dev-sold filter above (not confounded with it):
+  // entries under 5 seconds since discovery showed a 53.1% win rate and
+  // +$0.55 avg profit/trade; 5s+ dropped to 36.3% win rate and roughly
+  // breakeven. Held consistently across 12 of 13 sessions checked.
+  if (tok.addedAt && (Date.now() - tok.addedAt) >= 5000) {
+    S.rejectCount++;
+    trackSkip('too_stale_at_entry');
+    if(diag) log('DIAG '+tok.n+' | SKIP: '+((Date.now()-tok.addedAt)/1000).toFixed(1)+'s since discovery (>=5s)', 'info');
+    return;
+  }
+
   if ((tok.src === 'PUMP' || tok.src === 'BONK') && tok.mcap > 0 && tok.mcap < CFG.MIN_MCAP_USD) {
     trackSkip('mcap_below_floor');
     if(diag) log('DIAG '+tok.n+' | SKIP: mcap $'+tok.mcap.toFixed(0)+' below floor $'+CFG.MIN_MCAP_USD, 'info');
