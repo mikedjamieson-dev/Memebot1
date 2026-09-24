@@ -903,9 +903,19 @@ function handleSwap(t) {
       if (trade.mint !== mint || trade.src !== 'PUMP') return;
 
       if (trade.currentPrice && trade.currentPrice > 0) {
-        var change = Math.abs(priceUsd - trade.currentPrice) / trade.currentPrice;
-        if (change > 0.90) {
-          log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (change * 100).toFixed(0) + '% single tick', 'warn');
+        // Directional fix: only reject a downward crash — a genuine large
+        // GAIN is never rejected anymore. We've proven extensively that
+        // huge single-tick upward moves (100%, 300%, 500%+) are real,
+        // common market behavior on these coins, not bad data — the old
+        // symmetric check was silently discarding real winning trades
+        // (confirmed: SEND closed with TickCount 0, price never once
+        // updated, small stale loss, while likely mooning in reality).
+        // A sudden near-total price collapse is still the one thing worth
+        // guarding against, since that's the scenario a real feed glitch
+        // could falsely trigger a stop-loss on a trade that's actually fine.
+        var drop = (trade.currentPrice - priceUsd) / trade.currentPrice;
+        if (drop > 0.90) {
+          log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
           return;
         }
       }
@@ -1083,9 +1093,9 @@ async function updateOpenTradePrices() {
     if (!price || price <= 0) continue;
 
     if (trade.currentPrice && trade.currentPrice > 0) {
-      var change = Math.abs(price - trade.currentPrice) / trade.currentPrice;
-      if (change > 0.90) {
-        log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (change * 100).toFixed(0) + '% move', 'warn');
+      var drop = (trade.currentPrice - price) / trade.currentPrice;
+      if (drop > 0.90) {
+        log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
         continue;
       }
     }
