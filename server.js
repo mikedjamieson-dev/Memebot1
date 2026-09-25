@@ -22,7 +22,7 @@ var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 // -- CONFIGURATION ---------------------------------------------
 const CFG = {
   MAX_POS: 0.05,
-  MAX_OPEN: 8,
+  MAX_OPEN: 4,
   MAX_GRAD: 2,
   SOL_GAS: 0.001,
   TRAIL_ACT: 0.04,
@@ -115,7 +115,7 @@ const S = {
   takeProfitPct: 5,
   stopLossPct: 10,
   totalFees: 0,
-  maxOpen: 8,
+  maxOpen: 4,
   fundStopLossPct: 10,
   windingDown: false,
   maxPool: 10000,
