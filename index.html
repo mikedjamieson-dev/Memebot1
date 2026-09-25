@@ -241,9 +241,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-sub-title">TAKE PROFIT MODE</div>
       <div class="settings-lbl">SELECT MODE</div>
       <div class="tp-mode-row" style="grid-template-columns:1fr 1fr 1fr;">
-        <button class="tp-btn active" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
+        <button class="tp-btn" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
         <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
-        <button class="tp-btn" id="btn-tiered" onclick="selectTP('TIERED')">TIERED PROFITS</button>
+        <button class="tp-btn active" id="btn-tiered" onclick="selectTP('TIERED')">TIERED PROFITS</button>
       </div>
       <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET % — SELECT FIXED ABOVE</div>
       <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;"/>
@@ -662,7 +662,7 @@ var allLogs = [];
 var frozen = false;
 var startTime = null;
 var timerId = null;
-var currentTPMode = 'TRAIL';
+var currentTPMode = 'TIERED';
 var currentSolEnabled = true;
 var currentBaseEnabled = false;
 var currentGradEnabled = false;
