@@ -111,7 +111,7 @@ const S = {
   basePool: 0,
   dscKey: 0,
   sessionFund: 100,
-  takeProfitMode: 'TRAIL',
+  takeProfitMode: 'TIERED',
   takeProfitPct: 5,
   stopLossPct: 10,
   totalFees: 0,
