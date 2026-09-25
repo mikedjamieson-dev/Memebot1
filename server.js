@@ -11,7 +11,7 @@ app.use(cors({ origin: '*' }));
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
-// ── API KEYS ──────────────────────────────────────────────────
+// -- API KEYS --------------------------------------------------
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
 const BITQUERY_TOKEN = process.env.BITQUERY_TOKEN || '';
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
@@ -19,7 +19,7 @@ var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
 var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 
-// ── CONFIGURATION ─────────────────────────────────────────────
+// -- CONFIGURATION ---------------------------------------------
 const CFG = {
   MAX_POS: 0.05,
   MAX_OPEN: 8,
@@ -51,7 +51,7 @@ const CFG = {
   WIN_COOLDOWN_MS: 300000,
 };
 
-// ── PORTFOLIO DATA ────────────────────────────────────────────
+// -- PORTFOLIO DATA --------------------------------------------
 const PORTFOLIO_FILE = path.join(__dirname, 'data', 'portfolio.json');
 
 var P = {
@@ -67,10 +67,10 @@ function loadPortfolio() {
     if (fs.existsSync(PORTFOLIO_FILE)) {
       var raw = fs.readFileSync(PORTFOLIO_FILE, 'utf8');
       P = JSON.parse(raw);
-      log('Portfolio loaded — ' + P.trades.length + ' trades in history', 'info');
+      log('Portfolio loaded - ' + P.trades.length + ' trades in history', 'info');
     }
   } catch(e) {
-    log('Portfolio file not found — starting fresh', 'info');
+    log('Portfolio file not found - starting fresh', 'info');
   }
 }
 
@@ -82,7 +82,7 @@ function savePortfolio() {
   } catch(e) {}
 }
 
-// ── STATE ─────────────────────────────────────────────────────
+// -- STATE -----------------------------------------------------
 const S = {
   tokens: new Map(),
   open: [],
@@ -128,7 +128,7 @@ const S = {
   bestTrade: null,
 };
 
-// ── LOGGING ───────────────────────────────────────────────────
+// -- LOGGING ---------------------------------------------------
 function log(msg, type) {
   type = type || 'info';
   var entry = {
@@ -141,7 +141,7 @@ function log(msg, type) {
   console.log('[' + type.toUpperCase() + '] ' + msg);
 }
 
-// ── SOL PRICE ─────────────────────────────────────────────────
+// -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
 async function updateSolPrice() {
   try {
@@ -158,7 +158,7 @@ async function updateSolPrice() {
   } catch(e) {}
 }
 
-// ── BAN SYSTEM ────────────────────────────────────────────────
+// -- BAN SYSTEM ------------------------------------------------
 function permanentBan(mint, reason) {
   S.permanentBans.set(mint, reason);
   log('PERMANENT BAN ' + mint.slice(0, 8) + '... | ' + reason, 'warn');
@@ -185,17 +185,17 @@ function recheckExpiredBans() {
   S.tempBans.forEach(function(ban, mint) {
     if (now - ban.bannedAt >= CFG.BAN_TEMP_MS) {
       S.tempBans.delete(mint);
-      log('RECHECK ' + mint.slice(0, 8) + '... — 12hr ban expired', 'info');
+      log('RECHECK ' + mint.slice(0, 8) + '... - 12hr ban expired', 'info');
     }
   });
 }
 
-// ── WALLET CONCENTRATION CHECK ────────────────────────────────
-// One-off HTTP query (not the WebSocket stream) — only called on tokens that
+// -- WALLET CONCENTRATION CHECK --------------------------------
+// One-off HTTP query (not the WebSocket stream) - only called on tokens that
 // already passed every other filter, right before entry, to avoid spending
 // extra calls on candidates we'd reject anyway.
 // SOLANA_INCINERATOR is a known burn address: tokens sent here are permanently
-// destroyed and can never be sold, but still count as a "holder" balance-wise —
+// destroyed and can never be sold, but still count as a "holder" balance-wise ?
 // must be excluded or we'd wrongly reject tokens that burned supply this way.
 var SOLANA_INCINERATOR = '1nc1nerator11111111111111111111111111111111';
 var pendingConcentrationChecks = new Set();
@@ -236,7 +236,7 @@ async function checkWalletConcentration(mint) {
   }
 }
 
-// ── SAFETY CHECKLIST ──────────────────────────────────────────
+// -- SAFETY CHECKLIST ------------------------------------------
 async function runSafetyChecklist(mint, tokenData, isPumpFun) {
   if (tokenData.mintAuthority &&
       tokenData.mintAuthority !== 'null' &&
@@ -247,7 +247,7 @@ async function runSafetyChecklist(mint, tokenData, isPumpFun) {
   if (tokenData.freezeAuthority &&
       tokenData.freezeAuthority !== 'null' &&
       tokenData.freezeAuthority !== '') {
-    permanentBan(mint, 'Freeze authority retained — honeypot');
+    permanentBan(mint, 'Freeze authority retained - honeypot');
     return false;
   }
   if (tokenData.lpBurn !== undefined && tokenData.lpBurn !== null && tokenData.lpBurn < 80) {
@@ -261,14 +261,14 @@ async function runSafetyChecklist(mint, tokenData, isPumpFun) {
   if (!isPumpFun) {
     var isHoneypot = await checkHoneypot(mint);
     if (isHoneypot) {
-      permanentBan(mint, 'Honeypot confirmed — sell simulation failed');
+      permanentBan(mint, 'Honeypot confirmed - sell simulation failed');
       return false;
     }
   }
   return true;
 }
 
-// ── SOLANA HONEYPOT CHECK ─────────────────────────────────────
+// -- SOLANA HONEYPOT CHECK -------------------------------------
 async function checkHoneypot(mint) {
   try {
     var res = await fetch(
@@ -286,7 +286,7 @@ async function checkHoneypot(mint) {
   }
 }
 
-// ── BASE HONEYPOT CHECK ───────────────────────────────────────
+// -- BASE HONEYPOT CHECK ---------------------------------------
 async function checkBaseHoneypot(address) {
   try {
     var res = await fetch(
@@ -303,7 +303,7 @@ async function checkBaseHoneypot(address) {
   }
 }
 
-// ── DEXSCREENER PRICE ─────────────────────────────────────────
+// -- DEXSCREENER PRICE -----------------------------------------
 async function getDSPrice(mint, pairAddress, chain) {
   try {
     var chainId = chain || 'solana';
@@ -327,7 +327,7 @@ async function getDSPrice(mint, pairAddress, chain) {
 // pair data used for price above. IMPORTANT DIFFERENCE from the earlier,
 // reverted attempt: this is ONLY ever called in the background at
 // discovery time (fire-and-forget, never awaited by anything else), never
-// in the entry path. It cannot block, delay, or fail an entry — it just
+// in the entry path. It cannot block, delay, or fail an entry - it just
 // populates a value on the pool token whenever it happens to come back,
 // for data collection only. No filter behavior anywhere depends on this.
 async function fetchLiquidityInBackground(mint, chain) {
@@ -343,12 +343,12 @@ async function fetchLiquidityInBackground(mint, chain) {
       if (tok) tok.liquidityUsd = parseFloat(pairs[0].liquidity.usd);
     }
   } catch(e) {
-    // Silent failure by design — this is background data collection, not
+    // Silent failure by design - this is background data collection, not
     // a gate. A token simply keeps its liquidityUsd as null/unknown.
   }
 }
 
-// ── DEXSCREENER TOKEN DISCOVERY ───────────────────────────────
+// -- DEXSCREENER TOKEN DISCOVERY -------------------------------
 var SOL_QUERIES = [
   'solana meme', 'pump fun sol', 'pepe sol', 'dog sol',
   'cat sol', 'moon sol', 'ai sol', 'degen sol'
@@ -442,7 +442,7 @@ async function fetchDSTokens() {
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
-// ── BITQUERY — REAL TIME DATA ─────────────────────────────────
+// -- BITQUERY - REAL TIME DATA ---------------------------------
 var pumpPrices = {};
 var pumpWs = null;
 var bqSubId = 1;
@@ -472,7 +472,7 @@ var BQ_SOURCES = [
 function connectBQ() {
   if (pumpWs && (pumpWs.readyState === WebSocket.OPEN || pumpWs.readyState === WebSocket.CONNECTING)) return;
   if (!BITQUERY_TOKEN) {
-    log('BITQUERY_TOKEN missing — add it in Render Environment tab', 'rug');
+    log('BITQUERY_TOKEN missing - add it in Render Environment tab', 'rug');
     return;
   }
   try {
@@ -485,11 +485,11 @@ function connectBQ() {
       bqTradeSubActive = false;
       bqReconnectDelay = 3000;
       S.sources['BITQUERY'] = 'live:0';
-      log('Bitquery LIVE — real time data connected', 'pump');
+      log('Bitquery LIVE - real time data connected', 'pump');
       sendBQConnectionInit();
       setTimeout(function() {
         if (!bqPairSubActive && pumpWs && pumpWs.readyState === WebSocket.OPEN) {
-          log('BQ WARNING: no connection_ack received after 10s — subscriptions may not have started', 'warn');
+          log('BQ WARNING: no connection_ack received after 10s - subscriptions may not have started', 'warn');
         }
       }, 10000);
       if (bqPingI) clearInterval(bqPingI);
@@ -578,7 +578,7 @@ function sendBQSubscriptions() {
   log('New pair stream active (' + BQ_SOURCES.map(function(s){return s.src;}).join(', ') + ')', 'pump');
 
   // Fix confirmed directly with Bitquery: "raydium_launchpad" is a
-  // Market.Protocol value, not a Market.ProtocolFamily value — its real
+  // Market.Protocol value, not a Market.ProtocolFamily value - its real
   // ProtocolFamily is "Raydium". The old filter matched nothing for BONK
   // (silently, since these are free-text strings that don't error on a
   // wrong value) and only appeared to work for Pump.fun because "Pumpfun"
@@ -586,7 +586,7 @@ function sendBQSubscriptions() {
   // Protocol with the correct values ("pump", "raydium_launchpad") was
   // verified live by Bitquery against real trade counts before this fix.
   // Market cap floor (CFG.BQ_SUBSCRIBE_MIN_MCAP) is deliberately left
-  // unchanged — not touching trade quality just to see more volume.
+  // unchanged - not touching trade quality just to see more volume.
   var protocols = BQ_SOURCES.map(function(s) { return '"' + s.protocol + '"'; }).join(', ');
   pumpWs.send(JSON.stringify({
     id: 'trades_all',
@@ -596,7 +596,7 @@ function sendBQSubscriptions() {
     }
   }));
   bqTradeSubActive = true;
-  log('Swap stream active — all sources', 'pump');
+  log('Swap stream active - all sources', 'pump');
 }
 
 function findArgValue(args, candidateNames) {
@@ -672,7 +672,7 @@ async function handleNewPairFromInstruction(i) {
   }
   var name = ((symbol || tokenName || 'NEW') + '').toUpperCase().slice(0, 12);
   // New investigation: the dev/creator wallet, pulled from the same raw
-  // creation data already used above — confirmed present for Pump.fun,
+  // creation data already used above - confirmed present for Pump.fun,
   // not yet verified for LetsBonk. Stored so real-time trade activity can
   // be checked against it (does the dev buy more or sell), a genuinely
   // different, behavioral signal from the static dev-holding-% already
@@ -682,7 +682,7 @@ async function handleNewPairFromInstruction(i) {
   S.pumpCount++;
   if (src === 'BONK') S.bonkCount++;
   S.sources['BITQUERY'] = 'live:' + S.pumpCount;
-  if (S.pumpCount % 20 === 0) log(src + ': ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+  if (S.pumpCount % 20 === 0) log(src + ': ' + S.pumpCount + ' launches - latest: ' + name, 'pump');
 
   if (isBanned(mint)) return;
   if (S.tokens.has(mint)) return;
@@ -727,7 +727,7 @@ async function handleNewPairFromInstruction(i) {
 
   log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
 
-  // Fire-and-forget — no await here. Whatever comes back (or doesn't)
+  // Fire-and-forget - no await here. Whatever comes back (or doesn't)
   // just populates tok.liquidityUsd whenever it happens to arrive, with
   // zero effect on discovery, scanning, or entry timing.
   fetchLiquidityInBackground(mint, 'solana');
@@ -743,7 +743,7 @@ async function handleNewPair(u) {
 
   S.pumpCount++;
   S.sources['BITQUERY'] = 'live:' + S.pumpCount;
-  if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches — latest: ' + name, 'pump');
+  if (S.pumpCount % 20 === 0) log('Pump.fun: ' + S.pumpCount + ' launches - latest: ' + name, 'pump');
 
   if (isBanned(mint)) return;
   if (S.tokens.has(mint)) return;
@@ -836,7 +836,7 @@ function handleSwap(t) {
       poolTok.mcap = mcap;
     }
 
-    // Data collection only — not used as a filter yet. Every current
+    // Data collection only - not used as a filter yet. Every current
     // entry-time metric (buy/sell counts, BSR, mcap, pool size) was
     // checked against real stop-loss vs. trail-exit outcomes and showed
     // no consistent predictive pattern across two full sessions. These
@@ -867,7 +867,7 @@ function handleSwap(t) {
     }
 
     // New investigation: everything tracked so far measures activity
-    // COUNTS at entry (buys, sells, wallets) — none of it measures how
+    // COUNTS at entry (buys, sells, wallets) - none of it measures how
     // fast price was already moving right before entry. A token that's
     // calm at entry could behave very differently from one already
     // whipping around violently, even with identical buy/wallet counts.
@@ -884,10 +884,10 @@ function handleSwap(t) {
   if (priceUsd) {
     pumpPrices[mint] = { price: priceUsd, solInCurve: 0, ts: Date.now() };
 
-    // Event-driven entry — the actual fix for the round-robin scanning
+    // Event-driven entry - the actual fix for the round-robin scanning
     // bottleneck. Previously a token could only get checked for entry
     // whenever the fixed 500ms scanner happened to land on it, which at a
-    // large pool could be 30+ minutes between checks — nearly guaranteeing
+    // large pool could be 30+ minutes between checks - nearly guaranteeing
     // its price was no longer fresh enough by the time its turn came up.
     // Now the check happens the instant real trading activity happens on
     // it, exactly when the price genuinely IS fresh. Fire-and-forget: not
@@ -903,10 +903,10 @@ function handleSwap(t) {
       if (trade.mint !== mint || trade.src !== 'PUMP') return;
 
       if (trade.currentPrice && trade.currentPrice > 0) {
-        // Directional fix: only reject a downward crash — a genuine large
+        // Directional fix: only reject a downward crash - a genuine large
         // GAIN is never rejected anymore. We've proven extensively that
         // huge single-tick upward moves (100%, 300%, 500%+) are real,
-        // common market behavior on these coins, not bad data — the old
+        // common market behavior on these coins, not bad data - the old
         // symmetric check was silently discarding real winning trades
         // (confirmed: SEND closed with TickCount 0, price never once
         // updated, small stale loss, while likely mooning in reality).
@@ -922,7 +922,7 @@ function handleSwap(t) {
 
       // Change: capture the price immediately before this tick is applied,
       // so we can measure exactly how big the single tick that triggers a
-      // stop loss actually was — distinct from the trade's overall PnL%,
+      // stop loss actually was - distinct from the trade's overall PnL%,
       // which mixes this together with every prior tick. This is what lets
       // us tell "one violent trade" apart from "a series of smaller ticks
       // adding up" for well-covered trades that still overshoot badly.
@@ -941,7 +941,7 @@ function handleSwap(t) {
       if (!trade.firstUpdateAt) trade.firstUpdateAt = Date.now();
       if (priceUsd > (trade.peakPrice || 0)) trade.peakPrice = priceUsd;
       // Tracks the worst drawdown a trade experienced at any point while
-      // open, separate from the final exit result — answers whether
+      // open, separate from the final exit result - answers whether
       // eventual big winners first dipped hard before recovering, which
       // is needed before considering tightening the stop loss.
       if (!trade.troughPrice || priceUsd < trade.troughPrice) trade.troughPrice = priceUsd;
@@ -970,8 +970,12 @@ function handleSwap(t) {
 
         if (trade.tpl === 'TIERED' && !trade.tieredSold && pct >= 1.0) {
           performTierOneSale(trade, priceUsd);
-          // Do not return — the trade stays open, remaining half continues
+          // Do not return - the trade stays open, remaining half continues
           // to be checked against the trail/SL logic below on this same tick.
+        }
+
+        if (trade.tpl === 'TIERED' && trade.tieredSold && !trade.tieredSold2 && pct >= 5.0) {
+          performTierTwoSale(trade, priceUsd);
         }
 
         if ((trade.tpl === 'TRAIL' || trade.tpl === 'TIERED') && trade.peakPrice) {
@@ -1082,7 +1086,7 @@ function handleBQLetsBonkGraduation(i) {
 }
 
 
-// ── OPEN TRADE PRICE TRACKING ─────────────────────────────────
+// -- OPEN TRADE PRICE TRACKING ---------------------------------
 async function updateOpenTradePrices() {
   var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.mint; });
   if (trades.length === 0) return;
@@ -1138,6 +1142,10 @@ async function updateOpenTradePrices() {
       performTierOneSale(trade, price);
     }
 
+    if (trade.tpl === 'TIERED' && trade.tieredSold && !trade.tieredSold2 && pct >= 5.0) {
+      performTierTwoSale(trade, price);
+    }
+
     if ((trade.tpl === 'TRAIL' || trade.tpl === 'TIERED') && trade.peakPrice && trade.entryPrice) {
       var peakGain = (trade.peakPrice - trade.entryPrice) / trade.entryPrice;
       if (peakGain >= CFG.TRAIL_ACT) {
@@ -1163,11 +1171,11 @@ async function updateOpenTradePrices() {
   }
 }
 
-// ── CLOSE TRADE ───────────────────────────────────────────────
-// ── TIERED PROFIT-TAKING — partial close ────────────────────────
+// -- CLOSE TRADE -----------------------------------------------
+// -- TIERED PROFIT-TAKING - partial close ------------------------
 // New capability, not previously possible: closes HALF of a trade's
 // position immediately when it reaches +100% gain, banking that profit
-// right away — slippage, fees, and the fund/savings split all applied
+// right away - slippage, fees, and the fund/savings split all applied
 // at that exact moment, not deferred. The other half keeps running under
 // the same trail-stop logic as every other trade. Built from a retroactive
 // simulation against 553 real trades showing this specific rule (single
@@ -1194,7 +1202,7 @@ function performTierOneSale(trade, currentPriceUsd) {
   S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
   S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
 
-  // Reduce the trade's remaining live size — everything downstream (the
+  // Reduce the trade's remaining live size - everything downstream (the
   // eventual trail/SL close of the other half) now naturally operates on
   // just the remaining half, since it reads trade.size directly.
   trade.size = parseFloat((trade.size - sellSize).toFixed(4));
@@ -1211,7 +1219,7 @@ function performTierOneSale(trade, currentPriceUsd) {
 
   log('TIER SALE ' + trade.tok.n + ' | sold 50% at +' + (pricePct * 100).toFixed(1) + '% | realized $' + pnl.toFixed(2) + ' | remaining 50% still running', 'win');
 
-  // Auto-lock ratchet — same logic as in closeTradeReal. This is a real,
+  // Auto-lock ratchet - same logic as in closeTradeReal. This is a real,
   // immediately realized profit event and can create a genuine new fund
   // high the instant it happens, per explicit instruction: protect
   // profits as soon as they exist, don't wait for the whole trade to close.
@@ -1221,7 +1229,60 @@ function performTierOneSale(trade, currentPriceUsd) {
     S.dayStartFund = S.fund;
     S.windingDown = false;
     var newTrigger = S.fund * (1 - S.fundStopLossPct / 100);
-    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' — stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' - stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  }
+}
+
+// Rare second tier, confirmed against real data: only 2 of 112 tiered
+// trades ever have reached +500% gain (SEED, BGOON), but both showed
+// substantial improvement with zero downside - unlike the +200% level,
+// which was tested and rejected because it cut off a trade (SEED) that
+// still had real further upside ahead of it. At +500%, a coin has
+// already captured nearly all its realistic upside, so there's very
+// little left to sacrifice by locking in more profit here. Sells 50% of
+// whatever remains (25% of the original position), leaving the final 25%
+// to keep riding the same trail-stop logic.
+function performTierTwoSale(trade, currentPriceUsd) {
+  if (!trade.tieredSold || trade.tieredSold2) return;
+  var sellSize = parseFloat((trade.size * 0.5).toFixed(4));
+  var pricePct = (currentPriceUsd - trade.entryPrice) / trade.entryPrice;
+  var slip = trade.slip || 0.005;
+  var pnl = parseFloat((sellSize * pricePct - sellSize * slip - CFG.SOL_GAS).toFixed(4));
+  var feePaid = parseFloat((sellSize * slip + CFG.SOL_GAS).toFixed(4));
+  S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
+
+  var fundAmount = 0;
+  var savingsAmount = 0;
+  if (pnl > CFG.MIN_SPLIT_WIN) {
+    savingsAmount = parseFloat((pnl * CFG.SAVINGS_PCT).toFixed(4));
+    fundAmount = parseFloat((pnl * (1 - CFG.SAVINGS_PCT)).toFixed(4));
+  } else {
+    fundAmount = pnl;
+  }
+  S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
+  S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
+
+  trade.size = parseFloat((trade.size - sellSize).toFixed(4));
+
+  trade.tieredSold2 = true;
+  trade.tier2Size = sellSize;
+  trade.tier2ExitPrice = currentPriceUsd;
+  trade.tier2RealizedPnl = pnl;
+  trade.tier2RealizedPct = parseFloat((pricePct * 100).toFixed(2));
+  trade.tier2ClosedAt = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  trade.tier2SlipCost = feePaid;
+  trade.tier2FundAmount = fundAmount;
+  trade.tier2SavingsAmount = savingsAmount;
+
+  log('TIER 2 SALE ' + trade.tok.n + ' | sold half of remaining at +' + (pricePct * 100).toFixed(1) + '% | realized $' + pnl.toFixed(2) + ' | final 25% still running', 'win');
+
+  if (S.autoLockEnabled && S.fund > S.sessionHighFund) {
+    S.sessionHighFund = S.fund;
+    var oldBase2 = S.dayStartFund;
+    S.dayStartFund = S.fund;
+    S.windingDown = false;
+    var newTrigger2 = S.fund * (1 - S.fundStopLossPct / 100);
+    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' - stop loss raised (was $' + oldBase2.toFixed(2) + ') | triggers below $' + newTrigger2.toFixed(2), 'info');
   }
 }
 
@@ -1244,18 +1305,19 @@ function closeTradeReal(id, reason) {
   S.totalFees = parseFloat((S.totalFees + feePaid).toFixed(4));
 
   // For a TIERED trade, tier 1's profit was already realized and banked
-  // the instant it happened — this "pnl" here is only the REMAINING
+  // the instant it happened - this "pnl" here is only the REMAINING
   // half's own result. Win/loss classification and logging need to
   // reflect the TRUE overall outcome of the whole original trade, so a
   // trade that banked real profit on tier 1 and then gives back a little
   // on the remaining half is correctly counted as a win, not a loss.
   var tier1Pnl = tr.tieredSold ? tr.tier1RealizedPnl : 0;
-  var blendedPnl = parseFloat((tier1Pnl + pnl).toFixed(4));
+  var tier2Pnl = tr.tieredSold2 ? tr.tier2RealizedPnl : 0;
+  var blendedPnl = parseFloat((tier1Pnl + tier2Pnl + pnl).toFixed(4));
 
   // Tracks exactly how this trade's PnL was actually split between the
   // trading fund and savings (80/20 on qualifying wins), so the CSV can
   // show the real fund-vs-savings breakdown per trade instead of only the
-  // combined PnL — this was the exact confusion that caused the $12.32
+  // combined PnL - this was the exact confusion that caused the $12.32
   // (combined) vs $1.53 (fund-only) mismatch to require manual investigation.
   var fundAmount = 0;
   var savingsAmount = 0;
@@ -1271,18 +1333,18 @@ function closeTradeReal(id, reason) {
   S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
   S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
 
-  // Win/loss classification and the log message use blendedPnl — the
-  // TRUE overall result of the original trade — not just this leg's own
+  // Win/loss classification and the log message use blendedPnl - the
+  // TRUE overall result of the original trade - not just this leg's own
   // number, since a tiered trade's tier-1 profit is real money already
   // banked, regardless of what the remaining half does afterward.
   if (blendedPnl > 0) {
-    var tierNote = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' : '';
+    var tierNote = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' + (tr.tieredSold2 ? ' + tier2 +$' + tier2Pnl.toFixed(2) : '') : '';
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + blendedPnl.toFixed(2) + tierNote + ' | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
     if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else {
-    var tierNoteLoss = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' : '';
+    var tierNoteLoss = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' + (tr.tieredSold2 ? ' + tier2 +$' + tier2Pnl.toFixed(2) : '') : '';
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' -$' + Math.abs(blendedPnl).toFixed(2) + tierNoteLoss + ' | ' + closeReason, 'loss');
     S.stats.l++;
     if (tr.isGrad) S.stats.gl++;
@@ -1297,7 +1359,7 @@ function closeTradeReal(id, reason) {
     S.dayStartFund = S.fund;
     S.windingDown = false;
     var newTrigger = S.fund * (1 - S.fundStopLossPct / 100);
-    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' — stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+    log('AUTO-LOCK: new high $' + S.fund.toFixed(2) + ' - stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
   }
 
   S.closed.unshift({
@@ -1326,9 +1388,14 @@ function closeTradeReal(id, reason) {
 
   var finalLegPct = (tr.entryPrice && tr.currentPrice)
     ? ((tr.currentPrice - tr.entryPrice) / tr.entryPrice * 100) : 0;
-  var blendedPnlPct = tr.tieredSold
-    ? parseFloat((0.5 * tr.tier1RealizedPct + 0.5 * finalLegPct).toFixed(2))
-    : parseFloat(finalLegPct.toFixed(2));
+  var blendedPnlPct;
+  if (tr.tieredSold2) {
+    blendedPnlPct = parseFloat((0.5 * tr.tier1RealizedPct + 0.25 * tr.tier2RealizedPct + 0.25 * finalLegPct).toFixed(2));
+  } else if (tr.tieredSold) {
+    blendedPnlPct = parseFloat((0.5 * tr.tier1RealizedPct + 0.5 * finalLegPct).toFixed(2));
+  } else {
+    blendedPnlPct = parseFloat(finalLegPct.toFixed(2));
+  }
 
   var portfolioTrade = {
     id: tr.id,
@@ -1350,7 +1417,7 @@ function closeTradeReal(id, reason) {
     sessionStartedAt: '',
     sessionEndedAt: '',
     slip: tr.slip || 0,
-    fees: parseFloat((feePaid + (tr.tieredSold ? tr.tier1SlipCost : 0)).toFixed(4)),
+    fees: parseFloat((feePaid + (tr.tieredSold ? tr.tier1SlipCost : 0) + (tr.tieredSold2 ? tr.tier2SlipCost : 0)).toFixed(4)),
     priceUpdates: tr.priceUpdates || 0,
     entryMcap: (tr.src === 'PUMP') ? (tr.entryMcap || 0) : 0,
     exitMcap: tr.currentMcap || 0,
@@ -1364,42 +1431,42 @@ function closeTradeReal(id, reason) {
     maxRepeatSellerCount: tr.sellerWallets
       ? Math.max.apply(null, Object.values(tr.sellerWallets).concat([0]))
       : 0,
-    // Change 1: entry-side slippage/gas — previously charged to the fund
+    // Change 1: entry-side slippage/gas - previously charged to the fund
     // but never exported anywhere, so PnL summed across trades never
     // matched the actual fund change (that gap caused a real, confusing
-    // reconciliation problem — see session review 8/26).
+    // reconciliation problem - see session review 8/26).
     entrySlipCost: parseFloat((tr.entrySlipCost || 0).toFixed(4)),
-    // Change 2: Net Fund Impact — the trade's true effect on the trading
+    // Change 2: Net Fund Impact - the trade's true effect on the trading
     // fund specifically (fundAmount, i.e. PnL after the fund/savings split)
     // minus the entry-side cost that was never in PnL to begin with. This
     // is the number that should always sum to match the fund's real
-    // all-time change — this exact check is what would have caught the
+    // all-time change - this exact check is what would have caught the
     // $12.32-vs-$1.53 confusion immediately instead of requiring a
     // manual investigation.
-    netFundImpact: parseFloat(((fundAmount + (tr.tieredSold ? tr.tier1FundAmount : 0)) - (tr.entrySlipCost || 0)).toFixed(4)),
-    // Change 3: explicit fund vs savings split, per trade — not just the
+    netFundImpact: parseFloat(((fundAmount + (tr.tieredSold ? tr.tier1FundAmount : 0) + (tr.tieredSold2 ? tr.tier2FundAmount : 0)) - (tr.entrySlipCost || 0)).toFixed(4)),
+    // Change 3: explicit fund vs savings split, per trade - not just the
     // combined PnL. Zero savingsAmount on losses/small wins is correct,
     // not a display bug.
-    fundAmount: parseFloat((fundAmount + (tr.tieredSold ? tr.tier1FundAmount : 0)).toFixed(4)),
-    savingsAmount: parseFloat((savingsAmount + (tr.tieredSold ? tr.tier1SavingsAmount : 0)).toFixed(4)),
-    // Change 4: total time the trade was open, in seconds — distinct from
+    fundAmount: parseFloat((fundAmount + (tr.tieredSold ? tr.tier1FundAmount : 0) + (tr.tieredSold2 ? tr.tier2FundAmount : 0)).toFixed(4)),
+    savingsAmount: parseFloat((savingsAmount + (tr.tieredSold ? tr.tier1SavingsAmount : 0) + (tr.tieredSold2 ? tr.tier2SavingsAmount : 0)).toFixed(4)),
+    // Change 4: total time the trade was open, in seconds - distinct from
     // secToFirstUpdate (time to first price tick). Lets fast-crash losses
     // be separated from slow-bleed losses, which are likely different
     // failure modes needing different fixes.
     holdTimeSec: tr.startTime ? parseFloat(((Date.now() - tr.startTime) / 1000).toFixed(1)) : null,
     // Change 5: pool size and scan count at the moment this trade entered
-    // — lets performance be checked against how congested the pool was.
+    // - lets performance be checked against how congested the pool was.
     poolSizeAtEntry: tr.poolSizeAtEntry || 0,
     scanCountAtEntry: tr.scanCountAtEntry || 0,
     // Change (overshoot investigation): the % price move on the single
     // tick that actually crossed the stop-loss threshold, distinct from
-    // the trade's overall PnL%. Only set on stop-loss exits — blank for
+    // the trade's overall PnL%. Only set on stop-loss exits - blank for
     // trail/stale/TP exits, since this investigation is specifically
     // about whether SL overshoots are one violent single trade vs. a
     // series of smaller ticks adding up.
     triggerTickJumpPct: tr.triggerTickJumpPct !== undefined ? tr.triggerTickJumpPct : null,
     // New investigation: same concept as triggerTickJumpPct above, but for
-    // trail exits — the % move on the single tick that crossed the 2%
+    // trail exits - the % move on the single tick that crossed the 2%
     // pullback line, distinct from the trade's overall giveback (peak
     // minus final exit %). Testing whether trail-exit giveback is mostly
     // one violent tick (matching the stop-loss pattern, nothing to fix)
@@ -1407,22 +1474,22 @@ function closeTradeReal(id, reason) {
     trailTriggerTickJumpPct: tr.trailTriggerTickJumpPct !== undefined ? tr.trailTriggerTickJumpPct : null,
     // New investigation: the worst drawdown this trade experienced at any
     // point while open, distinct from the final exit %. Answers whether
-    // eventual big winners typically dipped hard before recovering — the
+    // eventual big winners typically dipped hard before recovering - the
     // real data needed before considering tightening the stop loss from
     // -10% toward -5%, since that would only be safe if big winners
     // rarely pass through a deep dip first.
     lowestPricePct: (tr.troughPrice && tr.entryPrice)
       ? parseFloat((((tr.troughPrice - tr.entryPrice) / tr.entryPrice) * 100).toFixed(2)) : null,
     // Full tick-by-tick price path for this trade, serialized as
-    // "secondsSinceEntry:pctGain" pairs separated by "|" — e.g.
+    // "secondsSinceEntry:pctGain" pairs separated by "|" - e.g.
     // "0:0|1.2:3.4|2.8:9.1|5.0:-2.1". Lets the actual growth SHAPE of a
     // coin be studied directly (continuous surge vs. stair-steps vs.
     // sudden spike) rather than only summary numbers like peak/trough.
-    // Temporary, focused data-gathering field — not a permanent column.
+    // Temporary, focused data-gathering field - not a permanent column.
     priceHistory: tr.priceHistory
       ? tr.priceHistory.map(function(p) { return p.t + ':' + p.pct; }).join('|')
       : '',
-    // New data-collection fields (not yet used as a filter) — testing
+    // New data-collection fields (not yet used as a filter) - testing
     // whether unique wallet count or transaction-size distribution at
     // entry predicts stop-loss vs. trail-exit outcomes, since every
     // metric checked so far (mcap, buy/sell counts, BSR, pool size) showed
@@ -1435,11 +1502,11 @@ function closeTradeReal(id, reason) {
     // right before entry, distinct from every activity-count metric
     // checked so far (all of which showed no consistent pattern across
     // multiple sessions). entryPreVolTickCount tells you how solid the
-    // reading is — a low count means the volatility number is based on
+    // reading is - a low count means the volatility number is based on
     // very little data.
     entryPreVolatilityPct: tr.entryPreVolatilityPct !== undefined && tr.entryPreVolatilityPct !== null ? tr.entryPreVolatilityPct : null,
     entryPreVolTickCount: tr.entryPreVolTickCount || 0,
-    // Real DexScreener liquidity at the moment of entry — fetched in the
+    // Real DexScreener liquidity at the moment of entry - fetched in the
     // BACKGROUND at discovery time, never blocking anything. Null means
     // the background fetch simply hadn't returned yet when this trade
     // opened, not that liquidity was zero. Pure data collection: testing
@@ -1449,7 +1516,7 @@ function closeTradeReal(id, reason) {
     // New investigation: how long a token had been sitting in the pool
     // before we actually entered it. The event-driven entry fix means a
     // token can now be traded the instant it first qualifies, with zero
-    // time to prove it isn't already dying — testing whether very
+    // time to prove it isn't already dying - testing whether very
     // freshly-discovered entries perform worse, independent of anything
     // else already tested (which found no predictive signal).
     secondsSinceDiscovery: tr.secondsSinceDiscovery !== undefined ? tr.secondsSinceDiscovery : null,
@@ -1462,9 +1529,9 @@ function closeTradeReal(id, reason) {
     entryDevBought: tr.entryDevBought || 'No',
     entryDevSold: tr.entryDevSold || 'No',
     hasDevWalletData: tr.hasDevWalletData || 'No',
-    // New — Tiered Profits mode: whether this trade's first half was sold
+    // New - Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
-    // tiered trades be reviewed with the same rigor as everything else —
+    // tiered trades be reviewed with the same rigor as everything else ?
     // did this actually rescue reversals the way the retroactive
     // simulation predicted, without meaningfully costing clean winners.
     tieredSold: tr.tieredSold ? 'Yes' : 'No',
@@ -1472,21 +1539,26 @@ function closeTradeReal(id, reason) {
     tier1RealizedPct: tr.tieredSold ? tr.tier1RealizedPct : null,
     tier1RealizedPnl: tr.tieredSold ? tr.tier1RealizedPnl : null,
     tier1ClosedAt: tr.tieredSold ? tr.tier1ClosedAt : '',
+    tieredSold2: tr.tieredSold2 ? 'Yes' : 'No',
+    tier2ExitPrice: tr.tieredSold2 ? tr.tier2ExitPrice : null,
+    tier2RealizedPct: tr.tieredSold2 ? tr.tier2RealizedPct : null,
+    tier2RealizedPnl: tr.tieredSold2 ? tr.tier2RealizedPnl : null,
+    tier2ClosedAt: tr.tieredSold2 ? tr.tier2ClosedAt : '',
     // Lets any session be reviewed after the fact to see the real split
     // between event-driven and backup-scanner entries, instead of only
     // being checkable live via /api/state while the bot is running.
     entryTrigger: tr.entryTrigger || 'scanner',
     // Captures whether the bot was in wind-down mode at the exact moment
-    // this trade closed — lets the auto-resume behavior be verified
+    // this trade closed - lets the auto-resume behavior be verified
     // directly from the data instead of just trusting the activity log.
     windingDownAtClose: S.windingDown ? 'Yes' : 'No',
-    // Diagnostic tracking for the autolock investigation — snapshotted
+    // Diagnostic tracking for the autolock investigation - snapshotted
     // from real server-side state at the exact moment THIS trade closes,
     // not something read from the UI. If autolock is genuinely working,
     // FundSLTriggerAt should climb in step with FundAfterTrade as new
     // highs are made. If FundAfterTrade ever drops below FundSLTriggerAt
     // without the bot stopping, or AutoLockStatus ever reads OFF when it
-    // should be ON, that pinpoints exactly which trade it happened on —
+    // should be ON, that pinpoints exactly which trade it happened on ?
     // no need to catch it live in the activity log.
     fundAfterTrade: parseFloat(S.fund.toFixed(4)),
     fundSLTriggerAt: parseFloat((S.dayStartFund * (1 - S.fundStopLossPct / 100)).toFixed(4)),
@@ -1520,23 +1592,23 @@ function closeTradeReal(id, reason) {
   var cooldownKey = (tr.tok && tr.tok.n || '') + (tr.mint || '');
   if (pnl < 0) {
     S.cooldowns.set(cooldownKey, Date.now());
-    log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 30min after loss', 'warn');
+    log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' - blocked 30min after loss', 'warn');
   }
   if (pnl > 0) {
     S.cooldowns.set(cooldownKey, Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS));
-    log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' — blocked 5min after win', 'info');
+    log('COOLDOWN ' + (tr.tok && tr.tok.n) + ' - blocked 5min after win', 'info');
   }
 
   var lossLimit = S.fundStopLossPct / 100;
   var currentLoss = (S.dayStartFund - S.fund) / S.dayStartFund;
   if (currentLoss >= lossLimit && !S.windingDown) {
     S.windingDown = true;
-    log('FUND LOSS LIMIT HIT — ' + S.fundStopLossPct + '% reached — no new entries', 'rug');
+    log('FUND LOSS LIMIT HIT - ' + S.fundStopLossPct + '% reached - no new entries', 'rug');
     S.windDownCheckInterval = setInterval(function() {
       if (S.open.length === 0) {
         clearInterval(S.windDownCheckInterval);
         S.windDownCheckInterval = null;
-        log('All trades closed — bot fully stopped', 'info');
+        log('All trades closed - bot fully stopped', 'info');
         stopBot();
       }
     }, 2000);
@@ -1545,26 +1617,26 @@ function closeTradeReal(id, reason) {
     // still-open trades were finishing out naturally (exactly the
     // scenario that used to force a full stop even after the fund had
     // already recovered). Uses the exact same comparison the trigger
-    // itself uses — if that math says we're no longer past the limit,
+    // itself uses - if that math says we're no longer past the limit,
     // cancel the wind-down and resume taking new entries.
     S.windingDown = false;
     if (S.windDownCheckInterval) {
       clearInterval(S.windDownCheckInterval);
       S.windDownCheckInterval = null;
     }
-    log('FUND RECOVERED — back above ' + S.fundStopLossPct + '% loss limit, resuming entries', 'win');
+    log('FUND RECOVERED - back above ' + S.fundStopLossPct + '% loss limit, resuming entries', 'win');
   }
 }
 
-// ── EXIT CRITERIA ─────────────────────────────────────────────
+// -- EXIT CRITERIA ---------------------------------------------
 function checkExitCriteria() {
   var now = Date.now();
   S.open.slice().forEach(function(t) {
     var age = now - t.startTime;
 
     if (!t.entryPrice && age > CFG.NO_PRICE_TIMEOUT) {
-      log('TIMEOUT ' + t.tok.n + ' — no price after 3min', 'warn');
-      closeTradeReal(t.id, 'Timeout — no price data');
+      log('TIMEOUT ' + t.tok.n + ' - no price after 3min', 'warn');
+      closeTradeReal(t.id, 'Timeout - no price data');
       return;
     }
 
@@ -1572,7 +1644,7 @@ function checkExitCriteria() {
 
     var lastMove = t.lastPriceChange || t.startTime;
     if ((now - lastMove) > CFG.STALE_TIME && age > 30000) {
-      log('STALE ' + t.tok.n + ' — no movement for 2min', 'warn');
+      log('STALE ' + t.tok.n + ' - no movement for 2min', 'warn');
       closeTradeReal(t.id, 'Token went stale');
       return;
     }
@@ -1596,7 +1668,7 @@ function checkExitCriteria() {
   });
 }
 
-// ── GRADUATION SNIPER ─────────────────────────────────────────
+// -- GRADUATION SNIPER -----------------------------------------
 async function runGradSniper() {
   if (!S.gradEnabled) return;
   if (!S.running || S.fund < 1) return;
@@ -1665,15 +1737,15 @@ async function runGradSniper() {
   }
 }
 
-// ── MAIN SCANNER ──────────────────────────────────────────────
-// Change 6: reject/skip reason tracking at the session level — the raw
+// -- MAIN SCANNER ----------------------------------------------
+// Change 6: reject/skip reason tracking at the session level - the raw
 // "SKIPPED" count on the dashboard never said WHY tokens were being
 // skipped, which made it impossible to tell filters working as intended
 // apart from filters silently blocking almost everything (exactly what
 // happened with the Jupiter honeypot deprecation in a parallel build).
 // Biggest single tick-to-tick % swing across a token's recent price
 // window, used to measure how volatile a token already was right before
-// entry — distinct from every activity-count metric checked so far.
+// entry - distinct from every activity-count metric checked so far.
 function computeMaxTickSwing(prices) {
   if (!prices || prices.length < 2) return null;
   var maxSwing = 0;
@@ -1693,13 +1765,13 @@ function trackSkip(reason) {
 var scanI = null;
 var scanIdx = 0;
 
-// ── ENTRY LOGIC (shared — event-driven AND scanner both call this) ─────
+// -- ENTRY LOGIC (shared - event-driven AND scanner both call this) -----
 // Extracted from the old inline runScan() body. Every filter and
-// threshold below is UNCHANGED from before — this is purely a structural
+// threshold below is UNCHANGED from before - this is purely a structural
 // change in WHEN a token gets checked, not what it's checked against.
 // freshPrice is passed by the event-driven caller (handleSwap) with a
 // price that just arrived, bypassing the "is the cache <=1000ms old"
-// check entirely since we already know it's fresh — it's the exact price
+// check entirely since we already know it's fresh - it's the exact price
 // that just came in. The backup scanner (runScan) calls this with no
 // freshPrice, falling back to the original cache-freshness check.
 var pendingEntryChecks = new Set();
@@ -1737,7 +1809,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   // Confirmed with real data: 386 trades across 8 sessions showed a
   // consistent, stable ~17-point win-rate gap (24% vs 41%) between tokens
   // where the dev wallet had already sold before entry vs. hadn't. Only
-  // real sell-side swaps trigger devSold — a burn (dev sends tokens to a
+  // real sell-side swaps trigger devSold - a burn (dev sends tokens to a
   // dead wallet, no swap involved) is invisible to this check and
   // correctly still passes, since that's not something to filter out.
   if (tok.devSold) {
@@ -1776,7 +1848,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
   if (size < 0.50) { S.rejectCount++; trackSkip('position_too_small'); if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
 
-  if (tok.src === 'DSC') { trackSkip('dsc_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled — discovery only', 'info'); return; }
+  if (tok.src === 'DSC') { trackSkip('dsc_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled - discovery only', 'info'); return; }
 
   var entryPrice = null;
   if (freshPrice && freshPrice > 0) {
@@ -1810,7 +1882,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     }
   }
 
-  // Final re-check, right before anything commits — closes the race
+  // Final re-check, right before anything commits - closes the race
   // window the event-driven entry fix opened. Multiple different tokens
   // can now have entry checks in flight at once (each passing the
   // original check at the top of this function before any of them
@@ -1850,7 +1922,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     currentPrice: entryPrice,
     peakPrice: entryPrice,
     troughPrice: entryPrice,
-    // Full tick-by-tick history for this investigation — recorded as
+    // Full tick-by-tick history for this investigation - recorded as
     // (seconds since entry, % gain at that moment) pairs, so the actual
     // SHAPE of a coin's growth is visible, not just entry/peak/trough/exit
     // summary numbers. Capped at 300 ticks per trade to keep file size
@@ -1886,10 +1958,10 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
 }
 
-// ── MAIN SCANNER (now a thin backup pass) ───────────────────────
-// Still runs every 500ms as a safety net — covers DSC tokens (though DSC
+// -- MAIN SCANNER (now a thin backup pass) -----------------------
+// Still runs every 500ms as a safety net - covers DSC tokens (though DSC
 // entries remain disabled) and catches anything the event-driven trigger
-// might have missed — but entry logic itself now lives in the shared
+// might have missed - but entry logic itself now lives in the shared
 // function above, not duplicated here.
 async function runScan() {
   if (!S.running || S.tokens.size === 0) return;
@@ -1909,7 +1981,7 @@ async function runScan() {
   await tryEnterToken(tok, null, 'scanner');
 }
 
-// ── POOL CLEANUP ──────────────────────────────────────────────
+// -- POOL CLEANUP ----------------------------------------------
 function cleanPool() {
   var now = Date.now();
   var removed = 0;
@@ -1937,7 +2009,7 @@ function cleanPool() {
   if (gradRemoved > 0) log('Grad candidates cleaned: ' + gradRemoved, 'info');
 }
 
-// ── BOT CONTROL ───────────────────────────────────────────────
+// -- BOT CONTROL -----------------------------------------------
 var gradI = null, exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
 
 function startBot() {
@@ -1983,12 +2055,12 @@ function startBot() {
 function stopBot() {
   S.running = false;
   S.lastStopTime = Date.now();
-  // Reset moved here from startBot() — the bug was that pressing Start
+  // Reset moved here from startBot() - the bug was that pressing Start
   // unconditionally wiped autolock back to off every single time, even
   // when the user had just turned it on beforehand, so it never actually
   // took effect once trading began. Resetting here instead means it turns
   // off once a session ends, ready to be explicitly turned on again before
-  // the next one — matching the user's confirmed intended workflow.
+  // the next one - matching the user's confirmed intended workflow.
   S.autoLockEnabled = false;
   if (scanI) clearInterval(scanI);
   if (gradI) clearInterval(gradI);
@@ -2026,7 +2098,7 @@ function stopBot() {
   log('Bot stopped | W: ' + S.stats.w + ' L: ' + S.stats.l + ' | Fund: $' + S.fund.toFixed(2), 'info');
 }
 
-// ── API ROUTES ────────────────────────────────────────────────
+// -- API ROUTES ------------------------------------------------
 app.get('/api/state', function(req, res) {
   res.json({
     fund: S.fund,
@@ -2098,7 +2170,7 @@ app.post('/api/lock-fund', function(req, res) {
   S.dayStartFund = S.fund;
   S.windingDown = false;
   var newTrigger = S.fund * (1 - S.fundStopLossPct / 100);
-  log('Fund stop loss locked to current balance — new base $' + S.fund.toFixed(2) + ' (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  log('Fund stop loss locked to current balance - new base $' + S.fund.toFixed(2) + ' (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
   res.json({ success: true, newBase: S.fund, triggerAt: parseFloat(newTrigger.toFixed(2)) });
 });
 
@@ -2182,7 +2254,7 @@ app.get('/api/portfolio/export', function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData'].join(',')
+    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt'].join(',')
   ];
   P.trades.forEach(function(t) {
     rows.push([
@@ -2243,6 +2315,11 @@ app.get('/api/portfolio/export', function(req, res) {
       csvSafe(t.entryDevBought || 'No'),
       csvSafe(t.entryDevSold || 'No'),
       csvSafe(t.hasDevWalletData || 'No'),
+      csvSafe(t.tieredSold2 || 'No'),
+      t.tier2ExitPrice !== null && t.tier2ExitPrice !== undefined ? t.tier2ExitPrice : '',
+      t.tier2RealizedPct !== null && t.tier2RealizedPct !== undefined ? t.tier2RealizedPct : '',
+      t.tier2RealizedPnl !== null && t.tier2RealizedPnl !== undefined ? t.tier2RealizedPnl : '',
+      csvSafe(t.tier2ClosedAt || ''),
     ].join(','));
   });
   var csv = rows.join('\n');
@@ -2272,7 +2349,7 @@ app.get('/health', function(req, res) {
 app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
 
 app.listen(PORT, function() {
-  console.log('BunkerBuster — Sniper Bot — running on port ' + PORT);
+  console.log('BunkerBuster - Sniper Bot - running on port ' + PORT);
   loadPortfolio();
   fetchDSTokens();
   updateSolPrice();
