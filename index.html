@@ -98,14 +98,14 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
 /* Open trades */
 .trade{background:var(--panel);border:1px solid #0d2a45;border-left:3px solid var(--blue);border-radius:8px;padding:12px;margin-bottom:8px;}
-.trade-grad{border-left-color:var(--yellow);}
+
 .trade-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
 .trade-name{color:var(--blue);font-weight:bold;font-size:16px;font-family:'Orbitron',monospace;}
-.trade-name-grad{color:var(--yellow);}
+
 .sell-btn{padding:8px 14px;border-radius:5px;border:1px solid var(--yellow);background:transparent;color:var(--yellow);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;font-weight:bold;}
 .trade-meta{font-size:12px;color:var(--dim);margin-bottom:6px;}
 .real-badge{font-size:11px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:2px 6px;color:var(--green);margin-left:6px;vertical-align:middle;}
-.grad-badge{font-size:11px;background:rgba(255,194,51,0.15);border:1px solid var(--yellow);border-radius:3px;padding:2px 6px;color:var(--yellow);margin-left:5px;vertical-align:middle;}
+
 .pnl-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border);}
 .pnl-item{text-align:center;background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 4px;}
 .pnl-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
@@ -114,8 +114,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .ca-row{font-size:11px;color:var(--dim);margin-top:4px;cursor:pointer;}
 .ca-addr{color:var(--blue);font-family:'Share Tech Mono',monospace;}
 .ca-copy{font-size:10px;}
-.grad-bar-wrap{background:rgba(0,0,0,0.3);border-radius:4px;height:6px;margin:6px 0;overflow:hidden;}
-.grad-bar{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--yellow),var(--green));transition:width 0.5s;}
+
+
 
 /* Best trade */
 .best-trade-card{background:rgba(0,255,136,0.04);border:1px solid rgba(0,255,136,0.2);border-radius:8px;padding:10px 12px;margin-top:8px;}
@@ -220,7 +220,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-chains')"><span>⛓ CHAIN TOGGLES</span><span class="settings-menu-arrow">›</span></div>
-      <div class="settings-menu-item" onclick="openSub('sub-grad')"><span>🎓 GRADUATION SNIPER</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -334,19 +333,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-status" id="status-chains"></div>
     </div>
 
-    <!-- Graduation Sniper -->
-    <div class="settings-sub" id="sub-grad">
-      <button class="settings-back" onclick="closeSub('sub-grad')">← BACK</button>
-      <div class="settings-sub-title">🎓 GRADUATION SNIPER</div>
-      <div class="settings-hint" style="margin-bottom:12px;">Currently paused while price tracking for graduation trades is being fixed. Open trades finish naturally when turned off.</div>
-      <div class="tp-mode-row">
-        <button class="tp-btn" id="btn-grad-on" onclick="setGrad(true)">● ON</button>
-        <button class="tp-btn active" id="btn-grad-off" onclick="setGrad(false)">○ OFF</button>
-      </div>
-      <button class="settings-save" onclick="saveGrad()">SAVE GRADUATION SETTING</button>
-      <div class="settings-status" id="status-grad"></div>
-    </div>
-
     <!-- Wallets -->
     <div class="settings-sub" id="sub-wallets">
       <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK</button>
@@ -444,12 +430,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <!-- Start/Stop -->
   <button class="main-btn btn-start" id="main-btn" onclick="toggleBot()">▶ START BOT</button>
-
-  <!-- Graduation -->
-  <div id="grad-sec" style="display:none;margin-bottom:10px;">
-    <div class="sec-lbl">🎓 GRADUATION SNIPER <span style="color:var(--yellow)" id="grad-candidates">0 candidates</span></div>
-    <div id="grad-list"></div>
-  </div>
 
   <!-- Open Trades -->
   <div id="open-sec" style="display:none;margin-bottom:10px;">
@@ -665,7 +645,6 @@ var timerId = null;
 var currentTPMode = 'TIERED';
 var currentSolEnabled = true;
 var currentBaseEnabled = false;
-var currentGradEnabled = false;
 var currentAutoLockEnabled = false;
 var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
@@ -768,12 +747,6 @@ function setChain(chain, enabled) {
   }
 }
 
-function setGrad(enabled) {
-  currentGradEnabled = enabled;
-  document.getElementById('btn-grad-on').classList.toggle('active', enabled);
-  document.getElementById('btn-grad-off').classList.toggle('active', !enabled);
-}
-
 function setAutoLock(enabled) {
   currentAutoLockEnabled = enabled;
   document.getElementById('btn-autolock-on').classList.toggle('active', enabled);
@@ -867,13 +840,6 @@ async function saveChains() {
   var el = document.getElementById('status-chains');
   var ok = await apiPost({ solEnabled: currentSolEnabled, baseEnabled: currentBaseEnabled });
   el.textContent = ok ? '✅ SOL: ' + (currentSolEnabled ? 'ON' : 'OFF') + ' | BASE: ' + (currentBaseEnabled ? 'ON' : 'OFF') : '❌ Failed';
-  el.style.color = ok ? 'var(--green)' : 'var(--red)';
-}
-
-async function saveGrad() {
-  var el = document.getElementById('status-grad');
-  var ok = await apiPost({ gradEnabled: currentGradEnabled });
-  el.textContent = ok ? '✅ Graduation sniper: ' + (currentGradEnabled ? 'ON' : 'OFF') : '❌ Failed';
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
@@ -1095,13 +1061,6 @@ async function fetchState() {
       document.getElementById('base-status').textContent = baseOn ? '● ON' : '○ OFF';
       document.getElementById('base-status').style.color = baseOn ? 'var(--green)' : 'var(--red)';
 
-      // Sync graduation toggle — defaults to OFF (opposite of chain toggles), so the
-      // missing-field fallback must be false, not true
-      var gradOn = data.gradEnabled === true;
-      currentGradEnabled = gradOn;
-      document.getElementById('btn-grad-on').classList.toggle('active', gradOn);
-      document.getElementById('btn-grad-off').classList.toggle('active', !gradOn);
-
       // Sync auto-lock toggle — same default-OFF pattern
       var autoLockOn = data.autoLockEnabled === true;
       currentAutoLockEnabled = autoLockOn;
@@ -1129,40 +1088,14 @@ async function fetchState() {
 
     // Open trades
     var openTrades = data.openTrades || [];
-    var gradTrades = openTrades.filter(function(t) { return t.isGrad; });
-    var mainTrades = openTrades.filter(function(t) { return !t.isGrad; });
-
-    // Graduation
-    var gradSec = document.getElementById('grad-sec');
-    document.getElementById('grad-candidates').textContent = (data.gradCandidates || 0) + ' candidates';
-    if (gradTrades.length > 0) {
-      gradSec.style.display = 'block';
-      document.getElementById('grad-list').innerHTML = '';
-      gradTrades.forEach(function(t) {
-        var age = Math.floor((Date.now() - t.startTime) / 1000);
-        var pnlColor = !t.realPnl ? 'var(--dim)' : t.realPnl >= 0 ? 'var(--green)' : 'var(--red)';
-        var gradPct = t.gradSolAtEntry ? Math.min(Math.floor((t.gradSolAtEntry / 500) * 100), 100) : 0;
-        var d3 = document.createElement('div');
-        d3.className = 'trade trade-grad';
-        d3.innerHTML = '<div class="trade-top"><div class="trade-name trade-name-grad">🎓 ' + t.tok.n + '<span class="grad-badge">GRAD</span></div><button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button></div>' +
-          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's</div>' +
-          '<div class="grad-bar-wrap"><div class="grad-bar" style="width:' + gradPct + '%"></div></div>' +
-          '<div style="font-size:12px;color:var(--yellow);text-align:center;margin-bottom:4px">' + gradPct + '% TO GRADUATION</div>' +
-          '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pSign(t.realPnl||0) + '$' + f2(Math.abs(t.realPnl||0)) + '</div></div>' +
-          '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pSign(t.realPnlPct||0) + ((t.realPnlPct||0)*100).toFixed(1) + '%</div></div>' +
-          '<div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl?(t.sl*100).toFixed(0):'10') + '%</div></div></div>' +
-          '<div class="entry-price">ENTRY: $' + f8(t.entryPrice) + '</div>' + caRow(t.mint);
-        document.getElementById('grad-list').appendChild(d3);
-      });
-    } else { gradSec.style.display = 'none'; }
 
     // Main trades
     var openSec = document.getElementById('open-sec');
-    if (mainTrades.length > 0) {
+    if (openTrades.length > 0) {
       openSec.style.display = 'block';
-      document.getElementById('open-cnt').textContent = '(' + mainTrades.length + ')';
+      document.getElementById('open-cnt').textContent = '(' + openTrades.length + ')';
       document.getElementById('open-list').innerHTML = '';
-      mainTrades.forEach(function(t) {
+      openTrades.forEach(function(t) {
         var age = Math.floor((Date.now() - t.startTime) / 1000);
         var hasPrice = t.entryPrice && t.entryPrice > 0;
         var pnlColor = !hasPrice ? 'var(--dim)' : (t.realPnl||0) >= 0 ? 'var(--green)' : 'var(--red)';
