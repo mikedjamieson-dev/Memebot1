@@ -23,7 +23,6 @@ var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 const CFG = {
   MAX_POS: 0.05,
   MAX_OPEN: 4,
-  MAX_GRAD: 2,
   SOL_GAS: 0.001,
   TRAIL_ACT: 0.04,
   TRAIL_PB: 0.02,
@@ -37,12 +36,6 @@ const CFG = {
   MAX_MCAP_USD: 25000000,
   MIN_MCAP_USD: 2750,
   BQ_SUBSCRIBE_MIN_MCAP: 2750,
-  GRAD_ENTRY_SOL: 100,
-  GRAD_MAX_SOL: 480,
-  GRAD_TARGET: 500,
-  GRAD_POS: 0.10,
-  GRAD_MIN_BSR: 1.2,
-  GRAD_MIN_TXNS: 3,
   MAX_POOL: 10000,
   POOL_AGE_MS: 14400000,
   COOLDOWN_MS: 1800000,
@@ -101,8 +94,6 @@ const S = {
   sources: {},
   startTime: null,
   dayStartFund: 100,
-  gradCandidates: new Map(),
-  gradCount: 0,
   permanentBans: new Map(),
   tempBans: new Map(),
   cooldowns: new Map(),
@@ -121,7 +112,6 @@ const S = {
   maxPool: 10000,
   solEnabled: true,
   baseEnabled: true,
-  gradEnabled: false,
   autoLockEnabled: false,
   sessionHighFund: 0,
   chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
@@ -552,9 +542,6 @@ function handleBQMessage(msg) {
     }
     if (data.Trading && data.Trading.Trades) {
       data.Trading.Trades.forEach(function(t) { handleSwap(t); });
-    }
-    if (data.Solana && data.Solana.DEXPools) {
-      data.Solana.DEXPools.forEach(function(p) { handleBQPool(p); });
     }
   }
 }
@@ -1005,86 +992,6 @@ function handleSwap(t) {
     });
   }
 }
-
-function sendBQPoolSubscription() {
-  pumpWs.send(JSON.stringify({
-    id: 'pools_pump',
-    type: 'start',
-    payload: {
-      query: 'subscription { Solana { DEXPools(where: {Pool: {Dex: {ProtocolName: {is: "pump"}}}}) { Pool { Market { BaseCurrency { MintAddress Symbol Name } } Base { PostAmount } Quote { PostAmount } } } } }'
-    }
-  }));
-  log('Graduation stream active', 'pump');
-}
-
-function handleBQPool(p) {
-  var pool = p.Pool || {};
-  var market = pool.Market || {};
-  var baseCurrency = market.BaseCurrency || {};
-  var mint = baseCurrency.MintAddress;
-  if (!mint) return;
-
-  var baseReserve = parseFloat((pool.Base || {}).PostAmount || 0);
-  var quoteReserveSol = parseFloat((pool.Quote || {}).PostAmount || 0);
-  if (!baseReserve) return;
-
-  var progressPct = Math.max(0, Math.min(100, ((793100000 - (baseReserve - 206900000)) / 793100000) * 100));
-  var solInCurve = quoteReserveSol;
-
-  if (solInCurve >= CFG.GRAD_ENTRY_SOL && solInCurve <= CFG.GRAD_MAX_SOL) {
-    var name = (baseCurrency.Symbol || baseCurrency.Name || mint.slice(0, 8)).toUpperCase().slice(0, 12);
-    var existing = S.gradCandidates.get(mint) || {
-      name: name, mint: mint, firstSeen: Date.now(), buys: 0, sells: 0,
-    };
-    existing.solInCurve = solInCurve;
-    existing.price = pumpPrices[mint] ? pumpPrices[mint].price : existing.price;
-    existing.lastUpdate = Date.now();
-    var pt = S.tokens.get(mint);
-    if (pt) { existing.buys = pt.buys; existing.sells = pt.sells; }
-    existing.bsr = existing.buys / Math.max(existing.sells || 1, 1);
-    existing.nearGrad = true;
-    var pct = Math.floor((solInCurve / CFG.GRAD_TARGET) * 100);
-    if (!existing.logged || existing.loggedPct !== pct) {
-      existing.logged = true;
-      existing.loggedPct = pct;
-      log('GRAD CANDIDATE ' + name + ' | ' + solInCurve.toFixed(0) + ' SOL | ' + pct + '% | BSR ' + existing.bsr.toFixed(1) + 'x', 'pump');
-    }
-    S.gradCandidates.set(mint, existing);
-  } else {
-    var cand = S.gradCandidates.get(mint);
-    if (cand) cand.nearGrad = false;
-  }
-}
-
-function sendBQLetsBonkGradSubscription() {
-  var bonkSource = BQ_SOURCES.filter(function(s) { return s.src === 'BONK'; })[0];
-  if (!bonkSource) return;
-  pumpWs.send(JSON.stringify({
-    id: 'pools_bonk',
-    type: 'start',
-    payload: {
-      query: 'subscription { Solana { Instructions(where: {Instruction: {Program: {Address: {is: "' + bonkSource.programAddress + '"}, Method: {in: ["migrate_to_amm", "migrate_to_cpswap"]}}, Accounts: {includes: {Address: {is: "' + bonkSource.platformConfigAddress + '"}}}}, Transaction: {Result: {Success: true}}}) { Instruction { Accounts { Address Token { Mint } } } } } }'
-    }
-  }));
-  log('LetsBonk graduation stream active', 'pump');
-}
-
-function handleBQLetsBonkGraduation(i) {
-  var instr = (i.Instruction || {});
-  var accounts = instr.Accounts || [];
-  var mint = null;
-  for (var k = 0; k < accounts.length; k++) {
-    if (accounts[k].Token && accounts[k].Token.Mint) { mint = accounts[k].Token.Mint; break; }
-  }
-  if (!mint) return;
-
-  var tok = S.tokens.get(mint);
-  var name = tok ? tok.n : mint.slice(0, 8);
-  log('LETSBONK GRADUATED ' + name + ' | migrated to Raydium AMM', 'pump');
-
-  if (tok) tok.graduated = true;
-}
-
 
 // -- OPEN TRADE PRICE TRACKING ---------------------------------
 async function updateOpenTradePrices() {
@@ -1648,93 +1555,7 @@ function checkExitCriteria() {
       closeTradeReal(t.id, 'Token went stale');
       return;
     }
-
-    if (t.isGrad && t.tpl === 'TRAIL' && t.entryPrice > 0 && t.currentPrice > 0) {
-      var peakGain = (t.peakPrice - t.entryPrice) / t.entryPrice;
-      if (peakGain >= CFG.TRAIL_ACT) {
-        var pullback = (t.peakPrice - t.currentPrice) / t.peakPrice;
-        if (pullback >= CFG.TRAIL_PB) {
-          log('TRAIL EXIT ' + t.tok.n + ' | Peak +' + (peakGain * 100).toFixed(1) + '% | ticks:' + (t.priceUpdates||0), 'win');
-          closeTradeReal(t.id, 'Trail exit');
-          return;
-        }
-      }
-      var pct = (t.currentPrice - t.entryPrice) / t.entryPrice;
-      if (pct <= -(t.sl || 0.10)) {
-        log('SL HIT ' + t.tok.n + ' | ' + (pct * 100).toFixed(1) + '% | ticks:' + (t.priceUpdates||0), 'loss');
-        closeTradeReal(t.id, 'Stop loss hit');
-      }
-    }
   });
-}
-
-// -- GRADUATION SNIPER -----------------------------------------
-async function runGradSniper() {
-  if (!S.gradEnabled) return;
-  if (!S.running || S.fund < 1) return;
-  if (S.windingDown) return;
-  var openGrads = S.open.filter(function(t) { return t.isGrad; }).length;
-  if (openGrads >= Math.max(Math.floor(S.maxOpen * 0.25), 1)) return;
-
-  for (var entry of S.gradCandidates.entries()) {
-    var mint = entry[0];
-    var cand = entry[1];
-    if (!cand.nearGrad) continue;
-    if (isBanned(mint)) continue;
-    if (S.open.find(function(t) { return t.mint === mint; })) continue;
-    var gradCooldownKey = (cand.name || mint.slice(0, 8)) + mint;
-    var lastGradCooldown = S.cooldowns.get(gradCooldownKey);
-    if (lastGradCooldown && (Date.now() - lastGradCooldown) < CFG.COOLDOWN_MS) continue;
-    if (!cand.price || cand.price <= 0) continue;
-    var totalTxns = (cand.buys || 0) + (cand.sells || 0);
-    if (totalTxns < CFG.GRAD_MIN_TXNS) continue;
-    if (cand.bsr < CFG.GRAD_MIN_BSR) continue;
-
-    var size = parseFloat((S.fund * Math.min(CFG.GRAD_POS, 0.10)).toFixed(4));
-    if (size < 0.50) continue;
-
-    var slip = 0.008;
-    S.fund = parseFloat((S.fund - size * slip).toFixed(4));
-    var pct2 = Math.floor((cand.solInCurve / CFG.GRAD_TARGET) * 100);
-
-    var trade = {
-      id: Math.random().toString(36).substr(2, 9),
-      tok: { n: cand.name || mint.slice(0, 8), src: 'GRAD', liq: cand.solInCurve * SOL_PRICE_USD },
-      sc: 90,
-      size: size,
-      originalSize: size,
-      tpl: 'TRAIL',
-      tpPct: S.takeProfitPct,
-      sl: S.stopLossPct / 100,
-      slip: slip,
-      mint: mint,
-      src: 'GRAD',
-      chain: 'solana',
-      entryPrice: cand.price,
-      currentPrice: cand.price,
-      peakPrice: cand.price,
-      troughPrice: cand.price,
-      priceHistory: [{ t: 0, pct: 0 }],
-      lastPrice: cand.price,
-      lastPriceChange: Date.now(),
-      realPnl: 0,
-      realPnlPct: 0,
-      priceUpdates: 0,
-      firstUpdateAt: null,
-      isGrad: true,
-      gradSolAtEntry: cand.solInCurve,
-      openedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
-      startTime: Date.now(),
-      entrySlipCost: parseFloat((size * slip).toFixed(4)),
-      poolSizeAtEntry: S.tokens.size,
-      scanCountAtEntry: S.scanCount,
-    };
-
-    S.open.push(trade);
-    S.gradCount++;
-    log('GRAD ENTER ' + trade.tok.n + ' | ' + pct2 + '% to grad | ' + cand.solInCurve.toFixed(0) + ' SOL | $' + size.toFixed(2), 'entry');
-    break;
-  }
 }
 
 // -- MAIN SCANNER ----------------------------------------------
@@ -1995,22 +1816,12 @@ function cleanPool() {
   S.cooldowns.forEach(function(ts, key) {
     if (now - ts > CFG.COOLDOWN_MS) S.cooldowns.delete(key);
   });
-  var gradRemoved = 0;
-  S.gradCandidates.forEach(function(cand, mint) {
-    if (!S.open.find(function(t) { return t.mint === mint; })) {
-      if (now - cand.firstSeen > CFG.POOL_AGE_MS) {
-        S.gradCandidates.delete(mint);
-        gradRemoved++;
-      }
-    }
-  });
   recheckExpiredBans();
   if (removed > 0) log('Pool cleaned: ' + removed + ' removed | Pool: ' + S.tokens.size, 'info');
-  if (gradRemoved > 0) log('Grad candidates cleaned: ' + gradRemoved, 'info');
 }
 
 // -- BOT CONTROL -----------------------------------------------
-var gradI = null, exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
+var exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
 
 function startBot() {
   if (S.running) return;
@@ -2032,7 +1843,6 @@ function startBot() {
   S.rejectReasons = {};
   S.pumpCount = 0;
   S.bonkCount = 0;
-  S.gradCount = 0;
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
   S.sessionHighFund = S.sessionFund;
@@ -2042,7 +1852,6 @@ function startBot() {
   updateSolPrice();
 
   scanI = setInterval(runScan, 500);
-  gradI = setInterval(runGradSniper, 1000);
   exitI = setInterval(checkExitCriteria, 10000);
   priceI = setInterval(updateOpenTradePrices, 2000);
   dsI = setInterval(fetchDSTokens, CFG.DS_INTERVAL);
@@ -2063,7 +1872,6 @@ function stopBot() {
   // the next one - matching the user's confirmed intended workflow.
   S.autoLockEnabled = false;
   if (scanI) clearInterval(scanI);
-  if (gradI) clearInterval(gradI);
   if (exitI) clearInterval(exitI);
   if (priceI) clearInterval(priceI);
   if (dsI) clearInterval(dsI);
@@ -2123,8 +1931,6 @@ app.get('/api/state', function(req, res) {
       };
     }),
     closedTrades: S.closed.slice(0, 20),
-    gradCount: S.gradCount,
-    gradCandidates: S.gradCandidates.size,
     permanentBans: S.permanentBans.size,
     tempBans: S.tempBans.size,
     dscPool: S.dscPool,
@@ -2145,7 +1951,6 @@ app.get('/api/state', function(req, res) {
     chainStats: S.chainStats,
     solEnabled: S.solEnabled,
     baseEnabled: S.baseEnabled,
-    gradEnabled: S.gradEnabled,
     autoLockEnabled: S.autoLockEnabled,
     maxPool: S.maxPool,
     logs: S.logs.slice(0, 100),
@@ -2213,10 +2018,6 @@ app.post('/api/settings', function(req, res) {
   if (req.body.baseEnabled !== undefined) {
     S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
     log('Base: ' + (S.baseEnabled ? 'ON' : 'OFF'), 'info');
-  }
-  if (req.body.gradEnabled !== undefined) {
-    S.gradEnabled = req.body.gradEnabled === true || req.body.gradEnabled === 'true';
-    log('Graduation sniper: ' + (S.gradEnabled ? 'ON' : 'OFF'), 'info');
   }
   if (req.body.autoLockEnabled !== undefined) {
     S.autoLockEnabled = req.body.autoLockEnabled === true || req.body.autoLockEnabled === 'true';
