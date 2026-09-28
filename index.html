@@ -82,10 +82,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 .tp-btn.active{border-color:var(--green);background:rgba(0,255,136,0.1);color:var(--green);}
 
 /* Trail card */
-.trail-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;}
-.trail-lbl{font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;}
-.trail-badge{display:inline-block;padding:6px 12px;border-radius:5px;background:rgba(187,136,255,0.15);border:1px solid var(--purple);color:var(--purple);font-size:12px;margin-bottom:8px;}
-.trail-desc{font-size:12px;color:var(--dim);padding-top:6px;border-top:1px solid var(--border);line-height:1.6;}
 
 /* Start/Stop */
 .main-btn{width:100%;padding:16px;border-radius:10px;border:1px solid;cursor:pointer;font-size:14px;font-family:'Orbitron',monospace;font-weight:700;letter-spacing:4px;margin-bottom:10px;}
@@ -246,7 +242,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       </div>
       <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET % — SELECT FIXED ABOVE</div>
       <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;"/>
-      <div class="settings-hint">Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.<br>Tiered: sells 50% of the position the moment it hits +100% gain, banking that profit immediately — the remaining 50% keeps running on the same trail-stop logic.</div>
+      <div class="settings-hint">Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.<br>Tiered: sells 50% of the position the first time it reaches +100% gain and banks that profit immediately. If it keeps climbing to +500%, it sells half of what's left (25% of the original position) and banks that too. Whatever remains keeps running on the same trail-stop logic.</div>
       <button class="settings-save" onclick="saveTP()">SAVE TAKE PROFIT</button>
       <div class="settings-status" id="status-tp"></div>
     </div>
@@ -419,13 +415,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="stat"><div class="stat-lbl">WINS</div><div class="stat-val" id="wins" style="color:var(--green)">0</div></div>
     <div class="stat"><div class="stat-lbl">LOSSES</div><div class="stat-val" id="losses" style="color:var(--red)">0</div></div>
     <div class="stat"><div class="stat-lbl">RUGS</div><div class="stat-val" id="rugs" style="color:var(--yellow)">0</div></div>
-  </div>
-
-  <!-- Take Profit Card -->
-  <div class="trail-card">
-    <div class="trail-lbl">TAKE PROFIT MODE</div>
-    <div class="trail-badge" id="tp-mode-badge">TRAIL STOP</div>
-    <div class="trail-desc" id="tp-mode-desc">📈 Trail: activates at 4% gain — exits on 2% pullback | SL: 10%</div>
   </div>
 
   <!-- Start/Stop -->
@@ -1014,22 +1003,8 @@ async function fetchState() {
     document.getElementById('losses').textContent = data.stats.l;
     document.getElementById('rugs').textContent = data.stats.r;
 
-    // TP mode display
+    // Current take-profit mode (used below to keep the Settings buttons in sync)
     var tpMode = data.takeProfitMode || 'TRAIL';
-    var tpPct = data.takeProfitPct || 5;
-    var slPct = data.stopLossPct || 10;
-    var badge = document.getElementById('tp-mode-badge');
-    var desc = document.getElementById('tp-mode-desc');
-    if (tpMode === 'TRAIL') {
-      badge.textContent = 'TRAIL STOP'; badge.style.borderColor = 'var(--purple)'; badge.style.color = 'var(--purple)';
-      desc.textContent = '📈 Trail: activates at 4% gain — exits on 2% pullback | SL: ' + slPct + '%';
-    } else if (tpMode === 'TIERED') {
-      badge.textContent = 'TIERED PROFITS'; badge.style.borderColor = 'var(--yellow)'; badge.style.color = 'var(--yellow)';
-      desc.textContent = '🎯 Tiered: sells 50% at +100% gain, banks it immediately — remaining 50% rides the trail stop | SL: ' + slPct + '%';
-    } else {
-      badge.textContent = 'FIXED ' + tpPct + '%'; badge.style.borderColor = 'var(--green)'; badge.style.color = 'var(--green)';
-      desc.textContent = '🎯 Fixed take profit: exits at ' + tpPct + '% | SL: ' + slPct + '%';
-    }
 
     // Sync TP buttons only when settings closed
     var settingsOpen = document.getElementById('settings-panel').classList.contains('open');
