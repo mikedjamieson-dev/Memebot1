@@ -1715,6 +1715,18 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     return;
   }
 
+  // Same idea for the dev-sold filter: the early check at the top of this
+  // function can pass, and then the dev's sell lands while the wallet
+  // concentration call above is waiting on the network (measured at about
+  // 2.5-3.6% of all trades, winning only ~22% of the time). The flag is
+  // read again here, synchronously, with no await before the trade is
+  // created, so what was checked is exactly what gets recorded.
+  if (tok.devSold) {
+    S.rejectCount++;
+    trackSkip('dev_wallet_sold_race');
+    return;
+  }
+
   var slip = parseFloat(
     Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
   );
