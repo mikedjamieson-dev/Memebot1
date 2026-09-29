@@ -131,6 +131,35 @@ function log(msg, type) {
   console.log('[' + type.toUpperCase() + '] ' + msg);
 }
 
+// -- LIVE WALLET STARTUP CHECK -----------------------------------
+// Wallet loading only -- no trading exists yet. Every branch below is
+// caught internally, so paper trading is unaffected no matter what
+// happens here: not configured, configured wrong, or the wallet
+// module/its dependencies aren't installed yet. The private key
+// itself is never logged in any branch -- only the derived public
+// address, which is not sensitive.
+(function checkLiveWalletAtStartup() {
+  try {
+    var wallet = require('./wallet');
+    try {
+      var kp = wallet.loadTradingWallet();
+      log('LIVE WALLET loaded: ' + kp.publicKey.toBase58(), 'info');
+    } catch (e) {
+      if (e.code === 'WALLET_NOT_CONFIGURED') {
+        log('LIVE WALLET not configured yet (paper trading unaffected)', 'info');
+      } else {
+        log('LIVE WALLET ERROR: ' + e.message + ' (paper trading unaffected)', 'warn');
+      }
+    }
+    var savingsAddr = wallet.getSavingsAddress();
+    log(savingsAddr
+      ? 'LIVE SAVINGS WALLET address: ' + savingsAddr
+      : 'LIVE SAVINGS WALLET not configured yet (paper trading unaffected)', 'info');
+  } catch (e) {
+    log('LIVE WALLET module could not load (' + e.message + ') -- paper trading unaffected', 'warn');
+  }
+})();
+
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
 async function updateSolPrice() {
