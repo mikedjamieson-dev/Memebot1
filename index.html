@@ -215,7 +215,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
-      <div class="settings-menu-item" onclick="openSub('sub-chains')"><span>⛓ CHAIN TOGGLES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -307,28 +306,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-status" id="status-poolsize"></div>
     </div>
 
-    <!-- Chain Toggles -->
-    <div class="settings-sub" id="sub-chains">
-      <button class="settings-back" onclick="closeSub('sub-chains')">← BACK</button>
-      <div class="settings-sub-title">CHAIN TOGGLES</div>
-      <div class="settings-hint" style="margin-bottom:12px;">Turn chains on or off. Open trades finish naturally when a chain is turned off.</div>
-      <div class="settings-lbl">
-        <svg width="14" height="14" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sg1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sg1)"/></svg>
-        SOLANA
-      </div>
-      <div class="tp-mode-row">
-        <button class="tp-btn active" id="btn-sol-on" onclick="setChain('sol',true)">● ON</button>
-        <button class="tp-btn" id="btn-sol-off" onclick="setChain('sol',false)">○ OFF</button>
-      </div>
-      <div class="settings-lbl" style="margin-top:8px;">🔵 BASE</div>
-      <div class="tp-mode-row">
-        <button class="tp-btn" id="btn-base-on" onclick="setChain('base',true)">● ON</button>
-        <button class="tp-btn active" id="btn-base-off" onclick="setChain('base',false)">○ OFF</button>
-      </div>
-      <button class="settings-save" onclick="saveChains()">SAVE CHAIN SETTINGS</button>
-      <div class="settings-status" id="status-chains"></div>
-    </div>
-
     <!-- Wallets -->
     <div class="settings-sub" id="sub-wallets">
       <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK</button>
@@ -347,18 +324,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
         <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..."/>
         <button class="settings-save" onclick="saveWallets()" style="margin-top:6px;">SAVE SOLANA WALLETS</button>
         <div class="wallet-display" id="wallet-display"></div>
-      </div>
-      <div class="settings-menu-item" onclick="toggleWalletChain('base')" style="margin-bottom:8px;">
-        <span>🔵 BASE WALLETS</span>
-        <span class="settings-menu-arrow" id="base-wallet-arrow">›</span>
-      </div>
-      <div id="base-wallet-panel" style="display:none;margin-bottom:12px;">
-        <div class="settings-lbl">TRADING WALLET</div>
-        <input class="settings-input" id="base-trading-wallet" placeholder="Base trading wallet address..."/>
-        <div class="settings-lbl">SAVINGS WALLET</div>
-        <input class="settings-input" id="base-savings-wallet" placeholder="Base savings wallet address..."/>
-        <button class="settings-save" onclick="saveBaseWallets()" style="margin-top:6px;">SAVE BASE WALLETS</button>
-        <div class="wallet-display" id="base-wallet-display"></div>
       </div>
       <div class="settings-status" id="status-wallets"></div>
     </div>
@@ -385,7 +350,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     </div>
     <div class="g2" style="margin-bottom:8px;">
       <div class="stat"><div class="stat-lbl">◎ SOL POOL</div><div class="stat-val" id="sol-pool" style="color:var(--green);font-size:14px;">0</div></div>
-      <div class="stat"><div class="stat-lbl">🔵 BASE POOL</div><div class="stat-val" id="base-pool" style="color:#0064ff;font-size:14px;">0</div></div>
     </div>
     <div class="g2" style="margin-bottom:8px;">
       <div class="stat"><div class="stat-lbl">PERM BANS</div><div class="stat-val" id="perm-bans" style="color:var(--red);font-size:14px;">0</div></div>
@@ -476,32 +440,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     </div>
   </div>
 
-  <!-- Chain Performance -->
-  <div class="card">
-    <div class="card-lbl">CHAIN PERFORMANCE</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
-      <div style="background:rgba(153,102,255,0.08);border:1px solid rgba(153,102,255,0.3);border-radius:8px;padding:10px;">
-        <div style="font-size:11px;letter-spacing:2px;color:#9966ff;margin-bottom:8px;">
-          <svg width="11" height="11" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sgc" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sgc)"/></svg>
-          SOLANA <span id="sol-status" style="font-size:10px;color:var(--green)">● ON</span>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:11px;color:var(--dim);">WINS</div><div class="ss-val" id="sol-wins" style="color:var(--green)">0</div></div>
-          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:11px;color:var(--dim);">LOSSES</div><div class="ss-val" id="sol-losses" style="color:var(--red)">0</div></div>
-        </div>
-        <div style="text-align:center;margin-top:6px;font-family:'Orbitron',monospace;font-size:13px;" id="sol-wr">0%</div>
-      </div>
-      <div style="background:rgba(0,100,255,0.08);border:1px solid rgba(0,100,255,0.3);border-radius:8px;padding:10px;">
-        <div style="font-size:11px;letter-spacing:2px;color:#0064ff;margin-bottom:8px;">🔵 BASE <span id="base-status" style="font-size:10px;color:var(--green)">● ON</span></div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
-          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:11px;color:var(--dim);">WINS</div><div class="ss-val" id="base-wins" style="color:var(--green)">0</div></div>
-          <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:11px;color:var(--dim);">LOSSES</div><div class="ss-val" id="base-losses" style="color:var(--red)">0</div></div>
-        </div>
-        <div style="text-align:center;margin-top:6px;font-family:'Orbitron',monospace;font-size:13px;" id="base-wr">0%</div>
-      </div>
-    </div>
-  </div>
-
   <div class="foot">BunkerBuster.io</div>
 </div>
 
@@ -578,7 +516,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="filter-row">
       <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
       <button class="filter-btn" onclick="setFilter2('chain','solana',this)">◎ SOL</button>
-      <button class="filter-btn" onclick="setFilter2('chain','base',this)">🔵 BASE</button>
     </div>
     <div class="filter-row" style="margin-top:6px;">
       <button class="filter-btn active" onclick="setFilter2('src','all',this)">ALL SOURCES</button>
@@ -632,8 +569,6 @@ var frozen = false;
 var startTime = null;
 var timerId = null;
 var currentTPMode = 'TIERED';
-var currentSolEnabled = true;
-var currentBaseEnabled = false;
 var currentAutoLockEnabled = false;
 var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
@@ -721,18 +656,6 @@ function selectTP(mode) {
   } else {
     input.disabled = true; input.style.opacity = '0.4';
     lbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; lbl.style.color = 'var(--bb)';
-  }
-}
-
-function setChain(chain, enabled) {
-  if (chain === 'sol') {
-    currentSolEnabled = enabled;
-    document.getElementById('btn-sol-on').classList.toggle('active', enabled);
-    document.getElementById('btn-sol-off').classList.toggle('active', !enabled);
-  } else {
-    currentBaseEnabled = enabled;
-    document.getElementById('btn-base-on').classList.toggle('active', enabled);
-    document.getElementById('btn-base-off').classList.toggle('active', !enabled);
   }
 }
 
@@ -825,13 +748,6 @@ async function savePoolSize() {
   el.textContent = ok ? '✅ Pool set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
-async function saveChains() {
-  var el = document.getElementById('status-chains');
-  var ok = await apiPost({ solEnabled: currentSolEnabled, baseEnabled: currentBaseEnabled });
-  el.textContent = ok ? '✅ SOL: ' + (currentSolEnabled ? 'ON' : 'OFF') + ' | BASE: ' + (currentBaseEnabled ? 'ON' : 'OFF') : '❌ Failed';
-  el.style.color = ok ? 'var(--green)' : 'var(--red)';
-}
-
 async function saveAutoLock() {
   var el = document.getElementById('status-autolock');
   var ok = await apiPost({ autoLockEnabled: currentAutoLockEnabled });
@@ -845,14 +761,6 @@ async function saveWallets() {
   var savings = document.getElementById('savings-wallet').value.trim();
   var ok = await apiPost({ tradingWallet: trading, savingsWallet: savings });
   el.textContent = ok ? '✅ Solana wallets saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
-}
-
-async function saveBaseWallets() {
-  var el = document.getElementById('status-wallets');
-  var trading = document.getElementById('base-trading-wallet').value.trim();
-  var savings = document.getElementById('base-savings-wallet').value.trim();
-  var ok = await apiPost({ baseTradingWallet: trading, baseSavingsWallet: savings });
-  el.textContent = ok ? '✅ Base wallets saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
 // ── LOG ───────────────────────────────────────────────────────
@@ -968,7 +876,6 @@ async function fetchState() {
     document.getElementById('pump-cnt').textContent = data.pumpCount;
     document.getElementById('bonk-cnt').textContent = data.bonkCount || 0;
     document.getElementById('sol-pool').textContent = data.solPool || 0;
-    document.getElementById('base-pool').textContent = data.basePool || 0;
     document.getElementById('dsc-key').textContent = data.dscKey || 0;
     document.getElementById('perm-bans').textContent = data.permanentBans || 0;
     document.getElementById('temp-bans').textContent = data.tempBans || 0;
@@ -1023,19 +930,6 @@ async function fetchState() {
         tpLbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; tpLbl.style.color = 'var(--bb)';
       }
 
-      // Sync chain buttons
-      var solOn = data.solEnabled !== false;
-      var baseOn = data.baseEnabled !== false;
-      currentSolEnabled = solOn; currentBaseEnabled = baseOn;
-      document.getElementById('btn-sol-on').classList.toggle('active', solOn);
-      document.getElementById('btn-sol-off').classList.toggle('active', !solOn);
-      document.getElementById('btn-base-on').classList.toggle('active', baseOn);
-      document.getElementById('btn-base-off').classList.toggle('active', !baseOn);
-      document.getElementById('sol-status').textContent = solOn ? '● ON' : '○ OFF';
-      document.getElementById('sol-status').style.color = solOn ? 'var(--green)' : 'var(--red)';
-      document.getElementById('base-status').textContent = baseOn ? '● ON' : '○ OFF';
-      document.getElementById('base-status').style.color = baseOn ? 'var(--green)' : 'var(--red)';
-
       // Sync auto-lock toggle — same default-OFF pattern
       var autoLockOn = data.autoLockEnabled === true;
       currentAutoLockEnabled = autoLockOn;
@@ -1080,7 +974,7 @@ async function fetchState() {
         var d4 = document.createElement('div');
         d4.className = 'trade';
         d4.innerHTML = '<div class="trade-top"><div class="trade-name">' + t.tok.n + '<span class="real-badge">REAL</span></div><button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button></div>' +
-          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · ' + (t.chain==='base'?'🔵BASE':'◎SOL') + ' · ' + tpDisplay + '</div>' +
+          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · ' + '◎SOL' + ' · ' + tpDisplay + '</div>' +
           '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl?(t.sl*100).toFixed(0):'10') + '%</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
@@ -1109,7 +1003,7 @@ async function fetchState() {
         d5.innerHTML = '<div class="ctrade-header"><span class="ctrade-name">' + (t.isGrad?'🎓 ':'') + (t.tok?t.tok.n:'?') + '</span><span class="ctrade-pnl" style="color:' + pnlColor + '">' + pSign(t.pnl) + '$' + f2(t.pnl) + '</span></div>' +
           '<div class="ctrade-g3"><div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val">$' + f2(t.size) + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
-          '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src||'?') + ' ' + (t.chain==='base'?'🔵':'◎') + '</div></div></div>' +
+          '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src||'?') + ' ' + '◎' + '</div></div></div>' +
           '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
           (t.entryMcap ? '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">MC ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.entryMcap) + '</div></div>' +
@@ -1129,21 +1023,6 @@ async function fetchState() {
     document.getElementById('ss-skip').textContent = data.rejectCount||0;
     document.getElementById('ss-fund').textContent = '$' + f2(data.sessionFund||100);
     document.getElementById('ss-maxopen').textContent = data.maxOpen||8;
-
-    // Chain performance
-    var cs = data.chainStats || { solW:0, solL:0, baseW:0, baseL:0 };
-    document.getElementById('sol-wins').textContent = cs.solW||0;
-    document.getElementById('sol-losses').textContent = cs.solL||0;
-    var solTotal = (cs.solW||0)+(cs.solL||0);
-    var solWR = solTotal>0 ? ((cs.solW/solTotal)*100).toFixed(1)+'%' : '0%';
-    document.getElementById('sol-wr').textContent = solWR;
-    document.getElementById('sol-wr').style.color = parseFloat(solWR)>=50?'var(--green)':'var(--red)';
-    document.getElementById('base-wins').textContent = cs.baseW||0;
-    document.getElementById('base-losses').textContent = cs.baseL||0;
-    var baseTotal = (cs.baseW||0)+(cs.baseL||0);
-    var baseWR = baseTotal>0 ? ((cs.baseW/baseTotal)*100).toFixed(1)+'%' : '0%';
-    document.getElementById('base-wr').textContent = baseWR;
-    document.getElementById('base-wr').style.color = parseFloat(baseWR)>=50?'var(--green)':'var(--red)';
 
     // Best trade
     var bt = data.bestTrade;
@@ -1289,7 +1168,7 @@ async function loadTrades() {
     tradesEl.innerHTML='';
     data.trades.forEach(function(t) {
       var pnlColor=(t.pnl||0)>0?'var(--green)':'var(--red)';
-      var chainIcon=t.chain==='base'?'🔵':'◎';
+      var chainIcon='◎';
       var d=document.createElement('div'); d.className='trade-row';
       var pctStr2 = t.pnlPct !== undefined ? pSign(t.pnlPct)+parseFloat(t.pnlPct).toFixed(2)+'%' : '';
       var caShort = t.mint ? t.mint.slice(0,4)+'...'+t.mint.slice(-4) : '';
