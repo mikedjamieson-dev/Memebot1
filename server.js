@@ -16,8 +16,6 @@ const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
 const BITQUERY_TOKEN = process.env.BITQUERY_TOKEN || '';
 var TRADING_WALLET = process.env.TRADING_WALLET || '';
 var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
-var BASE_TRADING_WALLET = process.env.BASE_TRADING_WALLET || '';
-var BASE_SAVINGS_WALLET = process.env.BASE_SAVINGS_WALLET || '';
 
 // -- CONFIGURATION ---------------------------------------------
 const CFG = {
@@ -99,7 +97,6 @@ const S = {
   cooldowns: new Map(),
   dscPool: 0,
   solPool: 0,
-  basePool: 0,
   dscKey: 0,
   sessionFund: 100,
   takeProfitMode: 'TIERED',
@@ -110,11 +107,8 @@ const S = {
   fundStopLossPct: 10,
   windingDown: false,
   maxPool: 10000,
-  solEnabled: true,
-  baseEnabled: true,
   autoLockEnabled: false,
   sessionHighFund: 0,
-  chainStats: { solW: 0, solL: 0, baseW: 0, baseL: 0 },
   bestTrade: null,
 };
 
@@ -305,23 +299,6 @@ async function checkHoneypot(mint) {
   }
 }
 
-// -- BASE HONEYPOT CHECK ---------------------------------------
-async function checkBaseHoneypot(address) {
-  try {
-    var res = await fetch(
-      'https://api.honeypot.is/v2/IsHoneypot?address=' + address + '&chainID=8453',
-      { timeout: 8000 }
-    );
-    if (!res.ok) return false;
-    var data = await res.json();
-    if (data && data.honeypotResult && data.honeypotResult.isHoneypot) return true;
-    if (data && data.riskLevel !== undefined && data.riskLevel >= 60) return true;
-    return false;
-  } catch(e) {
-    return false;
-  }
-}
-
 // -- DEXSCREENER PRICE -----------------------------------------
 async function getDSPrice(mint, pairAddress, chain) {
   try {
@@ -372,12 +349,7 @@ var SOL_QUERIES = [
   'solana meme', 'pump fun sol', 'pepe sol', 'dog sol',
   'cat sol', 'moon sol', 'ai sol', 'degen sol'
 ];
-var BASE_QUERIES = [
-  'base meme', 'base coin', 'base dog', 'base cat',
-  'brett', 'toshi', 'degen base', 'pepe base'
-];
 var solQueryIdx = 0;
-var baseQueryIdx = 0;
 
 async function fetchDSChain(query, chainId) {
   var now = Date.now();
@@ -411,14 +383,9 @@ async function fetchDSChain(query, chainId) {
       if (buys < 3) continue;
       if (buys / Math.max(sells, 1) < 1.0) continue;
 
-      if (chainId === 'base') {
-        var isHp = await checkBaseHoneypot(mint);
-        if (isHp) { permanentBan(mint, 'Base honeypot detected'); continue; }
-      } else {
-        var tokenData = { mintAuthority: null, freezeAuthority: null, lpBurn: undefined, dev: undefined };
-        var safe = await runSafetyChecklist(mint, tokenData, true);
-        if (!safe) continue;
-      }
+      var tokenData = { mintAuthority: null, freezeAuthority: null, lpBurn: undefined, dev: undefined };
+      var safe = await runSafetyChecklist(mint, tokenData, true);
+      if (!safe) continue;
 
       S.tokens.set(mint, {
         mint: mint,
@@ -443,21 +410,12 @@ async function fetchDSChain(query, chainId) {
 }
 
 async function fetchDSTokens() {
-  if (S.solEnabled) {
-    var solQuery = SOL_QUERIES[solQueryIdx % SOL_QUERIES.length];
-    solQueryIdx++;
-    var solAdded = await fetchDSChain(solQuery, 'solana');
-    if (solAdded > 0) log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
-  }
-  if (S.baseEnabled) {
-    var baseQuery = BASE_QUERIES[baseQueryIdx % BASE_QUERIES.length];
-    baseQueryIdx++;
-    var baseAdded = await fetchDSChain(baseQuery, 'base');
-    if (baseAdded > 0) log('DS BASE [' + baseQuery + ']: ' + baseAdded + ' added | Pool: ' + S.tokens.size, 'info');
-  }
+  var solQuery = SOL_QUERIES[solQueryIdx % SOL_QUERIES.length];
+  solQueryIdx++;
+  var solAdded = await fetchDSChain(solQuery, 'solana');
+  if (solAdded > 0) log('DS SOL [' + solQuery + ']: ' + solAdded + ' added | Pool: ' + S.tokens.size, 'info');
   S.dscPool = Array.from(S.tokens.values()).filter(function(t) { return t.src === 'DSC'; }).length;
   S.solPool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'solana'; }).length;
-  S.basePool = Array.from(S.tokens.values()).filter(function(t) { return t.chain === 'base'; }).length;
   S.sources['DSC'] = 'live:' + S.tokens.size;
 }
 
@@ -1278,13 +1236,11 @@ function closeTradeReal(id, reason) {
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' +$' + blendedPnl.toFixed(2) + tierNote + ' | ' + closeReason, 'win');
     S.stats.w++;
     if (tr.isGrad) S.stats.gw++;
-    if (tr.chain === 'base') S.chainStats.baseW++; else S.chainStats.solW++;
   } else {
     var tierNoteLoss = tr.tieredSold ? ' | tier1 +$' + tier1Pnl.toFixed(2) + ' already banked' + (tr.tieredSold2 ? ' + tier2 +$' + tier2Pnl.toFixed(2) : '') : '';
     log((tr.isGrad ? 'GRAD ' : '') + tr.tok.n + ' -$' + Math.abs(blendedPnl).toFixed(2) + tierNoteLoss + ' | ' + closeReason, 'loss');
     S.stats.l++;
     if (tr.isGrad) S.stats.gl++;
-    if (tr.chain === 'base') S.chainStats.baseL++; else S.chainStats.solL++;
   }
 
   S.stats.t++;
@@ -1649,10 +1605,6 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   if (isBanned(tok.mint)) { S.tokens.delete(tok.mint); return; }
 
-  if (tok.chain === 'base' && !S.baseEnabled) { trackSkip('chain_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: base disabled', 'info'); return; }
-  if (tok.chain === 'solana' && !S.solEnabled) { trackSkip('chain_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: sol disabled', 'info'); return; }
-  if (!tok.chain && !S.solEnabled) { trackSkip('chain_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: no chain + sol disabled', 'info'); return; }
-
   var bsr = tok.buys / Math.max(tok.sells || 1, 1);
   if (bsr < 0.8) { S.rejectCount++; trackSkip('bsr_too_low'); if(diag) log('DIAG '+tok.n+' | SKIP: BSR '+bsr.toFixed(2)+' buys='+tok.buys+' sells='+tok.sells, 'info'); return; }
 
@@ -1872,13 +1824,10 @@ function startBot() {
   S.savings = 0;
   S.dscPool = 0;
   S.solPool = 0;
-  S.basePool = 0;
   S.dscKey = 0;
   S.bestTrade = null;
   S.totalFees = 0;
   S.windingDown = false;
-  S.chainStats = { solW: 0, solL: 0, baseW: 0, baseL: 0 };
-  S.solEnabled = true;
   S.scanCount = 0;
   S.rejectCount = 0;
   S.rejectReasons = {};
@@ -1976,7 +1925,6 @@ app.get('/api/state', function(req, res) {
     tempBans: S.tempBans.size,
     dscPool: S.dscPool,
     solPool: S.solPool,
-    basePool: S.basePool,
     dscKey: S.dscKey,
     bestTrade: S.bestTrade,
     sessionFund: S.sessionFund,
@@ -1989,9 +1937,6 @@ app.get('/api/state', function(req, res) {
     windingDown: S.windingDown,
     currentLossPct: S.dayStartFund > 0
       ? parseFloat(((S.dayStartFund - S.fund) / S.dayStartFund * 100).toFixed(2)) : 0,
-    chainStats: S.chainStats,
-    solEnabled: S.solEnabled,
-    baseEnabled: S.baseEnabled,
     autoLockEnabled: S.autoLockEnabled,
     maxPool: S.maxPool,
     logs: S.logs.slice(0, 100),
@@ -2000,8 +1945,6 @@ app.get('/api/state', function(req, res) {
     wallets: {
       trading: TRADING_WALLET ? TRADING_WALLET.slice(0, 8) + '...' : 'not set',
       savings: SAVINGS_WALLET ? SAVINGS_WALLET.slice(0, 8) + '...' : 'not set',
-      baseTrading: BASE_TRADING_WALLET ? BASE_TRADING_WALLET.slice(0, 8) + '...' : 'not set',
-      baseSavings: BASE_SAVINGS_WALLET ? BASE_SAVINGS_WALLET.slice(0, 8) + '...' : 'not set',
     },
   });
 });
@@ -2023,8 +1966,6 @@ app.post('/api/lock-fund', function(req, res) {
 app.post('/api/settings', function(req, res) {
   if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
   if (req.body.savingsWallet) SAVINGS_WALLET = req.body.savingsWallet;
-  if (req.body.baseTradingWallet) BASE_TRADING_WALLET = req.body.baseTradingWallet;
-  if (req.body.baseSavingsWallet) BASE_SAVINGS_WALLET = req.body.baseSavingsWallet;
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
     if (!isNaN(sf) && sf > 0) { S.sessionFund = parseFloat(sf.toFixed(2)); log('Session fund: $' + S.sessionFund, 'info'); }
@@ -2051,14 +1992,6 @@ app.post('/api/settings', function(req, res) {
   if (req.body.maxPool !== undefined) {
     var mp = parseInt(req.body.maxPool);
     if (!isNaN(mp) && mp >= 1000 && mp <= 50000) { S.maxPool = mp; log('Max pool: ' + S.maxPool, 'info'); }
-  }
-  if (req.body.solEnabled !== undefined) {
-    S.solEnabled = req.body.solEnabled === true || req.body.solEnabled === 'true';
-    log('Solana: ' + (S.solEnabled ? 'ON' : 'OFF'), 'info');
-  }
-  if (req.body.baseEnabled !== undefined) {
-    S.baseEnabled = req.body.baseEnabled === true || req.body.baseEnabled === 'true';
-    log('Base: ' + (S.baseEnabled ? 'ON' : 'OFF'), 'info');
   }
   if (req.body.autoLockEnabled !== undefined) {
     S.autoLockEnabled = req.body.autoLockEnabled === true || req.body.autoLockEnabled === 'true';
