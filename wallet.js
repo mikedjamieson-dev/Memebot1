@@ -37,7 +37,30 @@ function loadTradingWallet() {
   try {
     secretKeyBytes = bs58.decode(raw.trim());
   } catch (e) {
-    const err = new Error(LIVE_KEY_ENV + ' is set but is not valid base58 -- check it was copied in full from Phantom');
+    // Build a diagnostic from facts about the value, never the value
+    // itself -- a length, a yes/no, a count. Nothing here can be used
+    // to reconstruct any part of the actual key.
+    const trimmed = raw.trim();
+    const facts = [];
+    facts.push('length ' + trimmed.length + ' chars');
+    if (raw.length !== trimmed.length) {
+      facts.push('had ' + (raw.length - trimmed.length) + ' leading/trailing whitespace char(s) removed before this count');
+    }
+    if (/[\n\r\t]/.test(trimmed)) {
+      facts.push('contains a line break or tab in the middle of it');
+    }
+    if (/\s/.test(trimmed.replace(/[\n\r\t]/g, ''))) {
+      facts.push('contains a space character in the middle of it');
+    }
+    const BASE58_ALPHABET = /^[123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]*$/;
+    if (!BASE58_ALPHABET.test(trimmed.replace(/\s/g, ''))) {
+      const invalidCount = (trimmed.match(/[^123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]/g) || []).length;
+      facts.push(invalidCount + ' character(s) outside the standard key alphabet (e.g. 0, O, I, l, or punctuation are never valid in a real key)');
+    }
+    const err = new Error(
+      LIVE_KEY_ENV + ' is set but is not valid base58 -- ' + facts.join('; ') +
+      '. A real Phantom-exported key is one continuous block of about 87-88 characters with none of the above.'
+    );
     err.code = 'WALLET_INVALID';
     throw err;
   }
@@ -49,7 +72,7 @@ function loadTradingWallet() {
   if (secretKeyBytes.length !== 64) {
     const err = new Error(
       LIVE_KEY_ENV + ' decoded to ' + secretKeyBytes.length +
-      ' bytes, expected 64 -- this does not look like a Phantom-exported Solana private key'
+      ' bytes (from a ' + raw.trim().length + '-character value), expected 64 bytes from an ~87-88 character value -- this does not look like a Phantom-exported Solana private key'
     );
     err.code = 'WALLET_INVALID';
     throw err;
