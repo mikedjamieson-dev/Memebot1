@@ -326,6 +326,12 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <button class="settings-save" onclick="runLiveTest(false)">RUN TEST (NORMAL)</button>
       <button class="settings-save" onclick="runLiveTest(true)" style="margin-top:6px;">RUN TEST (VIA SENDER)</button>
       <div class="settings-status" id="status-live-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST PUMP.FUN QUOTE</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Builds real buy instructions for a real token using current on-chain data -- proves the connection works, but sends nothing and costs nothing.</div>
+      <input class="settings-input" id="pumpfun-test-mint" placeholder="Paste a real pump.fun token mint address..."/>
+      <button class="settings-save" onclick="runPumpfunQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-pumpfun-test"></div>
     </div>
   </div>
 
@@ -757,6 +763,30 @@ async function runLiveTest(viaSender) {
     var line = r.outcome + ' -- signature: ' + r.signature + (r.error ? ' -- ' + r.error : '');
     el.textContent = (r.outcome === 'CONFIRMED' ? '✅ ' : '⚠️ ') + line;
     el.style.color = r.outcome === 'CONFIRMED' ? 'var(--green)' : 'var(--red)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runPumpfunQuoteTest() {
+  var el = document.getElementById('status-pumpfun-test');
+  var mint = document.getElementById('pumpfun-test-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-pumpfun-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
   } catch (e) {
     el.textContent = '❌ Request failed: ' + e.message;
     el.style.color = 'var(--red)';
