@@ -26,7 +26,7 @@
 // instruction itself (maxSolCost / minSolOutput), which the SDK
 // applies on top of whatever amount is requested.
 
-const { OnlinePumpSdk } = require('@pump-fun/pump-sdk');
+const { OnlinePumpSdk, PUMP_SDK } = require('@pump-fun/pump-sdk');
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const BN = require('bn.js');
 
@@ -91,7 +91,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
   }
 
   try {
-    return await sdk.buyInstructions({
+    return await PUMP_SDK.buyInstructions({
       global: global,
       bondingCurveAccountInfo: buyState.bondingCurveAccountInfo,
       bondingCurve: bc,
@@ -150,7 +150,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   }
 
   try {
-    return await sdk.sellInstructions({
+    return await PUMP_SDK.sellInstructions({
       global: global,
       bondingCurveAccountInfo: sellState.bondingCurveAccountInfo,
       bondingCurve: bc,
