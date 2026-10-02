@@ -15,6 +15,7 @@
     "bs58": "^6.0.0",
     "@pump-fun/pump-sdk": "^2.0.0",
     "bn.js": "^5.2.1",
+    "@raydium-io/raydium-sdk-v2": "^0.2.61",
     "@solana/spl-token": "^0.4.9"
   },
   "engines": {
