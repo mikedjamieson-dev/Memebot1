@@ -15,6 +15,7 @@
 
 const { OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount } = require('@pump-fun/pump-sdk');
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
+const BN = require('bn.js');
 
 // Builds the instructions to spend `solAmountLamports` buying `mint`,
 // for `user` (a PublicKey), with `slippagePercent` protection (e.g.
@@ -23,7 +24,8 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
   var sdk = new OnlinePumpSdk(connection);
   var global = await sdk.fetchGlobal();
   var buyState = await sdk.fetchBuyState(mint, user);
-  var amount = getBuyTokenAmountFromSolAmount(global, buyState.bondingCurve, solAmountLamports);
+  var solAmountBN = new BN(solAmountLamports.toString());
+  var amount = getBuyTokenAmountFromSolAmount(global, buyState.bondingCurve, solAmountBN);
 
   return sdk.buyInstructions({
     global: global,
@@ -33,7 +35,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
     mint: mint,
     user: user,
     amount: amount,
-    solAmount: solAmountLamports,
+    solAmount: solAmountBN,
     slippage: slippagePercent,
     tokenProgram: TOKEN_PROGRAM_ID,
   });
@@ -46,7 +48,8 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   var sdk = new OnlinePumpSdk(connection);
   var global = await sdk.fetchGlobal();
   var sellState = await sdk.fetchSellState(mint, user);
-  var solAmount = getSellSolAmountFromTokenAmount(global, sellState.bondingCurve, tokenAmount);
+  var tokenAmountBN = new BN(tokenAmount.toString());
+  var solAmount = getSellSolAmountFromTokenAmount(global, sellState.bondingCurve, tokenAmountBN);
 
   return sdk.sellInstructions({
     global: global,
@@ -54,7 +57,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     bondingCurve: sellState.bondingCurve,
     mint: mint,
     user: user,
-    amount: tokenAmount,
+    amount: tokenAmountBN,
     solAmount: solAmount,
     slippage: slippagePercent,
     tokenProgram: TOKEN_PROGRAM_ID,
