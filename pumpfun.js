@@ -3,28 +3,30 @@
 // Thin wrapper around the OFFICIAL @pump-fun/pump-sdk package.
 // This file only ever builds instructions -- it never sends, signs,
 // or confirms anything. That stays entirely in execution.js, using
-// logic we built and tested ourselves. The SDK's only job is
-// correctly reading the current on-chain state (accounts, fees,
-// creator vault) and handing back the right instructions, since
-// that's the part pump.fun has changed before and could change
-// again -- everything after "here are the instructions" is ours.
+// logic we built and tested ourselves.
 //
-// Slippage protection is built directly into these instructions by
-// the SDK itself (maxSolCost on a buy, minSolOutput on a sell) --
-// not something this wrapper calculates by hand.
+// IMPORTANT: this file deliberately does NOT use the SDK's own
+// getBuyTokenAmountFromSolAmount / getSellSolAmountFromTokenAmount
+// helpers. Real production data confirmed the bonding curve's fields
+// were renamed (virtualSolReserves -> virtualQuoteReserves, etc.) when
+// the SDK was generalized to support non-SOL-quoted coins, and
+// different official sources showed that helper being called with
+// genuinely different, inconsistent argument shapes. Rather than keep
+// guessing at an external function's exact current interface, the
+// quote is computed directly here using the standard constant-product
+// formula (independently confirmed many times over during this
+// project's research, and unchanged regardless of the SDK's own field
+// renames) against the real, confirmed field names.
 //
-// Every step below is wrapped separately on purpose. The same
-// "Cannot read properties of undefined (reading 'eq')" error
-// happened even after the BN fix, which means something else in the
-// chain is undefined somewhere we haven't pinned down yet, and this
-// environment can't install the real library to inspect it directly.
-// Rather than guess again, each step now reports exactly which step
-// failed and what shape the real data actually had -- field names,
-// whether something is a BN instance, whether something is null --
-// never the trading wallet's key or anything sensitive, since all of
-// this is just public on-chain token data.
+// The SDK still does the part that's actually complex and has
+// genuinely changed before -- building the real instructions with the
+// correct accounts, creator vault, and fee config. The quote computed
+// here doesn't need to be exact to the last lamport: the real safety
+// mechanism is the slippage tolerance built directly into the
+// instruction itself (maxSolCost / minSolOutput), which the SDK
+// applies on top of whatever amount is requested.
 
-const { OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount } = require('@pump-fun/pump-sdk');
+const { OnlinePumpSdk } = require('@pump-fun/pump-sdk');
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const BN = require('bn.js');
 
@@ -34,6 +36,22 @@ function describe(label, value) {
   if (value instanceof BN) return label + '=BN(' + value.toString() + ')';
   if (typeof value === 'object') return label + '=object{' + Object.keys(value).join(',') + '}';
   return label + '=' + typeof value + '(' + value + ')';
+}
+
+// Constant-product quote: tokens out for a given SOL (quote) amount in.
+// tokensOut = (solIn * virtualTokenReserves) / (virtualQuoteReserves + solIn)
+function quoteTokensForSol(bondingCurve, solInBN) {
+  var numerator = solInBN.mul(bondingCurve.virtualTokenReserves);
+  var denominator = bondingCurve.virtualQuoteReserves.add(solInBN);
+  return numerator.div(denominator);
+}
+
+// Constant-product quote: SOL (quote) out for a given token amount in.
+// solOut = (tokensIn * virtualQuoteReserves) / (virtualTokenReserves + tokensIn)
+function quoteSolForTokens(bondingCurve, tokensInBN) {
+  var numerator = tokensInBN.mul(bondingCurve.virtualQuoteReserves);
+  var denominator = bondingCurve.virtualTokenReserves.add(tokensInBN);
+  return numerator.div(denominator);
 }
 
 async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent) {
@@ -55,16 +73,19 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
   if (!buyState || !buyState.bondingCurve) {
     throw new Error('fetchBuyState returned no usable bondingCurve -- ' + describe('buyState', buyState));
   }
+  var bc = buyState.bondingCurve;
+  if (!bc.virtualQuoteReserves || !bc.virtualTokenReserves) {
+    throw new Error('bondingCurve is missing expected reserve fields -- ' + describe('bondingCurve', bc));
+  }
 
   var solAmountBN = new BN(solAmountLamports.toString());
   var amount;
   try {
-    amount = getBuyTokenAmountFromSolAmount(global, buyState.bondingCurve, solAmountBN);
+    amount = quoteTokensForSol(bc, solAmountBN);
   } catch (e) {
     throw new Error(
-      'getBuyTokenAmountFromSolAmount failed: ' + e.message +
-      ' -- ' + describe('global', global) +
-      ' -- ' + describe('bondingCurve', buyState.bondingCurve) +
+      'quoteTokensForSol failed: ' + e.message +
+      ' -- ' + describe('bondingCurve', bc) +
       ' -- ' + describe('solAmountBN', solAmountBN)
     );
   }
@@ -73,7 +94,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
     return await sdk.buyInstructions({
       global: global,
       bondingCurveAccountInfo: buyState.bondingCurveAccountInfo,
-      bondingCurve: buyState.bondingCurve,
+      bondingCurve: bc,
       associatedUserAccountInfo: buyState.associatedUserAccountInfo,
       mint: mint,
       user: user,
@@ -111,16 +132,19 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   if (!sellState || !sellState.bondingCurve) {
     throw new Error('fetchSellState returned no usable bondingCurve -- ' + describe('sellState', sellState));
   }
+  var bc = sellState.bondingCurve;
+  if (!bc.virtualQuoteReserves || !bc.virtualTokenReserves) {
+    throw new Error('bondingCurve is missing expected reserve fields -- ' + describe('bondingCurve', bc));
+  }
 
   var tokenAmountBN = new BN(tokenAmount.toString());
   var solAmount;
   try {
-    solAmount = getSellSolAmountFromTokenAmount(global, sellState.bondingCurve, tokenAmountBN);
+    solAmount = quoteSolForTokens(bc, tokenAmountBN);
   } catch (e) {
     throw new Error(
-      'getSellSolAmountFromTokenAmount failed: ' + e.message +
-      ' -- ' + describe('global', global) +
-      ' -- ' + describe('bondingCurve', sellState.bondingCurve) +
+      'quoteSolForTokens failed: ' + e.message +
+      ' -- ' + describe('bondingCurve', bc) +
       ' -- ' + describe('tokenAmountBN', tokenAmountBN)
     );
   }
@@ -129,7 +153,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     return await sdk.sellInstructions({
       global: global,
       bondingCurveAccountInfo: sellState.bondingCurveAccountInfo,
-      bondingCurve: sellState.bondingCurve,
+      bondingCurve: bc,
       mint: mint,
       user: user,
       amount: tokenAmountBN,
@@ -149,4 +173,6 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
 module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
+  quoteTokensForSol,
+  quoteSolForTokens,
 };
