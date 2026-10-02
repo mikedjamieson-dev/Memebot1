@@ -14,8 +14,6 @@ const PORT = process.env.PORT || 3000;
 // -- API KEYS --------------------------------------------------
 const ST_KEY = process.env.ST_KEY || '75035862-d3fe-40a5-9a47-7d6338685930';
 const BITQUERY_TOKEN = process.env.BITQUERY_TOKEN || '';
-var TRADING_WALLET = process.env.TRADING_WALLET || '';
-var SAVINGS_WALLET = process.env.SAVINGS_WALLET || '';
 
 // -- CONFIGURATION ---------------------------------------------
 const CFG = {
@@ -125,34 +123,66 @@ function log(msg, type) {
   console.log('[' + type.toUpperCase() + '] ' + msg);
 }
 
-// -- LIVE WALLET STARTUP CHECK -----------------------------------
-// Wallet loading only -- no trading exists yet. Every branch below is
-// caught internally, so paper trading is unaffected no matter what
-// happens here: not configured, configured wrong, or the wallet
-// module/its dependencies aren't installed yet. The private key
-// itself is never logged in any branch -- only the derived public
-// address, which is not sensitive.
-(function checkLiveWalletAtStartup() {
+// -- LIVE WALLET -------------------------------------------------
+// liveWalletState holds everything the dashboard's Settings panel
+// needs to show, refreshed on its own schedule below. Every field
+// here is either a public address or a plain number/error message --
+// the private key itself is never stored in this object, logged, or
+// exposed through any API response.
+var liveWalletKeypair = null;   // kept in memory only to sign later; never logged
+var liveWalletModule = null;
+var liveWalletState = {
+  address: null,
+  configured: false,
+  configError: null,
+  balanceSol: null,
+  balanceError: null,
+  savingsAddress: null,
+};
+
+(function loadLiveWalletAtStartup() {
   try {
-    var wallet = require('./wallet');
+    liveWalletModule = require('./wallet');
     try {
-      var kp = wallet.loadTradingWallet();
-      log('LIVE WALLET loaded: ' + kp.publicKey.toBase58(), 'info');
+      liveWalletKeypair = liveWalletModule.loadTradingWallet();
+      liveWalletState.address = liveWalletKeypair.publicKey.toBase58();
+      liveWalletState.configured = true;
+      log('LIVE WALLET loaded: ' + liveWalletState.address, 'info');
     } catch (e) {
+      liveWalletState.configError = e.code === 'WALLET_NOT_CONFIGURED' ? 'Not configured yet' : e.message;
       if (e.code === 'WALLET_NOT_CONFIGURED') {
         log('LIVE WALLET not configured yet (paper trading unaffected)', 'info');
       } else {
         log('LIVE WALLET ERROR: ' + e.message + ' (paper trading unaffected)', 'warn');
       }
     }
-    var savingsAddr = wallet.getSavingsAddress();
-    log(savingsAddr
-      ? 'LIVE SAVINGS WALLET address: ' + savingsAddr
+    liveWalletState.savingsAddress = liveWalletModule.getSavingsAddress();
+    log(liveWalletState.savingsAddress
+      ? 'LIVE SAVINGS WALLET address: ' + liveWalletState.savingsAddress
       : 'LIVE SAVINGS WALLET not configured yet (paper trading unaffected)', 'info');
   } catch (e) {
+    liveWalletState.configError = 'Wallet module could not load: ' + e.message;
     log('LIVE WALLET module could not load (' + e.message + ') -- paper trading unaffected', 'warn');
   }
 })();
+
+// Refreshes the real on-chain balance for the live trading wallet.
+// On any failure, balanceError is set and balanceSol is left as null
+// (or whatever it already was cleared to) -- the dashboard must show
+// an honest "unable to read" state, never a stale or guessed number.
+async function refreshLiveWalletBalance() {
+  if (!liveWalletKeypair || !liveWalletModule) return;
+  try {
+    var sol = await liveWalletModule.getTradingWalletBalance(liveWalletKeypair.publicKey);
+    liveWalletState.balanceSol = sol;
+    liveWalletState.balanceError = null;
+  } catch (e) {
+    liveWalletState.balanceSol = null;
+    liveWalletState.balanceError = e.code === 'RPC_NOT_CONFIGURED' ? 'Not configured yet' : e.message;
+  }
+}
+refreshLiveWalletBalance();
+var liveWalletI = setInterval(refreshLiveWalletBalance, 30000);
 
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
@@ -1942,10 +1972,8 @@ app.get('/api/state', function(req, res) {
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
-    wallets: {
-      trading: TRADING_WALLET ? TRADING_WALLET.slice(0, 8) + '...' : 'not set',
-      savings: SAVINGS_WALLET ? SAVINGS_WALLET.slice(0, 8) + '...' : 'not set',
-    },
+    liveWallet: liveWalletState,
+    solPriceUsd: SOL_PRICE_USD,
   });
 });
 
@@ -1964,8 +1992,6 @@ app.post('/api/lock-fund', function(req, res) {
 });
 
 app.post('/api/settings', function(req, res) {
-  if (req.body.tradingWallet) TRADING_WALLET = req.body.tradingWallet;
-  if (req.body.savingsWallet) SAVINGS_WALLET = req.body.savingsWallet;
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
     if (!isNaN(sf) && sf > 0) { S.sessionFund = parseFloat(sf.toFixed(2)); log('Session fund: $' + S.sessionFund, 'info'); }
