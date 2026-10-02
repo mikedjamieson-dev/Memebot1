@@ -14,7 +14,7 @@
 // the dashboard. A private key must never share a name with something
 // settable through the API or shown on screen.
 
-const { Keypair } = require('@solana/web3.js');
+const { Keypair, Connection, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const bs58raw = require('bs58');
 // Some versions/bundlers of bs58 expose decode/encode directly on the
 // module; others nest them under .default. Try both shapes rather than
@@ -120,9 +120,30 @@ function getSavingsAddress() {
   return addr && addr.trim() ? addr.trim() : null;
 }
 
+const LIVE_RPC_ENV = 'LIVE_RPC_URL';
+
+// Reads the real, current SOL balance for a given public key from the
+// chain. Throws on any failure (missing RPC URL, bad key, network
+// timeout, rate limit) -- there is no fallback value and no retry here
+// by design. The caller must treat a thrown error as "unable to read
+// right now" and show that honestly, never a stale or guessed number.
+async function getTradingWalletBalance(publicKey) {
+  const rpcUrl = process.env[LIVE_RPC_ENV];
+  if (!rpcUrl || !rpcUrl.trim()) {
+    const err = new Error(LIVE_RPC_ENV + ' is not set');
+    err.code = 'RPC_NOT_CONFIGURED';
+    throw err;
+  }
+  var connection = new Connection(rpcUrl.trim(), 'confirmed');
+  var lamports = await connection.getBalance(publicKey);
+  return lamports / LAMPORTS_PER_SOL;
+}
+
 module.exports = {
   loadTradingWallet,
   getSavingsAddress,
+  getTradingWalletBalance,
   LIVE_KEY_ENV,
   LIVE_SAVINGS_ENV,
+  LIVE_RPC_ENV,
 };
