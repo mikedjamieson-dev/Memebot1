@@ -21,22 +21,28 @@
 
 const { Transaction, SystemProgram, ComputeBudgetProgram } = require('@solana/web3.js');
 
-// The 8 Jito tip accounts. Documented as fixed/unchanging by multiple
-// independent sources, and every real Sender code example defines
-// them directly rather than looking them up fresh each time.
-const TIP_ACCOUNTS = [
-  '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
-  'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe',
-  'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
-  'DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh',
-  '96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5',
-  'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL',
-  'ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt',
-  'ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49',
+// Helius Sender's own required tip accounts -- confirmed directly from
+// a real rejection response ("transaction must send a tip ... to one
+// of the following Helius wallets"), NOT the same list as Jito's own
+// 8 tip accounts used for direct bundle submission. Those are a
+// different list for a different service -- do not merge them.
+const HELIUS_SENDER_TIP_ACCOUNTS = [
+  '9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta',
+  '5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn',
+  '2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD',
+  '2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ',
+  'tKq5esiQyvgRyfFa4JEz4uAUmppKyKB1PiQD9JhyGJY',
+  '3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT',
+  '4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey',
+  '4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE',
+  'D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ',
+  'wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF',
+  '4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or',
+  'D1Mc6j9xQWgR1o1Z7yU5nVVXFQiAYx7FG9AW1aVfwrUM',
 ];
 
 function randomTipAccount() {
-  return TIP_ACCOUNTS[Math.floor(Math.random() * TIP_ACCOUNTS.length)];
+  return HELIUS_SENDER_TIP_ACCOUNTS[Math.floor(Math.random() * HELIUS_SENDER_TIP_ACCOUNTS.length)];
 }
 
 // Sender's two tiers, with their documented minimum tip in lamports.
@@ -242,6 +248,6 @@ module.exports = {
   testSelfTransfer,
   testSelfTransferViaSender,
   fetchCurrentTipLamports,
-  TIP_ACCOUNTS,
+  HELIUS_SENDER_TIP_ACCOUNTS,
   SENDER_TIERS,
 };
