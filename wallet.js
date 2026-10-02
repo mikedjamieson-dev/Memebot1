@@ -122,19 +122,27 @@ function getSavingsAddress() {
 
 const LIVE_RPC_ENV = 'LIVE_RPC_URL';
 
-// Reads the real, current SOL balance for a given public key from the
-// chain. Throws on any failure (missing RPC URL, bad key, network
-// timeout, rate limit) -- there is no fallback value and no retry here
-// by design. The caller must treat a thrown error as "unable to read
-// right now" and show that honestly, never a stale or guessed number.
-async function getTradingWalletBalance(publicKey) {
+// Shared by anything that needs to talk to the chain. Throws the same
+// clear, specific error whether it's a balance check, a transaction
+// send, or anything else -- one source of truth for this instead of
+// each caller re-implementing "read the env var, throw if missing."
+function getConnection() {
   const rpcUrl = process.env[LIVE_RPC_ENV];
   if (!rpcUrl || !rpcUrl.trim()) {
     const err = new Error(LIVE_RPC_ENV + ' is not set');
     err.code = 'RPC_NOT_CONFIGURED';
     throw err;
   }
-  var connection = new Connection(rpcUrl.trim(), 'confirmed');
+  return new Connection(rpcUrl.trim(), 'confirmed');
+}
+
+// Reads the real, current SOL balance for a given public key from the
+// chain. Throws on any failure (missing RPC URL, bad key, network
+// timeout, rate limit) -- there is no fallback value and no retry here
+// by design. The caller must treat a thrown error as "unable to read
+// right now" and show that honestly, never a stale or guessed number.
+async function getTradingWalletBalance(publicKey) {
+  var connection = getConnection();
   var lamports = await connection.getBalance(publicKey);
   return lamports / LAMPORTS_PER_SOL;
 }
@@ -143,6 +151,7 @@ module.exports = {
   loadTradingWallet,
   getSavingsAddress,
   getTradingWalletBalance,
+  getConnection,
   LIVE_KEY_ENV,
   LIVE_SAVINGS_ENV,
   LIVE_RPC_ENV,
