@@ -2019,6 +2019,28 @@ app.post('/api/live/test-transaction', async function(req, res) {
   }
 });
 
+// Same proof test, routed through Helius Sender with a real tip and
+// priority fee -- the actual fast-submission path real trades will
+// use. Manually-triggered only, same as the normal-path test above.
+app.post('/api/live/test-transaction-sender', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  try {
+    var execution = require('./execution');
+    var connection = liveWalletModule.getConnection();
+    var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
+    log('LIVE TEST (Sender): sending self-transfer with tip + priority fee...', 'info');
+    var result = await execution.testSelfTransferViaSender(liveWalletKeypair, connection, rpcUrl);
+    log('LIVE TEST (Sender) result: ' + result.outcome + ' | signature: ' + result.signature +
+      (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    res.json({ ok: true, result: result });
+  } catch (e) {
+    log('LIVE TEST (Sender) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
