@@ -15,7 +15,16 @@
 // settable through the API or shown on screen.
 
 const { Keypair } = require('@solana/web3.js');
-const bs58 = require('bs58');
+const bs58raw = require('bs58');
+// Some versions/bundlers of bs58 expose decode/encode directly on the
+// module; others nest them under .default. Try both shapes rather than
+// assume one -- a wrong assumption here would fail identically on
+// every single key, regardless of what was actually pasted in.
+const bs58 = (bs58raw && typeof bs58raw.decode === 'function')
+  ? bs58raw
+  : (bs58raw && bs58raw.default && typeof bs58raw.default.decode === 'function')
+    ? bs58raw.default
+    : null;
 
 const LIVE_KEY_ENV = 'LIVE_WALLET_PRIVATE_KEY';
 const LIVE_SAVINGS_ENV = 'LIVE_SAVINGS_ADDRESS';
@@ -30,6 +39,15 @@ function loadTradingWallet() {
   if (!raw || !raw.trim()) {
     const err = new Error(LIVE_KEY_ENV + ' is not set');
     err.code = 'WALLET_NOT_CONFIGURED';
+    throw err;
+  }
+
+  if (!bs58) {
+    const err = new Error(
+      'the bs58 library did not load the way this code expects (its decode function was not found) -- ' +
+      'this is a code/dependency problem, not a problem with the key itself'
+    );
+    err.code = 'WALLET_INVALID';
     throw err;
   }
 
@@ -57,6 +75,11 @@ function loadTradingWallet() {
       const invalidCount = (trimmed.match(/[^123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz]/g) || []).length;
       facts.push(invalidCount + ' character(s) outside the standard key alphabet (e.g. 0, O, I, l, or punctuation are never valid in a real key)');
     }
+    // Surface the real underlying error too -- if none of the facts
+    // above explain anything (the string looks completely clean), this
+    // is the only remaining clue, and it's safe: a library's own error
+    // message never contains the input data itself.
+    facts.push('underlying error: ' + (e && e.message ? e.message : String(e)));
     const err = new Error(
       LIVE_KEY_ENV + ' is set but is not valid base58 -- ' + facts.join('; ') +
       '. A real Phantom-exported key is one continuous block of about 87-88 characters with none of the above.'
