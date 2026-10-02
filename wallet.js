@@ -101,14 +101,7 @@ function loadTradingWallet() {
     throw err;
   }
 
-  let keypair;
-  try {
-    keypair = Keypair.fromSecretKey(secretKeyBytes);
-  } finally {
-    // Best-effort scrub of the decoded bytes now that the keypair
-    // exists. secretKeyBytes never leaves this function either way.
-    secretKeyBytes.fill(0);
-  }
+  const keypair = Keypair.fromSecretKey(secretKeyBytes);
   return keypair;
 }
 
