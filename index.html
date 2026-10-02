@@ -332,6 +332,12 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <input class="settings-input" id="pumpfun-test-mint" placeholder="Paste a real pump.fun token mint address..."/>
       <button class="settings-save" onclick="runPumpfunQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
       <div class="settings-status" id="status-pumpfun-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST LETSBONK QUOTE</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for a real LetsBonk token -- builds real buy instructions using current on-chain data, sends nothing and costs nothing.</div>
+      <input class="settings-input" id="letsbonk-test-mint" placeholder="Paste a real LetsBonk token mint address..."/>
+      <button class="settings-save" onclick="runLetsbonkQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-letsbonk-test"></div>
     </div>
   </div>
 
@@ -777,6 +783,30 @@ async function runPumpfunQuoteTest() {
   el.style.color = 'var(--dim)';
   try {
     var res = await fetch(BASE + '/api/live/test-pumpfun-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runLetsbonkQuoteTest() {
+  var el = document.getElementById('status-letsbonk-test');
+  var mint = document.getElementById('letsbonk-test-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-letsbonk-quote', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
     });
     var data = await res.json();
