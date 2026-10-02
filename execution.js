@@ -200,6 +200,13 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     throw err;
   }
   var signature = json.result;
+  if (typeof signature !== 'string' || signature.length === 0) {
+    var err2 = new Error(
+      'Sender did not return a usable signature -- full response: ' + JSON.stringify(json)
+    );
+    err2.code = 'SENDER_NO_SIGNATURE';
+    throw err2;
+  }
   return pollForOutcome(signature, connection, latest, options);
 }
 
