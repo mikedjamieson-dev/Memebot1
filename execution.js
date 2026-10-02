@@ -1,11 +1,11 @@
 'use strict';
 // -- TRANSACTION EXECUTION ----------------------------------------
-// One reusable function, sendAndConfirm, that every future piece of
-// real trading logic calls to put a transaction on-chain and find out
-// for certain what happened. No silent guessing, no fixed-timeout
-// assumption, no automatic retry that could double-execute something.
+// Two ways to submit a transaction (normal, and via Helius Sender for
+// priority speed), sharing one confirm-polling core so the already
+// -verified logic for knowing what actually happened is never
+// duplicated or rewritten.
 //
-// Four honest outcomes, never fewer:
+// Four honest outcomes, never fewer, from either path:
 //   CONFIRMED - it landed and succeeded
 //   FAILED    - it landed, but the instruction itself was rejected
 //               on-chain (e.g. would-be slippage exceeded) -- this is
@@ -19,29 +19,83 @@
 //               above; genuinely unresolved, not a guess at either
 //               outcome
 
-const { Transaction, SystemProgram } = require('@solana/web3.js');
+const { Transaction, SystemProgram, ComputeBudgetProgram } = require('@solana/web3.js');
+
+// The 8 Jito tip accounts. Documented as fixed/unchanging by multiple
+// independent sources, and every real Sender code example defines
+// them directly rather than looking them up fresh each time.
+const TIP_ACCOUNTS = [
+  '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
+  'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe',
+  'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
+  'DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh',
+  '96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5',
+  'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL',
+  'ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt',
+  'ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49',
+];
+
+function randomTipAccount() {
+  return TIP_ACCOUNTS[Math.floor(Math.random() * TIP_ACCOUNTS.length)];
+}
+
+// Sender's two tiers, with their documented minimum tip in lamports.
+const SENDER_TIERS = {
+  SWQOS_ONLY: { minLamports: 5000, queryParam: 'swqos_only=true' },      // 0.000005 SOL
+  MAX: { minLamports: 1000000, queryParam: '' },                         // 0.001 SOL
+};
+
+// Fetches the real, current 75th-percentile landed tip from Jito's own
+// public endpoint -- a genuine, current number, not a guess. Falls
+// back to the tier's documented minimum if the fetch fails or the
+// response shape isn't what's expected, rather than ever blocking a
+// real trade on this being unavailable.
+async function fetchCurrentTipLamports(tier) {
+  var minLamports = tier.minLamports;
+  try {
+    var res = await fetch('https://bundles.jito.wtf/api/v1/bundles/tip_floor', { timeout: 3000 });
+    if (!res.ok) return minLamports;
+    var data = await res.json();
+    var row = Array.isArray(data) ? data[0] : data;
+    var p75 = row && (row.landed_tips_75th_percentile || row.landedTips75thPercentile);
+    if (typeof p75 !== 'number' || !(p75 > 0)) return minLamports;
+    var fetchedLamports = Math.round(p75 * 1000000000); // the endpoint reports SOL, not lamports
+    return Math.max(fetchedLamports, minLamports);
+  } catch (e) {
+    return minLamports;
+  }
+}
+
+// Pulls the api-key out of the already-configured LIVE_RPC_URL rather
+// than needing a separate secret -- Sender authenticates with the same
+// key as the regular RPC connection.
+function extractApiKey(rpcUrl) {
+  var match = /[?&]api-key=([^&]+)/.exec(rpcUrl || '');
+  if (!match) {
+    var err = new Error('could not find api-key in LIVE_RPC_URL');
+    err.code = 'NO_API_KEY';
+    throw err;
+  }
+  return match[1];
+}
+
+function buildSenderUrl(rpcUrl, tier) {
+  var apiKey = extractApiKey(rpcUrl);
+  var query = 'api-key=' + apiKey + (tier.queryParam ? '&' + tier.queryParam : '');
+  return 'https://sender.helius-rpc.com/fast?' + query;
+}
 
 function isSuccessStatus(status) {
   return !!status && !status.err &&
     (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized');
 }
 
-// Sends a built (unsigned) Transaction, signs it with keypair, and
-// polls until one of the four outcomes above is reached. Returns
-// { outcome, signature, error? } -- signature is always present once
-// the transaction has been sent, even for FAILED/EXPIRED/PENDING, so
-// the real attempt can always be looked up later.
-async function sendAndConfirm(transaction, keypair, connection, options) {
-  options = options || {};
+// The shared confirm-polling core. Identical logic regardless of how
+// the transaction was actually submitted -- a signature is a
+// signature, checked the same honest way either time.
+async function pollForOutcome(signature, connection, latest, options) {
   var pollIntervalMs = options.pollIntervalMs || 1000;
   var maxPollMs = options.maxPollMs || 30000;
-
-  var latest = await connection.getLatestBlockhash();
-  transaction.recentBlockhash = latest.blockhash;
-  transaction.feePayer = keypair.publicKey;
-  transaction.sign(keypair);
-
-  var signature = await connection.sendRawTransaction(transaction.serialize());
   var startTime = Date.now();
 
   while (true) {
@@ -55,15 +109,10 @@ async function sendAndConfirm(transaction, keypair, connection, options) {
       if (status.err) {
         return { outcome: 'FAILED', signature: signature, error: JSON.stringify(status.err) };
       }
-      // status exists but is only 'processed' so far -- not yet
-      // confirmed, fall through and keep polling
     }
 
     var currentBlockHeight = await connection.getBlockHeight();
     if (currentBlockHeight > latest.lastValidBlockHeight) {
-      // Window closed. One final, direct re-check before calling this
-      // expired -- the window closing alone doesn't fully prove the
-      // transaction never landed.
       var finalStatuses = await connection.getSignatureStatuses([signature]);
       var finalStatus = finalStatuses && finalStatuses.value && finalStatuses.value[0];
       if (isSuccessStatus(finalStatus)) {
@@ -83,10 +132,79 @@ async function sendAndConfirm(transaction, keypair, connection, options) {
   }
 }
 
-// The one-time proof test: the smallest possible real transaction --
-// 0.00001 SOL sent from the trading wallet to itself -- run through
-// the exact same sendAndConfirm every real trade will use later.
-// Not run automatically; only when explicitly triggered.
+// Normal path: send through the regular connection, same as before.
+async function sendAndConfirm(transaction, keypair, connection, options) {
+  options = options || {};
+  var latest = await connection.getLatestBlockhash();
+  transaction.recentBlockhash = latest.blockhash;
+  transaction.feePayer = keypair.publicKey;
+  transaction.sign(keypair);
+  var signature = await connection.sendRawTransaction(transaction.serialize());
+  return pollForOutcome(signature, connection, latest, options);
+}
+
+// Priority path: adds a tip (real, current amount) and a priority
+// fee, submits through Sender's dedicated address instead of the
+// regular connection, then confirms through the exact same polling
+// logic as the normal path -- confirmation is always checked against
+// the real chain via our regular connection either way, only the
+// initial submission differs.
+//
+// microLamportsPerCu is a conservative, fixed default for the
+// priority fee specifically -- unlike the tip, this has not been
+// built to fetch a live recommended value yet. That is a reasonable
+// next refinement, not something this build claims to already do.
+async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl, options) {
+  options = options || {};
+  var tierName = options.tier || 'SWQOS_ONLY';
+  var tier = SENDER_TIERS[tierName];
+  if (!tier) throw new Error('unknown Sender tier: ' + tierName);
+  var microLamportsPerCu = options.microLamportsPerCu || 100000;
+
+  var tipLamports = await fetchCurrentTipLamports(tier);
+
+  transaction.instructions.unshift(
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: microLamportsPerCu })
+  );
+  transaction.add(
+    SystemProgram.transfer({
+      fromPubkey: keypair.publicKey,
+      toPubkey: randomTipAccount(),
+      lamports: tipLamports,
+    })
+  );
+
+  var latest = await connection.getLatestBlockhash();
+  transaction.recentBlockhash = latest.blockhash;
+  transaction.feePayer = keypair.publicKey;
+  transaction.sign(keypair);
+
+  var serialized = transaction.serialize();
+  var senderUrl = buildSenderUrl(rpcUrl, tier);
+  var body = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'sendTransaction',
+    params: [serialized.toString('base64'), { encoding: 'base64', skipPreflight: true }],
+  };
+  var res = await fetch(senderUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    timeout: 10000,
+  });
+  var json = await res.json();
+  if (json.error) {
+    var err = new Error('Sender rejected the submission: ' + JSON.stringify(json.error));
+    err.code = 'SENDER_REJECTED';
+    throw err;
+  }
+  var signature = json.result;
+  return pollForOutcome(signature, connection, latest, options);
+}
+
+// The one-time proof test, normal path: the smallest possible real
+// transaction -- 0.00001 SOL sent from the trading wallet to itself.
 async function testSelfTransfer(keypair, connection) {
   var transaction = new Transaction().add(
     SystemProgram.transfer({
@@ -98,7 +216,25 @@ async function testSelfTransfer(keypair, connection) {
   return sendAndConfirm(transaction, keypair, connection);
 }
 
+// Same proof test, routed through Sender instead, to prove the tip +
+// priority fee + Sender submission path against real infrastructure.
+async function testSelfTransferViaSender(keypair, connection, rpcUrl) {
+  var transaction = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: keypair.publicKey,
+      toPubkey: keypair.publicKey,
+      lamports: 10000,
+    })
+  );
+  return sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
+}
+
 module.exports = {
   sendAndConfirm,
+  sendAndConfirmViaSender,
   testSelfTransfer,
+  testSelfTransferViaSender,
+  fetchCurrentTipLamports,
+  TIP_ACCOUNTS,
+  SENDER_TIERS,
 };
