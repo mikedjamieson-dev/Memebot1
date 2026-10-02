@@ -189,14 +189,20 @@ var SOL_PRICE_USD = 170;
 async function updateSolPrice() {
   try {
     var res = await fetch(
-      'https://api.dexscreener.com/latest/dex/pairs/solana/So11111111111111111111111111111111111111112',
+      'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',
       { timeout: 5000 }
     );
     if (!res.ok) return;
     var data = await res.json();
     var pairs = data.pairs || [];
-    if (pairs.length > 0 && pairs[0].priceUsd) {
-      SOL_PRICE_USD = parseFloat(pairs[0].priceUsd);
+    if (pairs.length > 0) {
+      var best = pairs[0];
+      for (var i = 1; i < pairs.length; i++) {
+        var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
+        var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
+        if (liq > bestLiq) best = pairs[i];
+      }
+      if (best.priceUsd) SOL_PRICE_USD = parseFloat(best.priceUsd);
     }
   } catch(e) {}
 }
