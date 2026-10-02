@@ -1997,6 +1997,28 @@ app.post('/api/lock-fund', function(req, res) {
   res.json({ success: true, newBase: S.fund, triggerAt: parseFloat(newTrigger.toFixed(2)) });
 });
 
+// Manually-triggered only -- never runs on startup or on a schedule.
+// Sends a real 0.00001 SOL self-transfer through the same
+// sendAndConfirm logic every future real trade will use, so we can
+// prove it against real infrastructure before any trading exists.
+app.post('/api/live/test-transaction', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  try {
+    var execution = require('./execution');
+    var connection = liveWalletModule.getConnection();
+    log('LIVE TEST: sending self-transfer...', 'info');
+    var result = await execution.testSelfTransfer(liveWalletKeypair, connection);
+    log('LIVE TEST result: ' + result.outcome + ' | signature: ' + result.signature +
+      (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    res.json({ ok: true, result: result });
+  } catch (e) {
+    log('LIVE TEST ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
