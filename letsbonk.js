@@ -25,8 +25,9 @@
 // so a real test against a real token will tell us immediately, with
 // real detail, if anything about that side needs adjusting.
 
-const { Raydium, TxVersion, LAUNCHPAD_PROGRAM, getPdaLaunchpadPoolId, PlatformConfig } = require('@raydium-io/raydium-sdk-v2');
+const { Raydium, TxVersion, LAUNCHPAD_PROGRAM, getPdaLaunchpadPoolId, PlatformConfig, toTransferFeeConfig } = require('@raydium-io/raydium-sdk-v2');
 const { NATIVE_MINT } = require('@solana/spl-token');
+const { PublicKey } = require('@solana/web3.js');
 const BN = require('bn.js');
 
 function describe(label, value) {
@@ -53,7 +54,14 @@ async function gatherContext(raydium, mintA, mintB, programId) {
   try {
     poolInfo = await raydium.launchpad.getRpcPoolInfo({ poolId: poolId });
   } catch (e) {
-    throw new Error('getRpcPoolInfo failed: ' + e.message + ' -- ' + describe('poolId', poolId));
+    throw new Error(
+      'getRpcPoolInfo failed: ' + e.message +
+      ' -- computed poolId: ' + poolId.toBase58() +
+      ' -- mintA (token): ' + mintA.toBase58() +
+      ' -- mintB (quote): ' + mintB.toBase58() +
+      ' -- programId: ' + programId.toBase58() +
+      ' -- paste the poolId above into a block explorer to check directly whether it exists'
+    );
   }
   if (!poolInfo) {
     throw new Error('getRpcPoolInfo returned nothing for this mint pair -- this token may not be on LetsBonk, or may have already graduated');
@@ -111,10 +119,11 @@ async function buildBuyInstructions(connection, mint, userPublicKey, solAmountLa
     result = await raydium.launchpad.buyToken({
       programId: programId,
       mintA: mint,
-      mintAProgram: ctx.mintInfo.programId,
+      mintAProgram: new PublicKey(ctx.mintInfo.programId),
       poolInfo: ctx.poolInfo,
       mintB: ctx.poolInfo.mintB,
-      mintBProgram: ctx.mintBInfo.programId,
+      mintBProgram: new PublicKey(ctx.mintBInfo.programId),
+      transferFeeConfigB: toTransferFeeConfig(ctx.mintBInfo, ctx.epochInfo.epoch),
       slippage: slippageBN,
       configInfo: ctx.poolInfo.configInfo,
       platformFeeRate: ctx.platformInfo.feeRate,
@@ -159,10 +168,11 @@ async function buildSellInstructions(connection, mint, userPublicKey, tokenAmoun
     result = await raydium.launchpad.sellToken({
       programId: programId,
       mintA: mint,
-      mintAProgram: ctx.mintInfo.programId,
+      mintAProgram: new PublicKey(ctx.mintInfo.programId),
       poolInfo: ctx.poolInfo,
       mintB: ctx.poolInfo.mintB,
-      mintBProgram: ctx.mintBInfo.programId,
+      mintBProgram: new PublicKey(ctx.mintBInfo.programId),
+      transferFeeConfigB: toTransferFeeConfig(ctx.mintBInfo, ctx.epochInfo.epoch),
       slippage: slippageBN,
       configInfo: ctx.poolInfo.configInfo,
       platformFeeRate: ctx.platformInfo.feeRate,
