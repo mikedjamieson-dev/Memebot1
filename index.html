@@ -320,6 +320,12 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
       <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
       <div class="wallet-display" id="live-savings-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST TRANSACTIONS</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Sends a real, tiny (0.00001 SOL) transfer from the trading wallet to itself -- a genuine proof against real infrastructure, not a simulation. Costs a normal real network fee each time.</div>
+      <button class="settings-save" onclick="runLiveTest(false)">RUN TEST (NORMAL)</button>
+      <button class="settings-save" onclick="runLiveTest(true)" style="margin-top:6px;">RUN TEST (VIA SENDER)</button>
+      <div class="settings-status" id="status-live-test"></div>
     </div>
   </div>
 
@@ -732,6 +738,29 @@ async function savePoolSize() {
   if (isNaN(n) || n < 1000 || n > 50000) { el.textContent = 'Enter 1000-50000'; el.style.color = 'var(--red)'; return; }
   var ok = await apiPost({ maxPool: n });
   el.textContent = ok ? '✅ Pool set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function runLiveTest(viaSender) {
+  var el = document.getElementById('status-live-test');
+  var path = viaSender ? '/api/live/test-transaction-sender' : '/api/live/test-transaction';
+  el.textContent = 'Sending real transaction, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + path, { method: 'POST' });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    var r = data.result;
+    var line = r.outcome + ' -- signature: ' + r.signature + (r.error ? ' -- ' + r.error : '');
+    el.textContent = (r.outcome === 'CONFIRMED' ? '✅ ' : '⚠️ ') + line;
+    el.style.color = r.outcome === 'CONFIRMED' ? 'var(--green)' : 'var(--red)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
 }
 
 async function saveAutoLock() {
