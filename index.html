@@ -309,23 +309,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <!-- Wallets -->
     <div class="settings-sub" id="sub-wallets">
       <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK</button>
-      <div class="settings-sub-title">WALLET ADDRESSES</div>
-      <div class="settings-menu-item" onclick="toggleWalletChain('sol')" style="margin-bottom:8px;">
-        <span>
-          <svg width="14" height="14" viewBox="0 0 100 100" style="vertical-align:middle;margin-right:4px;" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="sga" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#9945FF"/><stop offset="100%" style="stop-color:#14F195"/></linearGradient></defs><path d="M14 71h64l-14 14H0L14 71zm0-28h64L92 57H14L0 43zm72-28H22L8 0h72l14 15z" fill="url(#sga)"/></svg>
-          SOLANA WALLETS
-        </span>
-        <span class="settings-menu-arrow" id="sol-wallet-arrow">›</span>
-      </div>
-      <div id="sol-wallet-panel" style="display:none;margin-bottom:12px;">
-        <div class="settings-lbl">TRADING WALLET</div>
-        <input class="settings-input" id="trading-wallet" placeholder="Solana trading wallet address..."/>
-        <div class="settings-lbl">SAVINGS WALLET</div>
-        <input class="settings-input" id="savings-wallet" placeholder="Solana savings wallet address..."/>
-        <button class="settings-save" onclick="saveWallets()" style="margin-top:6px;">SAVE SOLANA WALLETS</button>
-        <div class="wallet-display" id="wallet-display"></div>
-      </div>
-      <div class="settings-status" id="status-wallets"></div>
+      <div class="settings-sub-title">LIVE WALLET</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now.</div>
+
+      <div class="settings-lbl">TRADING WALLET ADDRESS</div>
+      <div class="wallet-display" id="live-trading-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:10px;">TRADING WALLET BALANCE</div>
+      <div class="wallet-display" id="live-trading-balance">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
+      <div class="wallet-display" id="live-savings-address">Checking...</div>
     </div>
   </div>
 
@@ -665,14 +659,6 @@ function setAutoLock(enabled) {
   document.getElementById('btn-autolock-off').classList.toggle('active', !enabled);
 }
 
-function toggleWalletChain(chain) {
-  var panel = document.getElementById(chain + '-wallet-panel');
-  var arrow = document.getElementById(chain + '-wallet-arrow');
-  var isOpen = panel.style.display !== 'none';
-  panel.style.display = isOpen ? 'none' : 'block';
-  arrow.textContent = isOpen ? '›' : '∨';
-}
-
 function togglePoolInfo() {
   document.getElementById('pool-info-panel').classList.toggle('open');
 }
@@ -753,14 +739,6 @@ async function saveAutoLock() {
   var ok = await apiPost({ autoLockEnabled: currentAutoLockEnabled });
   el.textContent = ok ? '✅ Auto fund protection: ' + (currentAutoLockEnabled ? 'ON' : 'OFF') : '❌ Failed';
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
-}
-
-async function saveWallets() {
-  var el = document.getElementById('status-wallets');
-  var trading = document.getElementById('trading-wallet').value.trim();
-  var savings = document.getElementById('savings-wallet').value.trim();
-  var ok = await apiPost({ tradingWallet: trading, savingsWallet: savings });
-  el.textContent = ok ? '✅ Solana wallets saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
 // ── LOG ───────────────────────────────────────────────────────
@@ -1023,6 +1001,36 @@ async function fetchState() {
     document.getElementById('ss-skip').textContent = data.rejectCount||0;
     document.getElementById('ss-fund').textContent = '$' + f2(data.sessionFund||100);
     document.getElementById('ss-maxopen').textContent = data.maxOpen||8;
+
+    // Live wallet -- real data only, honest "unable to read" otherwise
+    var lw = data.liveWallet || {};
+    var tradingAddrEl = document.getElementById('live-trading-address');
+    if (lw.address) {
+      tradingAddrEl.textContent = lw.address;
+      tradingAddrEl.style.color = 'var(--green)';
+    } else {
+      tradingAddrEl.textContent = lw.configError || 'Not configured yet';
+      tradingAddrEl.style.color = 'var(--dim)';
+    }
+
+    var balEl = document.getElementById('live-trading-balance');
+    if (lw.balanceSol !== null && lw.balanceSol !== undefined) {
+      var usd = data.solPriceUsd ? ' (~$' + f2(lw.balanceSol * data.solPriceUsd) + ')' : '';
+      balEl.textContent = lw.balanceSol.toFixed(4) + ' SOL' + usd;
+      balEl.style.color = 'var(--green)';
+    } else {
+      balEl.textContent = lw.address ? ('Unable to read right now' + (lw.balanceError ? ' (' + lw.balanceError + ')' : '')) : 'Not configured yet';
+      balEl.style.color = 'var(--red)';
+    }
+
+    var savingsAddrEl = document.getElementById('live-savings-address');
+    if (lw.savingsAddress) {
+      savingsAddrEl.textContent = lw.savingsAddress;
+      savingsAddrEl.style.color = 'var(--green)';
+    } else {
+      savingsAddrEl.textContent = 'Not configured yet';
+      savingsAddrEl.style.color = 'var(--dim)';
+    }
 
     // Best trade
     var bt = data.bestTrade;
