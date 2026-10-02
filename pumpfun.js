@@ -13,14 +13,14 @@
 // the SDK itself (maxSolCost on a buy, minSolOutput on a sell) --
 // not something this wrapper calculates by hand.
 
-const { PumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount } = require('@pump-fun/pump-sdk');
+const { OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount } = require('@pump-fun/pump-sdk');
 const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // Builds the instructions to spend `solAmountLamports` buying `mint`,
 // for `user` (a PublicKey), with `slippagePercent` protection (e.g.
 // 15 for 15%). Returns a plain array of instructions -- nothing sent.
 async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent) {
-  var sdk = new PumpSdk(connection);
+  var sdk = new OnlinePumpSdk(connection);
   var global = await sdk.fetchGlobal();
   var buyState = await sdk.fetchBuyState(mint, user);
   var amount = getBuyTokenAmountFromSolAmount(global, buyState.bondingCurve, solAmountLamports);
@@ -43,7 +43,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
 // with `slippagePercent` protection. Returns a plain array of
 // instructions -- nothing sent.
 async function buildSellInstructions(connection, mint, user, tokenAmount, slippagePercent) {
-  var sdk = new PumpSdk(connection);
+  var sdk = new OnlinePumpSdk(connection);
   var global = await sdk.fetchGlobal();
   var sellState = await sdk.fetchSellState(mint, user);
   var solAmount = getSellSolAmountFromTokenAmount(global, sellState.bondingCurve, tokenAmount);
