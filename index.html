@@ -310,7 +310,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="settings-sub" id="sub-wallets">
       <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK</button>
       <div class="settings-sub-title">LIVE WALLET</div>
-      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now.</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now. Balance refreshes every 30 seconds — USD estimate every 10 minutes.</div>
 
       <div class="settings-lbl">TRADING WALLET ADDRESS</div>
       <div class="wallet-display" id="live-trading-address">Checking...</div>
@@ -1015,7 +1015,7 @@ async function fetchState() {
 
     var balEl = document.getElementById('live-trading-balance');
     if (lw.balanceSol !== null && lw.balanceSol !== undefined) {
-      var usd = data.solPriceUsd ? ' (~$' + f2(lw.balanceSol * data.solPriceUsd) + ')' : '';
+      var usd = data.solPriceUsd ? ' (' + f2(lw.balanceSol * data.solPriceUsd) + ' USD)' : '';
       balEl.textContent = lw.balanceSol.toFixed(4) + ' SOL' + usd;
       balEl.style.color = 'var(--green)';
     } else {
