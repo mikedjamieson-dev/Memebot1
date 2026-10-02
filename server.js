@@ -2041,6 +2041,35 @@ app.post('/api/live/test-transaction-sender', async function(req, res) {
   }
 });
 
+// Safe, read-only proof test: builds real buy instructions against a
+// real, live token mint using current on-chain state, but never sends
+// anything. Proves the pump.fun SDK integration works against reality
+// before it's ever combined with actual execution. Pass a real
+// pump.fun token's mint address in the request body as "mint".
+app.post('/api/live/test-pumpfun-quote', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real pump.fun token mint address in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey } = require('@solana/web3.js');
+    var pumpfun = require('./pumpfun');
+    var connection = liveWalletModule.getConnection();
+    var mint = new PublicKey(mintStr);
+    var solAmountLamports = 1000000; // 0.001 SOL -- tiny, just to prove the quote/build path
+    log('LIVE TEST (pump.fun quote): building buy instructions for ' + mintStr + '...', 'info');
+    var instructions = await pumpfun.buildBuyInstructions(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
+    log('LIVE TEST (pump.fun quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    res.json({ ok: true, instructionCount: instructions.length });
+  } catch (e) {
+    log('LIVE TEST (pump.fun quote) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
