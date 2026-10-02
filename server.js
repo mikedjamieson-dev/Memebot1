@@ -2070,6 +2070,33 @@ app.post('/api/live/test-pumpfun-quote', async function(req, res) {
   }
 });
 
+// Same safe, read-only proof test, for LetsBonk (Raydium's LaunchLab)
+// instead. Builds real buy instructions against a real, live token
+// using current on-chain state, but never sends anything.
+app.post('/api/live/test-letsbonk-quote', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real LetsBonk token mint address in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey } = require('@solana/web3.js');
+    var letsbonk = require('./letsbonk');
+    var connection = liveWalletModule.getConnection();
+    var mint = new PublicKey(mintStr);
+    var solAmountLamports = 1000000; // 0.001 SOL -- tiny, just to prove the quote/build path
+    log('LIVE TEST (LetsBonk quote): building buy instructions for ' + mintStr + '...', 'info');
+    var instructions = await letsbonk.buildBuyInstructions(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 1500);
+    log('LIVE TEST (LetsBonk quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    res.json({ ok: true, instructionCount: instructions.length });
+  } catch (e) {
+    log('LIVE TEST (LetsBonk quote) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
