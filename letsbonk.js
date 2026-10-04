@@ -191,7 +191,42 @@ async function buildSellInstructions(connection, mint, userPublicKey, tokenAmoun
   return result.transaction.instructions;
 }
 
+// Checks whether a LetsBonk token has migrated off its LaunchLab pool.
+// Lighter than the full buy/sell context -- only needs the pool's status
+// field. Confirmed from Raydium's own official migration documentation:
+// 0 = still trading on the curve, 1 = migration triggered (trading
+// stopped), 2 = fully migrated. Anything other than 0 means the
+// bonding-curve path no longer applies.
+async function isGraduated(connection, mint, userPublicKey) {
+  var raydium;
+  try {
+    raydium = await Raydium.load({ connection: connection, owner: userPublicKey, disableFeatureCheck: true, disableLoadToken: true });
+  } catch (e) {
+    throw new Error('Raydium.load failed while checking graduation: ' + e.message);
+  }
+
+  var programId = LAUNCHPAD_PROGRAM;
+  var poolId;
+  try {
+    poolId = getPdaLaunchpadPoolId(programId, mint, NATIVE_MINT).publicKey;
+  } catch (e) {
+    throw new Error('getPdaLaunchpadPoolId failed while checking graduation: ' + e.message);
+  }
+
+  var poolInfo;
+  try {
+    poolInfo = await raydium.launchpad.getRpcPoolInfo({ poolId: poolId });
+  } catch (e) {
+    throw new Error('getRpcPoolInfo failed while checking graduation: ' + e.message + ' -- poolId: ' + poolId.toBase58());
+  }
+  if (!poolInfo || poolInfo.status === undefined) {
+    throw new Error('getRpcPoolInfo returned no usable status while checking graduation -- ' + describe('poolInfo', poolInfo));
+  }
+  return poolInfo.status !== 0;
+}
+
 module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
+  isGraduated,
 };
