@@ -338,6 +338,31 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <input class="settings-input" id="letsbonk-test-mint" placeholder="Paste a real LetsBonk token mint address..."/>
       <button class="settings-save" onclick="runLetsbonkQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
       <div class="settings-status" id="status-letsbonk-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (PUMP.FUN)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Reports whether a token has graduated off its bonding curve. Nothing sent, nothing costs anything.</div>
+      <input class="settings-input" id="pumpfun-grad-mint" placeholder="Paste a real pump.fun token mint address..."/>
+      <button class="settings-save" onclick="runPumpfunGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
+      <div class="settings-status" id="status-pumpfun-grad"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (LETSBONK)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for LetsBonk. Nothing sent, nothing costs anything.</div>
+      <input class="settings-input" id="letsbonk-grad-mint" placeholder="Paste a real LetsBonk token mint address..."/>
+      <button class="settings-save" onclick="runLetsbonkGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
+      <div class="settings-status" id="status-letsbonk-grad"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST PUMPSWAP SELL (GRADUATED PUMP.FUN TOKENS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Builds a real sell for an already-graduated token. Sends nothing, costs nothing -- you don't need to actually hold the token to test this.</div>
+      <input class="settings-input" id="pumpswap-test-mint" placeholder="Paste a real, already-graduated pump.fun token mint..."/>
+      <button class="settings-save" onclick="runPumpswapQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-pumpswap-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST RAYDIUM CPMM SELL (MIGRATED LETSBONK TOKENS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for an already-migrated LetsBonk token. Needs both the token's mint and its new pool address.</div>
+      <input class="settings-input" id="raydiumcpmm-test-mint" placeholder="Paste the migrated token's mint address..."/>
+      <input class="settings-input" id="raydiumcpmm-test-pool" placeholder="Paste its new Raydium CPMM pool address..." style="margin-top:6px;"/>
+      <button class="settings-save" onclick="runRaydiumCpmmQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-raydiumcpmm-test"></div>
     </div>
   </div>
 
@@ -808,6 +833,84 @@ async function runLetsbonkQuoteTest() {
   try {
     var res = await fetch(BASE + '/api/live/test-letsbonk-quote', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runGraduationTest(platform) {
+  var elId = platform === 'pumpfun' ? 'status-pumpfun-grad' : 'status-letsbonk-grad';
+  var mintId = platform === 'pumpfun' ? 'pumpfun-grad-mint' : 'letsbonk-grad-mint';
+  var endpoint = platform === 'pumpfun' ? '/api/live/test-pumpfun-graduated' : '/api/live/test-letsbonk-graduated';
+  var el = document.getElementById(elId);
+  var mint = document.getElementById(mintId).value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Checking, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = data.graduated ? '✅ GRADUATED' : '✅ Still on curve (not graduated)';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+function runPumpfunGradTest() { runGraduationTest('pumpfun'); }
+function runLetsbonkGradTest() { runGraduationTest('letsbonk'); }
+
+async function runPumpswapQuoteTest() {
+  var el = document.getElementById('status-pumpswap-test');
+  var mint = document.getElementById('pumpswap-test-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-pumpswap-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runRaydiumCpmmQuoteTest() {
+  var el = document.getElementById('status-raydiumcpmm-test');
+  var mint = document.getElementById('raydiumcpmm-test-mint').value.trim();
+  var poolId = document.getElementById('raydiumcpmm-test-pool').value.trim();
+  if (!mint || !poolId) { el.textContent = 'Paste both the mint and pool address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-raydiumcpmm-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint, poolId: poolId })
     });
     var data = await res.json();
     if (!data.ok) {
