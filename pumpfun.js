@@ -176,16 +176,16 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
 // sources that 'complete' is the real, correct field for this.
 async function isGraduated(connection, mint, userPublicKey) {
   var sdk = new OnlinePumpSdk(connection);
-  var sellState;
+  var buyState;
   try {
-    sellState = await sdk.fetchSellState(mint, userPublicKey);
+    buyState = await sdk.fetchBuyState(mint, userPublicKey);
   } catch (e) {
-    throw new Error('fetchSellState failed while checking graduation: ' + e.message);
+    throw new Error('fetchBuyState failed while checking graduation: ' + e.message);
   }
-  if (!sellState || !sellState.bondingCurve) {
-    throw new Error('fetchSellState returned no usable bondingCurve while checking graduation -- ' + describe('sellState', sellState));
+  if (!buyState || !buyState.bondingCurve) {
+    throw new Error('fetchBuyState returned no usable bondingCurve while checking graduation -- ' + describe('buyState', buyState));
   }
-  return !!sellState.bondingCurve.complete;
+  return !!buyState.bondingCurve.complete;
 }
 
 module.exports = {
