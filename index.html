@@ -216,6 +216,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
     <!-- Trading Fund -->
@@ -320,8 +321,15 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
       <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
       <div class="wallet-display" id="live-savings-address">Checking...</div>
+    </div>
 
-      <div class="settings-lbl" style="margin-top:16px;">TEST TRANSACTIONS</div>
+    <!-- Testing -->
+    <div class="settings-sub" id="sub-testing">
+      <button class="settings-back" onclick="closeSub('sub-testing')">← BACK</button>
+      <div class="settings-sub-title">TESTING</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Every real-infrastructure test in one place. All build-only or send tiny real amounts -- see each one's own note for exactly what it does.</div>
+
+      <div class="settings-lbl">TEST TRANSACTIONS</div>
       <div class="settings-hint" style="margin-bottom:8px;">Sends a real, tiny (0.00001 SOL) transfer from the trading wallet to itself -- a genuine proof against real infrastructure, not a simulation. Costs a normal real network fee each time.</div>
       <button class="settings-save" onclick="runLiveTest(false)">RUN TEST (NORMAL)</button>
       <button class="settings-save" onclick="runLiveTest(true)" style="margin-top:6px;">RUN TEST (VIA SENDER)</button>
