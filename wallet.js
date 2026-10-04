@@ -140,10 +140,32 @@ async function getTradingWalletBalance(publicKey) {
   return lamports / LAMPORTS_PER_SOL;
 }
 
+// Reads the real, current balance of a specific SPL token for a given
+// wallet. Returns { amount: raw integer string, decimals } so the
+// caller can work with the exact on-chain value, not a rounded one.
+// Returns a zero balance (not an error) if the account simply doesn't
+// exist yet -- that's a real, valid state (never held this token),
+// not a failure. Any other failure throws, same no-fallback rule as
+// the SOL balance reader above.
+async function getTokenBalance(connection, mint, ownerPublicKey) {
+  const { getAssociatedTokenAddress } = require('@solana/spl-token');
+  var tokenAccount = await getAssociatedTokenAddress(mint, ownerPublicKey);
+  try {
+    var balance = await connection.getTokenAccountBalance(tokenAccount);
+    return { amount: balance.value.amount, decimals: balance.value.decimals };
+  } catch (e) {
+    if (e.message && e.message.indexOf('could not find account') !== -1) {
+      return { amount: '0', decimals: 0 };
+    }
+    throw e;
+  }
+}
+
 module.exports = {
   loadTradingWallet,
   getSavingsAddress,
   getTradingWalletBalance,
+  getTokenBalance,
   getConnection,
   LIVE_KEY_ENV,
   LIVE_SAVINGS_ENV,
