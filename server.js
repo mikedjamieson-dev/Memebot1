@@ -2230,7 +2230,7 @@ async function executeRealBuy(req, res, platformName, buildBuyFn) {
     instructions.forEach(function(ix) { tx.add(ix); });
 
     log('LIVE TRADE TEST (' + platformName + ' buy): submitting real transaction...', 'info');
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log('LIVE TRADE TEST (' + platformName + '): ' + summary, 'info'); } });
 
     log('LIVE TRADE TEST (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
@@ -2269,7 +2269,7 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
     instructions.forEach(function(ix) { tx.add(ix); });
 
     log('LIVE TRADE TEST (' + platformName + ' sell): submitting real transaction...', 'info');
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log('LIVE TRADE TEST (' + platformName + '): ' + summary, 'info'); } });
 
     log('LIVE TRADE TEST (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
