@@ -92,6 +92,13 @@ function buildSenderUrl(rpcUrl, tier) {
   return 'https://sender.helius-rpc.com/fast?' + query;
 }
 
+function describe(label, value) {
+  if (value === undefined) return label + '=undefined';
+  if (value === null) return label + '=null';
+  if (typeof value === 'object') return label + '=object{' + Object.keys(value).join(',') + '}';
+  return label + '=' + typeof value + '(' + value + ')';
+}
+
 function isSuccessStatus(status) {
   return !!status && !status.err &&
     (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized');
@@ -184,6 +191,15 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   var latest = await connection.getLatestBlockhash();
   transaction.recentBlockhash = latest.blockhash;
   transaction.feePayer = keypair.publicKey;
+
+  var instructionSummary = transaction.instructions.map(function(ix, i) {
+    var programIdStr = (ix.programId && typeof ix.programId.toBase58 === 'function')
+      ? ix.programId.toBase58()
+      : 'INVALID (' + describe('programId', ix.programId) + ')';
+    return 'ix[' + i + ']: program=' + programIdStr + ' keys=' + (ix.keys ? ix.keys.length : 'none');
+  }).join(' | ');
+  if (options.onDiagnostic) options.onDiagnostic(instructionSummary);
+
   transaction.sign(keypair);
 
   var serialized = transaction.serialize();
