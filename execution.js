@@ -19,7 +19,7 @@
 //               above; genuinely unresolved, not a guess at either
 //               outcome
 
-const { Transaction, SystemProgram, ComputeBudgetProgram } = require('@solana/web3.js');
+const { Transaction, SystemProgram, ComputeBudgetProgram, PublicKey } = require('@solana/web3.js');
 
 // Helius Sender's own required tip accounts -- confirmed directly from
 // a real rejection response ("transaction must send a tip ... to one
@@ -42,7 +42,8 @@ const HELIUS_SENDER_TIP_ACCOUNTS = [
 ];
 
 function randomTipAccount() {
-  return HELIUS_SENDER_TIP_ACCOUNTS[Math.floor(Math.random() * HELIUS_SENDER_TIP_ACCOUNTS.length)];
+  var address = HELIUS_SENDER_TIP_ACCOUNTS[Math.floor(Math.random() * HELIUS_SENDER_TIP_ACCOUNTS.length)];
+  return new PublicKey(address);
 }
 
 // Sender's two tiers, with their documented minimum tip in lamports.
