@@ -161,11 +161,32 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
   }
 }
 
+// Determines which token standard a specific mint actually uses --
+// the original Token Program, or the newer Token-2022 -- by reading
+// its real on-chain owner field rather than assuming. Confirmed
+// directly from Solana's own documentation: assuming the original
+// program for a Token-2022 mint produces an IncorrectProgramId
+// failure, exactly the kind this exists to prevent.
+async function getTokenProgramId(connection, mint) {
+  const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
+  var accountInfo = await connection.getAccountInfo(mint);
+  if (!accountInfo) {
+    var err = new Error('Mint account not found on-chain: ' + mint.toString());
+    err.code = 'MINT_NOT_FOUND';
+    throw err;
+  }
+  if (accountInfo.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+    return TOKEN_2022_PROGRAM_ID;
+  }
+  return TOKEN_PROGRAM_ID;
+}
+
 module.exports = {
   loadTradingWallet,
   getSavingsAddress,
   getTradingWalletBalance,
   getTokenBalance,
+  getTokenProgramId,
   getConnection,
   LIVE_KEY_ENV,
   LIVE_SAVINGS_ENV,
