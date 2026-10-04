@@ -170,9 +170,28 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   }
 }
 
+// Checks whether a pump.fun token has graduated off its bonding curve
+// to PumpSwap. Uses the exact same fetchSellState call buildSellInstructions
+// already makes -- confirmed from six independent raw Rust account-layout
+// sources that 'complete' is the real, correct field for this.
+async function isGraduated(connection, mint, userPublicKey) {
+  var sdk = new OnlinePumpSdk(connection);
+  var sellState;
+  try {
+    sellState = await sdk.fetchSellState(mint, userPublicKey);
+  } catch (e) {
+    throw new Error('fetchSellState failed while checking graduation: ' + e.message);
+  }
+  if (!sellState || !sellState.bondingCurve) {
+    throw new Error('fetchSellState returned no usable bondingCurve while checking graduation -- ' + describe('sellState', sellState));
+  }
+  return !!sellState.bondingCurve.complete;
+}
+
 module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
   quoteTokensForSol,
   quoteSolForTokens,
+  isGraduated,
 };
