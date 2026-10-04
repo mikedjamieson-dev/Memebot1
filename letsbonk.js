@@ -25,7 +25,7 @@
 // so a real test against a real token will tell us immediately, with
 // real detail, if anything about that side needs adjusting.
 
-const { Raydium, TxVersion, LAUNCHPAD_PROGRAM, getPdaLaunchpadPoolId, PlatformConfig, toTransferFeeConfig } = require('@raydium-io/raydium-sdk-v2');
+const { Raydium, TxVersion, LAUNCHPAD_PROGRAM, getPdaLaunchpadPoolId, PlatformConfig } = require('@raydium-io/raydium-sdk-v2');
 const { NATIVE_MINT } = require('@solana/spl-token');
 const { PublicKey } = require('@solana/web3.js');
 const BN = require('bn.js');
@@ -123,7 +123,6 @@ async function buildBuyInstructions(connection, mint, userPublicKey, solAmountLa
       poolInfo: ctx.poolInfo,
       mintB: ctx.poolInfo.mintB,
       mintBProgram: new PublicKey(ctx.mintBInfo.programId),
-      transferFeeConfigB: toTransferFeeConfig(ctx.mintBInfo, ctx.epochInfo.epoch),
       slippage: slippageBN,
       configInfo: ctx.poolInfo.configInfo,
       platformFeeRate: ctx.platformInfo.feeRate,
@@ -172,7 +171,6 @@ async function buildSellInstructions(connection, mint, userPublicKey, tokenAmoun
       poolInfo: ctx.poolInfo,
       mintB: ctx.poolInfo.mintB,
       mintBProgram: new PublicKey(ctx.mintBInfo.programId),
-      transferFeeConfigB: toTransferFeeConfig(ctx.mintBInfo, ctx.epochInfo.epoch),
       slippage: slippageBN,
       configInfo: ctx.poolInfo.configInfo,
       platformFeeRate: ctx.platformInfo.feeRate,
