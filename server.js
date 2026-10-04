@@ -2097,6 +2097,108 @@ app.post('/api/live/test-letsbonk-quote', async function(req, res) {
   }
 });
 
+// Graduation check: pump.fun. Reports true/false, nothing sent.
+app.post('/api/live/test-pumpfun-graduated', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real pump.fun token mint address in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey } = require('@solana/web3.js');
+    var pumpfun = require('./pumpfun');
+    var connection = liveWalletModule.getConnection();
+    var mint = new PublicKey(mintStr);
+    var graduated = await pumpfun.isGraduated(connection, mint, liveWalletKeypair.publicKey);
+    log('LIVE TEST (pump.fun graduation check) result: ' + (graduated ? 'GRADUATED' : 'still on curve'), 'win');
+    res.json({ ok: true, graduated: graduated });
+  } catch (e) {
+    log('LIVE TEST (pump.fun graduation check) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Graduation check: LetsBonk. Reports true/false, nothing sent.
+app.post('/api/live/test-letsbonk-graduated', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real LetsBonk token mint address in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey } = require('@solana/web3.js');
+    var letsbonk = require('./letsbonk');
+    var connection = liveWalletModule.getConnection();
+    var mint = new PublicKey(mintStr);
+    var graduated = await letsbonk.isGraduated(connection, mint, liveWalletKeypair.publicKey);
+    log('LIVE TEST (LetsBonk graduation check) result: ' + (graduated ? 'GRADUATED/MIGRATED' : 'still on curve'), 'win');
+    res.json({ ok: true, graduated: graduated });
+  } catch (e) {
+    log('LIVE TEST (LetsBonk graduation check) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Safe, read-only proof test: builds a real sell on PumpSwap for a
+// real, already-graduated token. Nothing sent, nothing needs to be
+// owned -- building the instruction doesn't require holding the token.
+app.post('/api/live/test-pumpswap-quote', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real, already-graduated pump.fun token mint address in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey } = require('@solana/web3.js');
+    var pumpswap = require('./pumpswap');
+    var connection = liveWalletModule.getConnection();
+    var mint = new PublicKey(mintStr);
+    var tokenAmount = 1000000; // small made-up amount, just to prove the build path
+    log('LIVE TEST (PumpSwap quote): building sell instructions for ' + mintStr + '...', 'info');
+    var instructions = await pumpswap.buildSellInstructions(connection, mint, liveWalletKeypair.publicKey, tokenAmount, 15);
+    log('LIVE TEST (PumpSwap quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    res.json({ ok: true, instructionCount: instructions.length });
+  } catch (e) {
+    log('LIVE TEST (PumpSwap quote) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// Same safe, read-only proof test, for a real, already-migrated
+// LetsBonk token's new Raydium CPMM pool. Requires both the token's
+// mint and its post-migration pool address (both in the request body).
+app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  var poolStr = req.body && req.body.poolId;
+  if (!mintStr || !poolStr) {
+    return res.json({ ok: false, error: 'Provide both a real, migrated token mint and its post-migration pool address as "mint" and "poolId"' });
+  }
+  try {
+    var { PublicKey } = require('@solana/web3.js');
+    var raydiumcpmm = require('./raydiumcpmm');
+    var connection = liveWalletModule.getConnection();
+    var mint = new PublicKey(mintStr);
+    var poolId = new PublicKey(poolStr);
+    var tokenAmount = 1000000; // small made-up amount, just to prove the build path
+    log('LIVE TEST (Raydium CPMM quote): building sell instructions for ' + mintStr + '...', 'info');
+    var instructions = await raydiumcpmm.buildSellInstructions(connection, poolId, mint, liveWalletKeypair.publicKey, tokenAmount, 15);
+    log('LIVE TEST (Raydium CPMM quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    res.json({ ok: true, instructionCount: instructions.length });
+  } catch (e) {
+    log('LIVE TEST (Raydium CPMM quote) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
