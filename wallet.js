@@ -149,7 +149,8 @@ async function getTradingWalletBalance(publicKey) {
 // the SOL balance reader above.
 async function getTokenBalance(connection, mint, ownerPublicKey) {
   const { getAssociatedTokenAddress } = require('@solana/spl-token');
-  var tokenAccount = await getAssociatedTokenAddress(mint, ownerPublicKey);
+  var tokenProgram = await getTokenProgramId(connection, mint);
+  var tokenAccount = await getAssociatedTokenAddress(mint, ownerPublicKey, false, tokenProgram);
   try {
     var balance = await connection.getTokenAccountBalance(tokenAccount);
     return { amount: balance.value.amount, decimals: balance.value.decimals };
