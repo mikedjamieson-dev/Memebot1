@@ -27,7 +27,6 @@
 // applies on top of whatever amount is requested.
 
 const { OnlinePumpSdk, PUMP_SDK } = require('@pump-fun/pump-sdk');
-const { TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 const BN = require('bn.js');
 
 function describe(label, value) {
@@ -90,6 +89,13 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
     );
   }
 
+  var tokenProgram;
+  try {
+    tokenProgram = await require('./wallet').getTokenProgramId(connection, mint);
+  } catch (e) {
+    throw new Error('getTokenProgramId failed: ' + e.message);
+  }
+
   try {
     return await PUMP_SDK.buyInstructions({
       global: global,
@@ -101,7 +107,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
       amount: amount,
       solAmount: solAmountBN,
       slippage: slippagePercent,
-      tokenProgram: TOKEN_PROGRAM_ID,
+      tokenProgram: tokenProgram,
     });
   } catch (e) {
     throw new Error(
@@ -149,6 +155,13 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     );
   }
 
+  var tokenProgram;
+  try {
+    tokenProgram = await require('./wallet').getTokenProgramId(connection, mint);
+  } catch (e) {
+    throw new Error('getTokenProgramId failed: ' + e.message);
+  }
+
   try {
     return await PUMP_SDK.sellInstructions({
       global: global,
@@ -159,7 +172,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
       amount: tokenAmountBN,
       solAmount: solAmount,
       slippage: slippagePercent,
-      tokenProgram: TOKEN_PROGRAM_ID,
+      tokenProgram: tokenProgram,
     });
   } catch (e) {
     throw new Error(
