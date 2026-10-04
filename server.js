@@ -2199,6 +2199,107 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
   }
 });
 
+// -- LIVE TRADE TEST (real money, manually triggered only) --------
+// $1 buy and real-balance sell, one platform at a time. Every step
+// uses exactly the pieces already proven tonight -- nothing new
+// invented, just wired together for the first real trade.
+async function executeRealBuy(req, res, platformName, buildBuyFn) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real token mint address in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey, Transaction } = require('@solana/web3.js');
+    var execution = require('./execution');
+    var connection = liveWalletModule.getConnection();
+    var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
+    var mint = new PublicKey(mintStr);
+
+    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0) {
+      return res.json({ ok: false, error: 'Real SOL price not available right now -- cannot safely size a $1 buy' });
+    }
+    var solAmountLamports = Math.round((1 / SOL_PRICE_USD) * 1000000000);
+
+    log('LIVE TRADE TEST (' + platformName + ' buy): building $1 buy for ' + mintStr + '...', 'info');
+    var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
+
+    var tx = new Transaction();
+    instructions.forEach(function(ix) { tx.add(ix); });
+
+    log('LIVE TRADE TEST (' + platformName + ' buy): submitting real transaction...', 'info');
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
+
+    log('LIVE TRADE TEST (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
+      (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    res.json({ ok: true, result: result });
+  } catch (e) {
+    log('LIVE TRADE TEST (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+}
+
+async function executeRealSell(req, res, platformName, buildSellFn) {
+  if (!liveWalletKeypair) {
+    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
+  }
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide the real token mint address you bought, in the request body as "mint"' });
+  }
+  try {
+    var { PublicKey, Transaction } = require('@solana/web3.js');
+    var execution = require('./execution');
+    var connection = liveWalletModule.getConnection();
+    var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
+    var mint = new PublicKey(mintStr);
+
+    log('LIVE TRADE TEST (' + platformName + ' sell): reading real token balance...', 'info');
+    var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+    if (!balance || balance.amount === '0') {
+      return res.json({ ok: false, error: 'Real balance for this token is zero -- nothing to sell' });
+    }
+
+    log('LIVE TRADE TEST (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
+    var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, balance.amount, 15);
+
+    var tx = new Transaction();
+    instructions.forEach(function(ix) { tx.add(ix); });
+
+    log('LIVE TRADE TEST (' + platformName + ' sell): submitting real transaction...', 'info');
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
+
+    log('LIVE TRADE TEST (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
+      (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    res.json({ ok: true, result: result, soldAmount: balance.amount });
+  } catch (e) {
+    log('LIVE TRADE TEST (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
+    res.json({ ok: false, error: e.message });
+  }
+}
+
+app.post('/api/live/buy-pumpfun-real', async function(req, res) {
+  var pumpfun = require('./pumpfun');
+  await executeRealBuy(req, res, 'pump.fun', pumpfun.buildBuyInstructions);
+});
+
+app.post('/api/live/buy-letsbonk-real', async function(req, res) {
+  var letsbonk = require('./letsbonk');
+  await executeRealBuy(req, res, 'LetsBonk', letsbonk.buildBuyInstructions);
+});
+
+app.post('/api/live/sell-pumpfun-real', async function(req, res) {
+  var pumpfun = require('./pumpfun');
+  await executeRealSell(req, res, 'pump.fun', pumpfun.buildSellInstructions);
+});
+
+app.post('/api/live/sell-letsbonk-real', async function(req, res) {
+  var letsbonk = require('./letsbonk');
+  await executeRealSell(req, res, 'LetsBonk', letsbonk.buildSellInstructions);
+});
+
 app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
