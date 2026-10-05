@@ -196,12 +196,24 @@ function isSolPriceFresh() {
   return SOL_PRICE_LAST_UPDATED !== null && (Date.now() - SOL_PRICE_LAST_UPDATED) < SOL_PRICE_FRESH_WINDOW_MS;
 }
 
-async function updateSolPrice() {
+async function updateSolPrice(attempt) {
+  attempt = attempt || 1;
+  var MAX_ATTEMPTS = 3;
   try {
     var res = await fetch(
       'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',
       { timeout: 5000 }
     );
+    if (res.status === 429) {
+      if (attempt < MAX_ATTEMPTS) {
+        var waitMs = attempt * 1000;
+        log('SOL PRICE: rate limited (429), retrying in ' + waitMs + 'ms (attempt ' + attempt + '/' + MAX_ATTEMPTS + ')', 'warn');
+        await new Promise(function(resolve) { setTimeout(resolve, waitMs); });
+        return updateSolPrice(attempt + 1);
+      }
+      log('SOL PRICE: rate limited (429) on final attempt ' + attempt + '/' + MAX_ATTEMPTS + ' -- price may be stale', 'warn');
+      return;
+    }
     if (!res.ok) {
       log('SOL PRICE: fetch failed, HTTP ' + res.status + ' -- price may be stale', 'warn');
       return;
