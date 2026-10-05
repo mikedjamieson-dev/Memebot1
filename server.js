@@ -1965,6 +1965,7 @@ app.get('/api/state', function(req, res) {
     dscKey: S.dscKey,
     bestTrade: S.bestTrade,
     sessionFund: S.sessionFund,
+    dayStartFund: S.dayStartFund,
     takeProfitMode: S.takeProfitMode,
     takeProfitPct: S.takeProfitPct,
     stopLossPct: S.stopLossPct,
