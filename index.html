@@ -745,6 +745,12 @@ function showPage(page) {
     if (portBtn) portBtn.classList.toggle('active', page === 'portfolio');
   });
   if (page === 'portfolio') loadPortfolioPage();
+  if (page === 'livetrade') refreshLivePrice();
+}
+
+async function refreshLivePrice() {
+  try { await fetch(BASE + '/api/live/refresh-price', { method: 'POST' }); }
+  catch (e) {}
 }
 
 // ── SETTINGS ──────────────────────────────────────────────────
@@ -1376,7 +1382,7 @@ async function fetchState() {
     var balEl = document.getElementById('live-trading-balance');
     var balElMain = document.getElementById('live-trading-balance-main');
     if (lw.balanceSol !== null && lw.balanceSol !== undefined) {
-      var usd = data.solPriceUsd ? ' (' + f2(lw.balanceSol * data.solPriceUsd) + ' USD)' : '';
+      var usd = (data.solPriceUsd && data.solPriceFresh) ? ' (' + f2(lw.balanceSol * data.solPriceUsd) + ' USD)' : ' (USD unavailable right now)';
       var balText = lw.balanceSol.toFixed(4) + ' SOL' + usd;
       balEl.textContent = balText; balEl.style.color = 'var(--green)';
       if (balElMain) { balElMain.textContent = balText; balElMain.style.color = 'var(--green)'; }
