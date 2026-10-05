@@ -191,8 +191,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 </head>
 <body>
 
-<!-- LIVE PAGE -->
-<div class="wrap" id="live-page">
+<!-- PAPER TRADING PAGE -->
+<div class="wrap" id="paper-page">
 
   <!-- Header -->
   <div class="hdr">
@@ -201,7 +201,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <!-- Navigation -->
   <div class="nav-bar">
-    <button class="nav-btn active" id="nav-live" onclick="showPage('live')">▶ LIVE</button>
+    <button class="nav-btn active" id="nav-paper" onclick="showPage('paper')">📝 PAPER</button>
+    <button class="nav-btn" id="nav-livetrade" onclick="showPage('livetrade')">🔴 LIVE</button>
     <button class="nav-btn" id="nav-port" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
   </div>
 
@@ -215,9 +216,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
-      <div class="settings-menu-item" onclick="openSub('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
-      <div class="settings-menu-item" onclick="openSub('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
-      <div class="settings-menu-item" onclick="openSub('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
     </div>
 
     <!-- Trading Fund -->
@@ -308,103 +306,9 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-status" id="status-poolsize"></div>
     </div>
 
-    <!-- Wallets -->
-    <div class="settings-sub" id="sub-wallets">
-      <button class="settings-back" onclick="closeSub('sub-wallets')">← BACK</button>
-      <div class="settings-sub-title">LIVE WALLET</div>
-      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now. Balance refreshes every 30 seconds — USD estimate every 10 minutes.</div>
+      </div>
 
-      <div class="settings-lbl">TRADING WALLET ADDRESS</div>
-      <div class="wallet-display" id="live-trading-address">Checking...</div>
-
-      <div class="settings-lbl" style="margin-top:10px;">TRADING WALLET BALANCE</div>
-      <div class="wallet-display" id="live-trading-balance">Checking...</div>
-
-      <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
-      <div class="wallet-display" id="live-savings-address">Checking...</div>
-
-      <div class="settings-lbl" style="margin-top:16px;">LIVE TRADING FUND</div>
-      <div class="settings-hint" style="margin-bottom:8px;">The only amount the bot is ever allowed to use for real trading -- completely separate from your wallet's actual balance, no matter how much that holds. Every real trade adjusts this number directly.</div>
-      <div class="wallet-display" id="live-fund-display" style="font-size:20px;color:var(--green);">$0.0000</div>
-      <input class="settings-input" id="input-live-fund" placeholder="Set the live trading fund amount..." style="margin-top:8px;"/>
-      <button class="settings-save" onclick="saveLiveFund()" style="margin-top:6px;">SET LIVE TRADING FUND</button>
-      <div class="settings-status" id="status-live-fund"></div>
-    </div>
-
-    <!-- Testing -->
-    <div class="settings-sub" id="sub-testing">
-      <button class="settings-back" onclick="closeSub('sub-testing')">← BACK</button>
-      <div class="settings-sub-title">TESTING</div>
-      <div class="settings-hint" style="margin-bottom:12px;">Every real-infrastructure test in one place. All build-only or send tiny real amounts -- see each one's own note for exactly what it does.</div>
-
-      <div class="settings-lbl">TEST TRANSACTIONS</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Sends a real, tiny (0.00001 SOL) transfer from the trading wallet to itself -- a genuine proof against real infrastructure, not a simulation. Costs a normal real network fee each time.</div>
-      <button class="settings-save" onclick="runLiveTest(false)">RUN TEST (NORMAL)</button>
-      <button class="settings-save" onclick="runLiveTest(true)" style="margin-top:6px;">RUN TEST (VIA SENDER)</button>
-      <div class="settings-status" id="status-live-test"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">TEST PUMP.FUN QUOTE</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Builds real buy instructions for a real token using current on-chain data -- proves the connection works, but sends nothing and costs nothing.</div>
-      <input class="settings-input" id="pumpfun-test-mint" placeholder="Paste a real pump.fun token mint address..."/>
-      <button class="settings-save" onclick="runPumpfunQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
-      <div class="settings-status" id="status-pumpfun-test"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">TEST LETSBONK QUOTE</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for a real LetsBonk token -- builds real buy instructions using current on-chain data, sends nothing and costs nothing.</div>
-      <input class="settings-input" id="letsbonk-test-mint" placeholder="Paste a real LetsBonk token mint address..."/>
-      <button class="settings-save" onclick="runLetsbonkQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
-      <div class="settings-status" id="status-letsbonk-test"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (PUMP.FUN)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Reports whether a token has graduated off its bonding curve. Nothing sent, nothing costs anything.</div>
-      <input class="settings-input" id="pumpfun-grad-mint" placeholder="Paste a real pump.fun token mint address..."/>
-      <button class="settings-save" onclick="runPumpfunGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
-      <div class="settings-status" id="status-pumpfun-grad"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (LETSBONK)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for LetsBonk. Nothing sent, nothing costs anything.</div>
-      <input class="settings-input" id="letsbonk-grad-mint" placeholder="Paste a real LetsBonk token mint address..."/>
-      <button class="settings-save" onclick="runLetsbonkGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
-      <div class="settings-status" id="status-letsbonk-grad"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">TEST PUMPSWAP SELL (GRADUATED PUMP.FUN TOKENS)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Builds a real sell for an already-graduated token. Sends nothing, costs nothing -- you don't need to actually hold the token to test this.</div>
-      <input class="settings-input" id="pumpswap-test-mint" placeholder="Paste a real, already-graduated pump.fun token mint..."/>
-      <button class="settings-save" onclick="runPumpswapQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
-      <div class="settings-status" id="status-pumpswap-test"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">TEST RAYDIUM CPMM SELL (MIGRATED LETSBONK TOKENS)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for an already-migrated LetsBonk token. Needs both the token's mint and its new pool address.</div>
-      <input class="settings-input" id="raydiumcpmm-test-mint" placeholder="Paste the migrated token's mint address..."/>
-      <input class="settings-input" id="raydiumcpmm-test-pool" placeholder="Paste its new Raydium CPMM pool address..." style="margin-top:6px;"/>
-      <button class="settings-save" onclick="runRaydiumCpmmQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
-      <div class="settings-status" id="status-raydiumcpmm-test"></div>
-    </div>
-
-    <!-- Live Trade Test -->
-    <div class="settings-sub" id="sub-livetrade">
-      <button class="settings-back" onclick="closeSub('sub-livetrade')">← BACK</button>
-      <div class="settings-sub-title" style="color:var(--red);">⚠️ LIVE TRADE TEST -- REAL MONEY</div>
-      <div class="settings-hint" style="margin-bottom:12px;color:var(--red);">Everything here spends or sells real SOL from your real trading wallet. Nothing here is a simulation. Each action asks you to confirm the exact amount before it submits anything.</div>
-
-      <div class="settings-lbl">TOKEN MINT ADDRESS</div>
-      <input class="settings-input" id="livetrade-mint" placeholder="Paste the real token mint address..."/>
-
-      <div class="settings-lbl" style="margin-top:16px;">STEP 1: BUY (~$1 REAL)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Buys approximately $1 worth of this token, real money, sized from the live SOL price.</div>
-      <button class="settings-save" onclick="runLiveTradeBuy('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON PUMP.FUN ($1 REAL)</button>
-      <button class="settings-save" onclick="runLiveTradeBuy('letsbonk')" style="margin-top:6px;background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON LETSBONK ($1 REAL)</button>
-      <div class="settings-status" id="status-livetrade-buy"></div>
-
-      <div class="settings-lbl" style="margin-top:16px;">STEP 2: SELL (WHEN READY)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Sells your real, current balance of this exact token -- reads the real amount fresh each time, not an estimate.</div>
-      <button class="settings-save" onclick="runLiveTradeSell('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">SELL (BOUGHT ON PUMP.FUN)</button>
-      <button class="settings-save" onclick="runLiveTradeSell('letsbonk')" style="margin-top:6px;background:rgba(255,80,80,0.15);border-color:var(--red);">SELL (BOUGHT ON LETSBONK)</button>
-      <div class="settings-status" id="status-livetrade-sell"></div>
-    </div>
-  </div>
-
-  <!-- Fund Warning Bar -->
+<!-- Fund Warning Bar -->
   <div class="warn-bar" id="fund-warning-bar"></div>
 
   <!-- Top Stats -->
@@ -518,6 +422,141 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   <div class="foot">BunkerBuster.io</div>
 </div>
 
+
+<!-- LIVE TRADING PAGE -->
+<div class="wrap" id="livetrade-page" style="display:none;">
+
+  <!-- Header -->
+  <div class="hdr">
+    <div class="htitle"><span class="dot" style="background:var(--red);"></span>BunkerBuster.io -- LIVE</div>
+  </div>
+
+  <div class="nav-bar">
+    <button class="nav-btn" id="nav-paper-l" onclick="showPage('paper')">📝 PAPER</button>
+    <button class="nav-btn active" id="nav-livetrade-l" onclick="showPage('livetrade')">🔴 LIVE</button>
+    <button class="nav-btn" id="nav-port-l" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
+  </div>
+
+  <button class="settings-toggle" onclick="toggleSettingsLive()">⚙ SETTINGS</button>
+
+  <div class="settings-panel" id="settings-panel-lt">
+    <div class="settings-menu" id="settings-menu-lt">
+      <div class="settings-menu-item" onclick="openSubLive('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
+    </div>
+
+<!-- Wallets -->
+    <div class="settings-sub" id="sub-wallets">
+      <button class="settings-back" onclick="closeSubLive('sub-wallets')">← BACK</button>
+      <div class="settings-sub-title">LIVE WALLET</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now. Balance refreshes every 30 seconds — USD estimate every 10 minutes.</div>
+
+      <div class="settings-lbl">TRADING WALLET ADDRESS</div>
+      <div class="wallet-display" id="live-trading-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:10px;">TRADING WALLET BALANCE</div>
+      <div class="wallet-display" id="live-trading-balance">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
+      <div class="wallet-display" id="live-savings-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:16px;">LIVE TRADING FUND</div>
+      <div class="settings-hint" style="margin-bottom:8px;">The only amount the bot is ever allowed to use for real trading -- completely separate from your wallet's actual balance, no matter how much that holds. Every real trade adjusts this number directly.</div>
+      <div class="wallet-display" id="live-fund-display" style="font-size:20px;color:var(--green);">$0.0000</div>
+      <input class="settings-input" id="input-live-fund" placeholder="Set the live trading fund amount..." style="margin-top:8px;"/>
+      <button class="settings-save" onclick="saveLiveFund()" style="margin-top:6px;">SET LIVE TRADING FUND</button>
+      <div class="settings-status" id="status-live-fund"></div>
+    </div>
+
+    <!-- Testing -->
+    <div class="settings-sub" id="sub-testing">
+      <button class="settings-back" onclick="closeSubLive('sub-testing')">← BACK</button>
+      <div class="settings-sub-title">TESTING</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Every real-infrastructure test in one place. All build-only or send tiny real amounts -- see each one's own note for exactly what it does.</div>
+
+      <div class="settings-lbl">TEST TRANSACTIONS</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Sends a real, tiny (0.00001 SOL) transfer from the trading wallet to itself -- a genuine proof against real infrastructure, not a simulation. Costs a normal real network fee each time.</div>
+      <button class="settings-save" onclick="runLiveTest(false)">RUN TEST (NORMAL)</button>
+      <button class="settings-save" onclick="runLiveTest(true)" style="margin-top:6px;">RUN TEST (VIA SENDER)</button>
+      <div class="settings-status" id="status-live-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST PUMP.FUN QUOTE</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Builds real buy instructions for a real token using current on-chain data -- proves the connection works, but sends nothing and costs nothing.</div>
+      <input class="settings-input" id="pumpfun-test-mint" placeholder="Paste a real pump.fun token mint address..."/>
+      <button class="settings-save" onclick="runPumpfunQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-pumpfun-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST LETSBONK QUOTE</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for a real LetsBonk token -- builds real buy instructions using current on-chain data, sends nothing and costs nothing.</div>
+      <input class="settings-input" id="letsbonk-test-mint" placeholder="Paste a real LetsBonk token mint address..."/>
+      <button class="settings-save" onclick="runLetsbonkQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-letsbonk-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (PUMP.FUN)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Reports whether a token has graduated off its bonding curve. Nothing sent, nothing costs anything.</div>
+      <input class="settings-input" id="pumpfun-grad-mint" placeholder="Paste a real pump.fun token mint address..."/>
+      <button class="settings-save" onclick="runPumpfunGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
+      <div class="settings-status" id="status-pumpfun-grad"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (LETSBONK)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for LetsBonk. Nothing sent, nothing costs anything.</div>
+      <input class="settings-input" id="letsbonk-grad-mint" placeholder="Paste a real LetsBonk token mint address..."/>
+      <button class="settings-save" onclick="runLetsbonkGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
+      <div class="settings-status" id="status-letsbonk-grad"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST PUMPSWAP SELL (GRADUATED PUMP.FUN TOKENS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Builds a real sell for an already-graduated token. Sends nothing, costs nothing -- you don't need to actually hold the token to test this.</div>
+      <input class="settings-input" id="pumpswap-test-mint" placeholder="Paste a real, already-graduated pump.fun token mint..."/>
+      <button class="settings-save" onclick="runPumpswapQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-pumpswap-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST RAYDIUM CPMM SELL (MIGRATED LETSBONK TOKENS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for an already-migrated LetsBonk token. Needs both the token's mint and its new pool address.</div>
+      <input class="settings-input" id="raydiumcpmm-test-mint" placeholder="Paste the migrated token's mint address..."/>
+      <input class="settings-input" id="raydiumcpmm-test-pool" placeholder="Paste its new Raydium CPMM pool address..." style="margin-top:6px;"/>
+      <button class="settings-save" onclick="runRaydiumCpmmQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-raydiumcpmm-test"></div>
+    </div>
+
+    <!-- Live Trade Test -->
+    <div class="settings-sub" id="sub-livetrade">
+      <button class="settings-back" onclick="closeSubLive('sub-livetrade')">← BACK</button>
+      <div class="settings-sub-title" style="color:var(--red);">⚠️ LIVE TRADE TEST -- REAL MONEY</div>
+      <div class="settings-hint" style="margin-bottom:12px;color:var(--red);">Everything here spends or sells real SOL from your real trading wallet. Nothing here is a simulation. Each action asks you to confirm the exact amount before it submits anything.</div>
+
+      <div class="settings-lbl">TOKEN MINT ADDRESS</div>
+      <input class="settings-input" id="livetrade-mint" placeholder="Paste the real token mint address..."/>
+
+      <div class="settings-lbl" style="margin-top:16px;">STEP 1: BUY (~$1 REAL)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Buys approximately $1 worth of this token, real money, sized from the live SOL price.</div>
+      <button class="settings-save" onclick="runLiveTradeBuy('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON PUMP.FUN ($1 REAL)</button>
+      <button class="settings-save" onclick="runLiveTradeBuy('letsbonk')" style="margin-top:6px;background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON LETSBONK ($1 REAL)</button>
+      <div class="settings-status" id="status-livetrade-buy"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">STEP 2: SELL (WHEN READY)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Sells your real, current balance of this exact token -- reads the real amount fresh each time, not an estimate.</div>
+      <button class="settings-save" onclick="runLiveTradeSell('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">SELL (BOUGHT ON PUMP.FUN)</button>
+      <button class="settings-save" onclick="runLiveTradeSell('letsbonk')" style="margin-top:6px;background:rgba(255,80,80,0.15);border-color:var(--red);">SELL (BOUGHT ON LETSBONK)</button>
+      <div class="settings-status" id="status-livetrade-sell"></div>
+    </div>
+  </div>
+
+  <!-- Real Live Stats -->
+  <div class="g2">
+    <div class="stat"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
+    <div class="stat"><div class="stat-lbl">LIVE TRADING FUND</div><div class="stat-val" id="live-fund-display-main" style="color:var(--green);font-size:14px;">$0.0000</div></div>
+  </div>
+
+  <div class="card" style="margin-top:10px;background:rgba(255,80,80,0.08);border-color:var(--red);">
+    <div style="color:var(--red);text-align:center;padding:10px;">
+      Automatic live trading is not active yet. Real trades currently only happen through the manual Live Trade Test buttons under Settings.
+    </div>
+  </div>
+
+  <div class="foot">BunkerBuster.io -- LIVE TRADING</div>
+</div>
+
 <!-- PORTFOLIO PAGE -->
 <div class="wrap" id="port-page" style="display:none;">
 
@@ -526,7 +565,8 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   </div>
 
   <div class="nav-bar">
-    <button class="nav-btn" id="nav-live-p" onclick="showPage('live')">▶ LIVE</button>
+    <button class="nav-btn" id="nav-paper-p" onclick="showPage('paper')">📝 PAPER</button>
+    <button class="nav-btn" id="nav-livetrade-p" onclick="showPage('livetrade')">🔴 LIVE</button>
     <button class="nav-btn active" id="nav-port-p" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
   </div>
 
@@ -686,18 +726,20 @@ async function copyCA(mint, ev) {
 
 // ── PAGE NAVIGATION ───────────────────────────────────────────
 function showPage(page) {
-  var lp = document.getElementById('live-page');
-  var pp = document.getElementById('port-page');
-  if (page === 'live') {
-    lp.style.display = 'block'; pp.style.display = 'none';
-    document.getElementById('nav-live').classList.add('active');
-    document.getElementById('nav-port').classList.remove('active');
-  } else {
-    lp.style.display = 'none'; pp.style.display = 'block';
-    document.getElementById('nav-live').classList.remove('active');
-    document.getElementById('nav-port').classList.add('active');
-    loadPortfolioPage();
-  }
+  var pages = { paper: 'paper-page', livetrade: 'livetrade-page', portfolio: 'port-page' };
+  Object.keys(pages).forEach(function(key) {
+    document.getElementById(pages[key]).style.display = (key === page) ? 'block' : 'none';
+  });
+  var navSuffixes = ['', '-p', '-l'];
+  navSuffixes.forEach(function(suf) {
+    var paperBtn = document.getElementById('nav-paper' + suf);
+    var liveBtn = document.getElementById('nav-livetrade' + suf);
+    var portBtn = document.getElementById('nav-port' + suf);
+    if (paperBtn) paperBtn.classList.toggle('active', page === 'paper');
+    if (liveBtn) liveBtn.classList.toggle('active', page === 'livetrade');
+    if (portBtn) portBtn.classList.toggle('active', page === 'portfolio');
+  });
+  if (page === 'portfolio') loadPortfolioPage();
 }
 
 // ── SETTINGS ──────────────────────────────────────────────────
@@ -715,6 +757,22 @@ function openSub(id) {
 function closeSub(id) {
   document.getElementById(id).classList.remove('open');
   document.getElementById('settings-menu').style.display = 'flex';
+}
+
+function toggleSettingsLive() {
+  document.getElementById('settings-panel-lt').classList.toggle('open');
+  document.getElementById('settings-menu-lt').style.display = 'flex';
+  document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+}
+
+function openSubLive(id) {
+  document.getElementById('settings-menu-lt').style.display = 'none';
+  document.getElementById(id).classList.add('open');
+}
+
+function closeSubLive(id) {
+  document.getElementById(id).classList.remove('open');
+  document.getElementById('settings-menu-lt').style.display = 'flex';
 }
 
 function selectTP(mode) {
@@ -1311,13 +1369,16 @@ async function fetchState() {
     }
 
     var balEl = document.getElementById('live-trading-balance');
+    var balElMain = document.getElementById('live-trading-balance-main');
     if (lw.balanceSol !== null && lw.balanceSol !== undefined) {
       var usd = data.solPriceUsd ? ' (' + f2(lw.balanceSol * data.solPriceUsd) + ' USD)' : '';
-      balEl.textContent = lw.balanceSol.toFixed(4) + ' SOL' + usd;
-      balEl.style.color = 'var(--green)';
+      var balText = lw.balanceSol.toFixed(4) + ' SOL' + usd;
+      balEl.textContent = balText; balEl.style.color = 'var(--green)';
+      if (balElMain) { balElMain.textContent = balText; balElMain.style.color = 'var(--green)'; }
     } else {
-      balEl.textContent = lw.address ? ('Unable to read right now' + (lw.balanceError ? ' (' + lw.balanceError + ')' : '')) : 'Not configured yet';
-      balEl.style.color = 'var(--red)';
+      var balErrText = lw.address ? ('Unable to read right now' + (lw.balanceError ? ' (' + lw.balanceError + ')' : '')) : 'Not configured yet';
+      balEl.textContent = balErrText; balEl.style.color = 'var(--red)';
+      if (balElMain) { balElMain.textContent = balErrText; balElMain.style.color = 'var(--red)'; }
     }
 
     var savingsAddrEl = document.getElementById('live-savings-address');
@@ -1330,11 +1391,11 @@ async function fetchState() {
     }
 
     var liveFundEl = document.getElementById('live-fund-display');
-    if (liveFundEl) {
-      var lf = data.liveFund || 0;
-      liveFundEl.textContent = '$' + lf.toFixed(4);
-      liveFundEl.style.color = lf > 0 ? 'var(--green)' : 'var(--red)';
-    }
+    var liveFundElMain = document.getElementById('live-fund-display-main');
+    var lf = data.liveFund || 0;
+    var lfColor = lf > 0 ? 'var(--green)' : 'var(--red)';
+    if (liveFundEl) { liveFundEl.textContent = '$' + lf.toFixed(4); liveFundEl.style.color = lfColor; }
+    if (liveFundElMain) { liveFundElMain.textContent = '$' + lf.toFixed(4); liveFundElMain.style.color = lfColor; }
 
     // Best trade
     var bt = data.bestTrade;
