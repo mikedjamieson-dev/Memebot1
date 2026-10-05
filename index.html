@@ -550,8 +550,13 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <div class="card" style="margin-top:10px;background:rgba(255,80,80,0.08);border-color:var(--red);">
     <div style="color:var(--red);text-align:center;padding:10px;">
-      Automatic live trading is not active yet. Real trades currently only happen through the manual Live Trade Test buttons under Settings.
+      Automatic live entries are not active yet -- real buys currently only happen through the manual Live Trade Test buttons under Settings. Once a real position exists, though, it IS watched automatically: a 10% stop loss checks its real price every 10 seconds and sells for real if hit, the same way paper trading already works.
     </div>
+  </div>
+
+  <div class="card" style="margin-top:10px;">
+    <div class="card-lbl">REAL OPEN POSITIONS</div>
+    <div id="live-open-positions" style="margin-top:8px;color:var(--dim);">None open right now.</div>
   </div>
 
   <div class="foot">BunkerBuster.io -- LIVE TRADING</div>
@@ -1396,6 +1401,21 @@ async function fetchState() {
     var lfColor = lf > 0 ? 'var(--green)' : 'var(--red)';
     if (liveFundEl) { liveFundEl.textContent = '$' + lf.toFixed(4); liveFundEl.style.color = lfColor; }
     if (liveFundElMain) { liveFundElMain.textContent = '$' + lf.toFixed(4); liveFundElMain.style.color = lfColor; }
+
+    var liveOpenEl = document.getElementById('live-open-positions');
+    if (liveOpenEl) {
+      var lo = data.liveOpen || [];
+      if (lo.length === 0) {
+        liveOpenEl.textContent = 'None open right now.';
+        liveOpenEl.style.color = 'var(--dim)';
+      } else {
+        liveOpenEl.innerHTML = lo.map(function(p) {
+          var ageSec = Math.floor((Date.now() - p.openedAt) / 1000);
+          return '<div style="margin-bottom:6px;padding:6px;background:rgba(0,0,0,0.2);border-radius:4px;">' +
+            p.mint.slice(0,8) + '... (' + p.platform + ') -- entry $' + p.entryPriceUsd.toFixed(10) + ' -- size $' + p.sizeUsd.toFixed(2) + ' -- ' + ageSec + 's ago</div>';
+        }).join('');
+      }
+    }
 
     // Best trade
     var bt = data.bestTrade;
