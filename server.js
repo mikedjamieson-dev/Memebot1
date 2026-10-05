@@ -2258,8 +2258,11 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
 
     log('LIVE TRADE TEST (' + platformName + ' sell): reading real token balance...', 'info');
     var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+    var diag = balance && balance.diagnostic;
+    log('LIVE TRADE TEST (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
+      (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
     if (!balance || balance.amount === '0') {
-      return res.json({ ok: false, error: 'Real balance for this token is zero -- nothing to sell' });
+      return res.json({ ok: false, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag });
     }
 
     log('LIVE TRADE TEST (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
