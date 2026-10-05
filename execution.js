@@ -230,7 +230,9 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     err2.code = 'SENDER_NO_SIGNATURE';
     throw err2;
   }
-  return pollForOutcome(signature, connection, latest, options);
+  var outcome = await pollForOutcome(signature, connection, latest, options);
+  outcome.tipLamports = tipLamports;
+  return outcome;
 }
 
 // The one-time proof test, normal path: the smallest possible real
