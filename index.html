@@ -1002,7 +1002,8 @@ async function runLiveTradeSell(platform) {
     });
     var data = await res.json();
     if (!data.ok) {
-      el.textContent = '❌ ' + (data.error || 'Failed');
+      var diagText = data.diagnostic ? (' -- tokenProgram: ' + data.diagnostic.tokenProgram + ' | tokenAccount: ' + data.diagnostic.tokenAccount + (data.diagnostic.rawError ? ' | ' + data.diagnostic.rawError : '')) : '';
+      el.textContent = '❌ ' + (data.error || 'Failed') + diagText;
       el.style.color = 'var(--red)';
       return;
     }
