@@ -104,6 +104,7 @@ const S = {
   maxOpen: 4,
   fundStopLossPct: 20,
   liveFund: 0,
+  liveOpen: [],
   windingDown: false,
   maxPool: 10000,
   autoLockEnabled: false,
@@ -184,6 +185,7 @@ async function refreshLiveWalletBalance() {
 }
 refreshLiveWalletBalance();
 var liveWalletI = setInterval(refreshLiveWalletBalance, 30000);
+var liveStopLossI = setInterval(function() { checkLiveStopLoss().catch(function(e) { log('LIVE STOP LOSS checker error: ' + e.message, 'warn'); }); }, 10000);
 
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
@@ -206,6 +208,35 @@ async function updateSolPrice() {
       if (best.priceUsd) SOL_PRICE_USD = parseFloat(best.priceUsd);
     }
   } catch(e) {}
+}
+
+// Real, current price for any specific token mint -- same proven
+// pattern as updateSolPrice (correct tokens endpoint, most liquid
+// pair), generalized so a real held position's price can be tracked
+// independent of whether it's still in the paper discovery pool.
+// Returns null on any failure -- caller must treat that as "unable
+// to check right now," never a guessed or stale price.
+async function getRealTokenPriceUsd(mint) {
+  try {
+    var res = await fetch(
+      'https://api.dexscreener.com/latest/dex/tokens/' + mint,
+      { timeout: 5000 }
+    );
+    if (!res.ok) return null;
+    var data = await res.json();
+    var pairs = data.pairs || [];
+    if (pairs.length === 0) return null;
+    var best = pairs[0];
+    for (var i = 1; i < pairs.length; i++) {
+      var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
+      var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
+      if (liq > bestLiq) best = pairs[i];
+    }
+    if (!best.priceUsd) return null;
+    return parseFloat(best.priceUsd);
+  } catch (e) {
+    return null;
+  }
 }
 
 // -- BAN SYSTEM ------------------------------------------------
@@ -1982,6 +2013,7 @@ app.get('/api/state', function(req, res) {
     startTime: S.startTime,
     liveWallet: liveWalletState,
     liveFund: S.liveFund,
+    liveOpen: S.liveOpen,
     solPriceUsd: SOL_PRICE_USD,
   });
 });
@@ -2220,7 +2252,7 @@ function computeLivePositionSizeUsd() {
   return size;
 }
 
-async function executeRealBuy(req, res, platformName, buildBuyFn) {
+async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
   if (!liveWalletKeypair) {
     return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
   }
@@ -2266,6 +2298,29 @@ async function executeRealBuy(req, res, platformName, buildBuyFn) {
       } catch (feeErr) {
         log('LIVE TRADE TEST (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
+
+      try {
+        var heldBalance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+        var tokensHeld = parseFloat(heldBalance.amount) / Math.pow(10, heldBalance.decimals);
+        if (tokensHeld > 0) {
+          var entryPriceUsd = sizeUsd / tokensHeld;
+          S.liveOpen.push({
+            id: result.signature,
+            mint: mintStr,
+            platform: platformKey,
+            entryPriceUsd: entryPriceUsd,
+            tokenAmountRaw: heldBalance.amount,
+            tokenDecimals: heldBalance.decimals,
+            sizeUsd: sizeUsd,
+            openedAt: Date.now(),
+          });
+          log('LIVE TRADE TEST (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
+        } else {
+          log('LIVE TRADE TEST (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
+        }
+      } catch (posErr) {
+        log('LIVE TRADE TEST (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
+      }
     }
 
     res.json({ ok: true, result: result, liveFund: S.liveFund });
@@ -2275,13 +2330,15 @@ async function executeRealBuy(req, res, platformName, buildBuyFn) {
   }
 }
 
-async function executeRealSell(req, res, platformName, buildSellFn) {
+// Shared real-sell core -- used by both the manual Live Trade Test
+// button and the automatic stop-loss checker below. One real
+// implementation, so the two can never behave differently from each
+// other. logPrefix lets each caller label its own log lines clearly
+// (e.g. "LIVE TRADE TEST" vs "LIVE STOP LOSS") while sharing the same
+// underlying logic.
+async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
   if (!liveWalletKeypair) {
-    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
-  }
-  var mintStr = req.body && req.body.mint;
-  if (!mintStr) {
-    return res.json({ ok: false, error: 'Provide the real token mint address you bought, in the request body as "mint"' });
+    return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
   try {
     var { PublicKey, Transaction } = require('@solana/web3.js');
@@ -2290,25 +2347,25 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
     var mint = new PublicKey(mintStr);
 
-    log('LIVE TRADE TEST (' + platformName + ' sell): reading real token balance...', 'info');
+    log(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
     var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
     var diag = balance && balance.diagnostic;
-    log('LIVE TRADE TEST (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
+    log(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
       (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
     if (!balance || balance.amount === '0') {
-      return res.json({ ok: false, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag });
+      return { ok: false, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag };
     }
 
-    log('LIVE TRADE TEST (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
+    log(logPrefix + ' (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
     var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, balance.amount, 15);
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
-    log('LIVE TRADE TEST (' + platformName + ' sell): submitting real transaction...', 'info');
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log('LIVE TRADE TEST (' + platformName + '): ' + summary, 'info'); } });
+    log(logPrefix + ' (' + platformName + ' sell): submitting real transaction...', 'info');
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
 
-    log('LIVE TRADE TEST (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
+    log(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
 
     if (result.outcome === 'CONFIRMED') {
@@ -2316,28 +2373,73 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
         var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
         var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
-        log('LIVE TRADE TEST (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
+        log(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
       } catch (feeErr) {
-        log('LIVE TRADE TEST (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+        log(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
     }
 
-    res.json({ ok: true, result: result, soldAmount: balance.amount, liveFund: S.liveFund });
+    return { ok: true, result: result, soldAmount: balance.amount, liveFund: S.liveFund };
   } catch (e) {
-    log('LIVE TRADE TEST (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
-    res.json({ ok: false, error: e.message });
+    log(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
+    return { ok: false, error: e.message };
+  }
+}
+
+async function executeRealSell(req, res, platformName, buildSellFn) {
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide the real token mint address you bought, in the request body as "mint"' });
+  }
+  var outcome = await performRealSell(mintStr, platformName, buildSellFn, 'LIVE TRADE TEST');
+  res.json(outcome);
+}
+
+// Checks every real open position against the same proven stop-loss
+// logic paper trading already uses (pct <= -0.10 from entry), using a
+// real, independent price fetch for each specific held token. On
+// trigger, sells for real through the shared sell core. A sell that
+// doesn't confirm leaves the position in S.liveOpen deliberately, so
+// it's retried next tick rather than silently lost from tracking.
+async function checkLiveStopLoss() {
+  if (!S.liveOpen || S.liveOpen.length === 0) return;
+  var pumpfun = require('./pumpfun');
+  var letsbonk = require('./letsbonk');
+
+  for (var i = S.liveOpen.length - 1; i >= 0; i--) {
+    var pos = S.liveOpen[i];
+    var currentPrice = await getRealTokenPriceUsd(pos.mint);
+    if (currentPrice === null) {
+      log('LIVE STOP LOSS: could not read current price for ' + pos.mint + ' -- will retry next check', 'warn');
+      continue;
+    }
+    var pct = (currentPrice - pos.entryPriceUsd) / pos.entryPriceUsd;
+    if (pct > -0.10) continue;
+
+    log('LIVE STOP LOSS HIT: ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> current $' + currentPrice.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', 'loss');
+
+    var platformName = pos.platform === 'pumpfun' ? 'pump.fun' : 'LetsBonk';
+    var buildSellFn = pos.platform === 'pumpfun' ? pumpfun.buildSellInstructions : letsbonk.buildSellInstructions;
+    var outcome = await performRealSell(pos.mint, platformName, buildSellFn, 'LIVE STOP LOSS');
+
+    if (outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED') {
+      S.liveOpen.splice(i, 1);
+      log('LIVE STOP LOSS: position closed for real, removed from tracking -- ' + pos.mint, 'win');
+    } else {
+      log('LIVE STOP LOSS: real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry next check', 'warn');
+    }
   }
 }
 
 app.post('/api/live/buy-pumpfun-real', async function(req, res) {
   var pumpfun = require('./pumpfun');
-  await executeRealBuy(req, res, 'pump.fun', pumpfun.buildBuyInstructions);
+  await executeRealBuy(req, res, 'pump.fun', 'pumpfun', pumpfun.buildBuyInstructions);
 });
 
 app.post('/api/live/buy-letsbonk-real', async function(req, res) {
   var letsbonk = require('./letsbonk');
-  await executeRealBuy(req, res, 'LetsBonk', letsbonk.buildBuyInstructions);
+  await executeRealBuy(req, res, 'LetsBonk', 'letsbonk', letsbonk.buildBuyInstructions);
 });
 
 app.post('/api/live/sell-pumpfun-real', async function(req, res) {
