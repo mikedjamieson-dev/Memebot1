@@ -1225,7 +1225,7 @@ async function fetchState() {
     });
 
     // Fund
-    var sessionBase = data.sessionFund || 100;
+    var sessionBase = data.dayStartFund || data.sessionFund || 100;
     var pnl = (data.fund + data.savings) - sessionBase;
     var fundEl = document.getElementById('fund');
     fundEl.textContent = '$' + f2(data.fund);
@@ -1469,7 +1469,7 @@ async function loadPortfolioPage() {
       document.getElementById('pt-total').textContent = stotal;
       var swrEl = document.getElementById('pt-wr');
       swrEl.textContent = swr + '%'; swrEl.style.color = parseFloat(swr)>=50?'var(--green)':'var(--red)';
-      var sessionBase = s.sessionFund || 100;
+      var sessionBase = s.dayStartFund || s.sessionFund || 100;
       var sessionPnl = (s.fund||0) + (s.savings||0) - sessionBase;
       var spnlEl = document.getElementById('pt-pnl');
       spnlEl.textContent = pSign(sessionPnl)+'$'+f2(sessionPnl);
