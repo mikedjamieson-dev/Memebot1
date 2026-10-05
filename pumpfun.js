@@ -129,14 +129,20 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     throw new Error('fetchGlobal failed: ' + e.message);
   }
 
+  // Uses fetchBuyState, not fetchSellState -- the sell call below only
+  // ever reads bondingCurve and bondingCurveAccountInfo, both of which
+  // fetchBuyState also returns, and fetchBuyState doesn't gate on the
+  // user's associated token account already existing. fetchSellState
+  // does gate on that, which is a real, documented SDK behavior that
+  // has nothing to do with the data actually needed here.
   var sellState;
   try {
-    sellState = await sdk.fetchSellState(mint, user);
+    sellState = await sdk.fetchBuyState(mint, user);
   } catch (e) {
-    throw new Error('fetchSellState failed: ' + e.message);
+    throw new Error('fetchBuyState (used for sell data) failed: ' + e.message);
   }
   if (!sellState || !sellState.bondingCurve) {
-    throw new Error('fetchSellState returned no usable bondingCurve -- ' + describe('sellState', sellState));
+    throw new Error('fetchBuyState (used for sell data) returned no usable bondingCurve -- ' + describe('sellState', sellState));
   }
   var bc = sellState.bondingCurve;
   if (!bc.virtualQuoteReserves || !bc.virtualTokenReserves) {
