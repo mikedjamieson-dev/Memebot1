@@ -189,25 +189,44 @@ var liveStopLossI = setInterval(function() { checkLiveStopLoss().catch(function(
 
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
+var SOL_PRICE_LAST_UPDATED = null; // ms timestamp of the last GENUINE successful fetch, not just "a value exists"
+var SOL_PRICE_FRESH_WINDOW_MS = 15 * 60 * 1000; // 15 min: covers the normal 10-min cycle plus one missed attempt
+
+function isSolPriceFresh() {
+  return SOL_PRICE_LAST_UPDATED !== null && (Date.now() - SOL_PRICE_LAST_UPDATED) < SOL_PRICE_FRESH_WINDOW_MS;
+}
+
 async function updateSolPrice() {
   try {
     var res = await fetch(
       'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',
       { timeout: 5000 }
     );
-    if (!res.ok) return;
+    if (!res.ok) {
+      log('SOL PRICE: fetch failed, HTTP ' + res.status + ' -- price may be stale', 'warn');
+      return;
+    }
     var data = await res.json();
     var pairs = data.pairs || [];
-    if (pairs.length > 0) {
-      var best = pairs[0];
-      for (var i = 1; i < pairs.length; i++) {
-        var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
-        var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
-        if (liq > bestLiq) best = pairs[i];
-      }
-      if (best.priceUsd) SOL_PRICE_USD = parseFloat(best.priceUsd);
+    if (pairs.length === 0) {
+      log('SOL PRICE: fetch succeeded but returned no pairs -- price may be stale', 'warn');
+      return;
     }
-  } catch(e) {}
+    var best = pairs[0];
+    for (var i = 1; i < pairs.length; i++) {
+      var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
+      var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
+      if (liq > bestLiq) best = pairs[i];
+    }
+    if (!best.priceUsd) {
+      log('SOL PRICE: best pair had no priceUsd field -- price may be stale', 'warn');
+      return;
+    }
+    SOL_PRICE_USD = parseFloat(best.priceUsd);
+    SOL_PRICE_LAST_UPDATED = Date.now();
+  } catch(e) {
+    log('SOL PRICE: fetch threw -- ' + e.message + ' -- price may be stale', 'warn');
+  }
 }
 
 // Real, current price for any specific token mint -- same proven
@@ -2015,6 +2034,7 @@ app.get('/api/state', function(req, res) {
     liveFund: S.liveFund,
     liveOpen: S.liveOpen,
     solPriceUsd: SOL_PRICE_USD,
+    solPriceFresh: isSolPriceFresh(),
   });
 });
 
@@ -2267,8 +2287,8 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
     var mint = new PublicKey(mintStr);
 
-    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0) {
-      return res.json({ ok: false, error: 'Real SOL price not available right now -- cannot safely size a buy' });
+    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) {
+      return res.json({ ok: false, error: 'Real SOL price is not genuinely fresh right now -- cannot safely size a real buy' });
     }
     var sizeUsd = computeLivePositionSizeUsd();
     if (sizeUsd === null) {
@@ -2431,6 +2451,15 @@ async function checkLiveStopLoss() {
     }
   }
 }
+
+// On-demand real price refresh -- triggers an immediate, genuine fetch
+// rather than waiting on the passive background cycle. Used when the
+// Live tab opens, so the number shown is actually current at that
+// moment, not whatever the last background check happened to find.
+app.post('/api/live/refresh-price', async function(req, res) {
+  await updateSolPrice();
+  res.json({ ok: true, solPriceUsd: SOL_PRICE_USD, solPriceFresh: isSolPriceFresh() });
+});
 
 app.post('/api/live/buy-pumpfun-real', async function(req, res) {
   var pumpfun = require('./pumpfun');
