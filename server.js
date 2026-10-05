@@ -105,6 +105,7 @@ const S = {
   fundStopLossPct: 20,
   liveFund: 0,
   liveOpen: [],
+  liveTradingEnabled: false,
   windingDown: false,
   maxPool: 10000,
   autoLockEnabled: false,
@@ -1869,6 +1870,15 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   S.open.push(trade);
   log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
+
+  if (S.liveTradingEnabled && (tok.src === 'PUMP' || tok.src === 'BONK')) {
+    var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
+    var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
+    var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
+    performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
+      log('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
+    });
+  }
 }
 
 // -- MAIN SCANNER (now a thin backup pass) -----------------------
@@ -2044,6 +2054,7 @@ app.get('/api/state', function(req, res) {
     startTime: S.startTime,
     liveWallet: liveWalletState,
     liveFund: S.liveFund,
+    liveTradingEnabled: S.liveTradingEnabled,
     liveOpen: S.liveOpen,
     solPriceUsd: SOL_PRICE_USD,
     solPriceFresh: isSolPriceFresh(),
@@ -2284,13 +2295,12 @@ function computeLivePositionSizeUsd() {
   return size;
 }
 
-async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
+// Shared real-buy core -- used by both the manual Live Trade Test
+// button and the automatic entry trigger below. One real
+// implementation, so the two can never behave differently.
+async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix) {
   if (!liveWalletKeypair) {
-    return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
-  }
-  var mintStr = req.body && req.body.mint;
-  if (!mintStr) {
-    return res.json({ ok: false, error: 'Provide a real token mint address in the request body as "mint"' });
+    return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
   try {
     var { PublicKey, Transaction } = require('@solana/web3.js');
@@ -2300,24 +2310,24 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
     var mint = new PublicKey(mintStr);
 
     if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) {
-      return res.json({ ok: false, error: 'Real SOL price is not genuinely fresh right now -- cannot safely size a real buy' });
+      return { ok: false, error: 'Real SOL price is not genuinely fresh right now -- cannot safely size a real buy' };
     }
     var sizeUsd = computeLivePositionSizeUsd();
     if (sizeUsd === null) {
-      return res.json({ ok: false, error: 'Live Trading Fund is not configured or too small to size a trade -- set it in Settings first' });
+      return { ok: false, error: 'Live Trading Fund is not configured or too small to size a trade -- set it in Settings first' };
     }
     var solAmountLamports = Math.round((sizeUsd / SOL_PRICE_USD) * 1000000000);
 
-    log('LIVE TRADE TEST (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
+    log(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
     var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
-    log('LIVE TRADE TEST (' + platformName + ' buy): submitting real transaction...', 'info');
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log('LIVE TRADE TEST (' + platformName + '): ' + summary, 'info'); } });
+    log(logPrefix + ' (' + platformName + ' buy): submitting real transaction...', 'info');
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
 
-    log('LIVE TRADE TEST (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
+    log(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
 
     if (result.outcome === 'CONFIRMED') {
@@ -2325,10 +2335,10 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
         var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
         var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
-        log('LIVE TRADE TEST (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
+        log(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
       } catch (feeErr) {
-        log('LIVE TRADE TEST (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+        log(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
 
       try {
@@ -2346,20 +2356,29 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
           });
-          log('LIVE TRADE TEST (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
+          log(logPrefix + ' (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
         } else {
-          log('LIVE TRADE TEST (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
+          log(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
         }
       } catch (posErr) {
-        log('LIVE TRADE TEST (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
+        log(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
       }
     }
 
-    res.json({ ok: true, result: result, liveFund: S.liveFund });
+    return { ok: true, result: result, liveFund: S.liveFund };
   } catch (e) {
-    log('LIVE TRADE TEST (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
-    res.json({ ok: false, error: e.message });
+    log(logPrefix + ' (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
+    return { ok: false, error: e.message };
   }
+}
+
+async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
+  var mintStr = req.body && req.body.mint;
+  if (!mintStr) {
+    return res.json({ ok: false, error: 'Provide a real token mint address in the request body as "mint"' });
+  }
+  var outcome = await performRealBuy(mintStr, platformName, platformKey, buildBuyFn, 'LIVE TRADE TEST');
+  res.json(outcome);
 }
 
 // Shared real-sell core -- used by both the manual Live Trade Test
@@ -2501,6 +2520,10 @@ app.post('/api/settings', function(req, res) {
   if (req.body.liveFund !== undefined) {
     var lf = parseFloat(req.body.liveFund);
     if (!isNaN(lf) && lf >= 0) { S.liveFund = parseFloat(lf.toFixed(4)); log('LIVE TRADING FUND set to $' + S.liveFund, 'info'); }
+  }
+  if (req.body.liveTradingEnabled !== undefined) {
+    S.liveTradingEnabled = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
+    log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
   }
   if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
