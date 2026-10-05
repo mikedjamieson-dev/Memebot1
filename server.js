@@ -102,7 +102,8 @@ const S = {
   stopLossPct: 10,
   totalFees: 0,
   maxOpen: 4,
-  fundStopLossPct: 10,
+  fundStopLossPct: 20,
+  liveFund: 0,
   windingDown: false,
   maxPool: 10000,
   autoLockEnabled: false,
@@ -1979,6 +1980,7 @@ app.get('/api/state', function(req, res) {
     sources: S.sources,
     startTime: S.startTime,
     liveWallet: liveWalletState,
+    liveFund: S.liveFund,
     solPriceUsd: SOL_PRICE_USD,
   });
 });
@@ -2203,6 +2205,20 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
 // $1 buy and real-balance sell, one platform at a time. Every step
 // uses exactly the pieces already proven tonight -- nothing new
 // invented, just wired together for the first real trade.
+
+// Real position sizing: 5% of the live fund (mirroring paper
+// trading's exact CFG.MAX_POS formula), hard capped at $15 -- the cap
+// paper trading decided on but never actually had built into its own
+// code. Returns null if the fund isn't configured or the resulting
+// size is too small to be worth trading, same floor paper trading uses.
+function computeLivePositionSizeUsd() {
+  if (!S.liveFund || S.liveFund <= 0) return null;
+  var size = parseFloat((S.liveFund * CFG.MAX_POS).toFixed(4));
+  if (size > 15) size = 15;
+  if (size < 0.50) return null;
+  return size;
+}
+
 async function executeRealBuy(req, res, platformName, buildBuyFn) {
   if (!liveWalletKeypair) {
     return res.json({ ok: false, error: liveWalletState.configError || 'Live wallet not configured' });
@@ -2219,11 +2235,15 @@ async function executeRealBuy(req, res, platformName, buildBuyFn) {
     var mint = new PublicKey(mintStr);
 
     if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0) {
-      return res.json({ ok: false, error: 'Real SOL price not available right now -- cannot safely size a $1 buy' });
+      return res.json({ ok: false, error: 'Real SOL price not available right now -- cannot safely size a buy' });
     }
-    var solAmountLamports = Math.round((1 / SOL_PRICE_USD) * 1000000000);
+    var sizeUsd = computeLivePositionSizeUsd();
+    if (sizeUsd === null) {
+      return res.json({ ok: false, error: 'Live Trading Fund is not configured or too small to size a trade -- set it in Settings first' });
+    }
+    var solAmountLamports = Math.round((sizeUsd / SOL_PRICE_USD) * 1000000000);
 
-    log('LIVE TRADE TEST (' + platformName + ' buy): building $1 buy for ' + mintStr + '...', 'info');
+    log('LIVE TRADE TEST (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
     var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
 
     var tx = new Transaction();
@@ -2234,7 +2254,20 @@ async function executeRealBuy(req, res, platformName, buildBuyFn) {
 
     log('LIVE TRADE TEST (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
-    res.json({ ok: true, result: result });
+
+    if (result.outcome === 'CONFIRMED') {
+      try {
+        var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
+        var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
+        S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
+        log('LIVE TRADE TEST (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
+          ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
+      } catch (feeErr) {
+        log('LIVE TRADE TEST (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+      }
+    }
+
+    res.json({ ok: true, result: result, liveFund: S.liveFund });
   } catch (e) {
     log('LIVE TRADE TEST (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
@@ -2276,7 +2309,20 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
 
     log('LIVE TRADE TEST (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
-    res.json({ ok: true, result: result, soldAmount: balance.amount });
+
+    if (result.outcome === 'CONFIRMED') {
+      try {
+        var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
+        var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
+        S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
+        log('LIVE TRADE TEST (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
+          ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
+      } catch (feeErr) {
+        log('LIVE TRADE TEST (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+      }
+    }
+
+    res.json({ ok: true, result: result, soldAmount: balance.amount, liveFund: S.liveFund });
   } catch (e) {
     log('LIVE TRADE TEST (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
@@ -2307,6 +2353,10 @@ app.post('/api/settings', function(req, res) {
   if (req.body.sessionFund !== undefined) {
     var sf = parseFloat(req.body.sessionFund);
     if (!isNaN(sf) && sf > 0) { S.sessionFund = parseFloat(sf.toFixed(2)); log('Session fund: $' + S.sessionFund, 'info'); }
+  }
+  if (req.body.liveFund !== undefined) {
+    var lf = parseFloat(req.body.liveFund);
+    if (!isNaN(lf) && lf >= 0) { S.liveFund = parseFloat(lf.toFixed(4)); log('LIVE TRADING FUND set to $' + S.liveFund, 'info'); }
   }
   if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
