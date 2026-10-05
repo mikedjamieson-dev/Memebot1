@@ -199,12 +199,52 @@ async function getTokenProgramId(connection, mint) {
   return TOKEN_PROGRAM_ID;
 }
 
+// Reads the real, actual network fee a confirmed transaction paid,
+// straight from its own on-chain record -- not an estimate. Returns
+// the fee in lamports. Throws if the transaction can't be found
+// (e.g. called too soon after confirmation, before it's indexed).
+async function getRealTransactionFee(connection, signature) {
+  var tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  if (!tx || !tx.meta || tx.meta.fee === undefined) {
+    var err = new Error('Could not read the real fee for this transaction -- it may not be indexed yet');
+    err.code = 'FEE_NOT_FOUND';
+    throw err;
+  }
+  return tx.meta.fee;
+}
+
+// Reads the wallet's real, net SOL balance change caused by a specific
+// confirmed transaction -- negative for a buy (SOL left the wallet),
+// positive for a sell (SOL came in). This already naturally includes
+// every real cost that happened in that same transaction (the trade
+// itself, the network fee, the tip), since all of them are real SOL
+// movements out of the same wallet -- more accurate than summing
+// separate estimated pieces by hand. Returns lamports.
+async function getRealBalanceChange(connection, signature, publicKey) {
+  var tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  if (!tx || !tx.meta || !tx.meta.preBalances || !tx.meta.postBalances) {
+    var err = new Error('Could not read the real balance change for this transaction -- it may not be indexed yet');
+    err.code = 'BALANCE_CHANGE_NOT_FOUND';
+    throw err;
+  }
+  var accountKeys = tx.transaction.message.staticAccountKeys || tx.transaction.message.accountKeys;
+  var idx = accountKeys.findIndex(function(k) { return k.toString() === publicKey.toString(); });
+  if (idx === -1) {
+    var err2 = new Error('Could not find this wallet in the transaction\'s account list');
+    err2.code = 'ACCOUNT_NOT_IN_TX';
+    throw err2;
+  }
+  return tx.meta.postBalances[idx] - tx.meta.preBalances[idx];
+}
+
 module.exports = {
   loadTradingWallet,
   getSavingsAddress,
   getTradingWalletBalance,
   getTokenBalance,
   getTokenProgramId,
+  getRealTransactionFee,
+  getRealBalanceChange,
   getConnection,
   LIVE_KEY_ENV,
   LIVE_SAVINGS_ENV,
