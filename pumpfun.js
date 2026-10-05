@@ -63,6 +63,13 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
     throw new Error('fetchGlobal failed: ' + e.message);
   }
 
+  var feeConfig;
+  try {
+    feeConfig = await sdk.fetchFeeConfig();
+  } catch (e) {
+    throw new Error('fetchFeeConfig failed: ' + e.message);
+  }
+
   var buyState;
   try {
     buyState = await sdk.fetchBuyState(mint, user);
@@ -99,6 +106,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
   try {
     return await PUMP_SDK.buyInstructions({
       global: global,
+      feeConfig: feeConfig,
       bondingCurveAccountInfo: buyState.bondingCurveAccountInfo,
       bondingCurve: bc,
       associatedUserAccountInfo: buyState.associatedUserAccountInfo,
@@ -114,7 +122,8 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
       'buyInstructions failed: ' + e.message +
       ' -- ' + describe('amount', amount) +
       ' -- ' + describe('solAmountBN', solAmountBN) +
-      ' -- ' + describe('associatedUserAccountInfo', buyState.associatedUserAccountInfo)
+      ' -- ' + describe('associatedUserAccountInfo', buyState.associatedUserAccountInfo) +
+      ' -- ' + describe('feeConfig', feeConfig)
     );
   }
 }
@@ -127,6 +136,13 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     global = await sdk.fetchGlobal();
   } catch (e) {
     throw new Error('fetchGlobal failed: ' + e.message);
+  }
+
+  var feeConfig;
+  try {
+    feeConfig = await sdk.fetchFeeConfig();
+  } catch (e) {
+    throw new Error('fetchFeeConfig failed: ' + e.message);
   }
 
   // Uses fetchBuyState, not fetchSellState -- the sell call below only
@@ -171,6 +187,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   try {
     return await PUMP_SDK.sellInstructions({
       global: global,
+      feeConfig: feeConfig,
       bondingCurveAccountInfo: sellState.bondingCurveAccountInfo,
       bondingCurve: bc,
       mint: mint,
@@ -184,7 +201,8 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     throw new Error(
       'sellInstructions failed: ' + e.message +
       ' -- ' + describe('tokenAmountBN', tokenAmountBN) +
-      ' -- ' + describe('solAmount', solAmount)
+      ' -- ' + describe('solAmount', solAmount) +
+      ' -- ' + describe('feeConfig', feeConfig)
     );
   }
 }
