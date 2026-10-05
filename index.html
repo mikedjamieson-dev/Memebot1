@@ -322,6 +322,13 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
       <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
       <div class="wallet-display" id="live-savings-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:16px;">LIVE TRADING FUND</div>
+      <div class="settings-hint" style="margin-bottom:8px;">The only amount the bot is ever allowed to use for real trading -- completely separate from your wallet's actual balance, no matter how much that holds. Every real trade adjusts this number directly.</div>
+      <div class="wallet-display" id="live-fund-display" style="font-size:20px;color:var(--green);">$0.0000</div>
+      <input class="settings-input" id="input-live-fund" placeholder="Set the live trading fund amount..." style="margin-top:8px;"/>
+      <button class="settings-save" onclick="saveLiveFund()" style="margin-top:6px;">SET LIVE TRADING FUND</button>
+      <div class="settings-status" id="status-live-fund"></div>
     </div>
 
     <!-- Testing -->
@@ -753,6 +760,14 @@ async function saveFund() {
   el.textContent = ok ? '✅ Fund set to $' + n.toFixed(2) : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveLiveFund() {
+  var el = document.getElementById('status-live-fund');
+  var n = parseFloat(document.getElementById('input-live-fund').value);
+  if (isNaN(n) || n < 0) { el.textContent = 'Invalid amount'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveFund: n });
+  el.textContent = ok ? '✅ Live Trading Fund set to $' + n.toFixed(2) : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function saveTP() {
   var el = document.getElementById('status-tp');
   var body = { takeProfitMode: currentTPMode };
@@ -1094,8 +1109,8 @@ async function fetchState() {
     if (data.windingDown) {
       statusEl.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
       statusEl.style.color = 'var(--red)';
-    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 10) * 0.70) {
-      statusEl.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 10) + '% FUND LOSS LIMIT';
+    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 20) * 0.70) {
+      statusEl.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 20) + '% FUND LOSS LIMIT';
       statusEl.style.color = 'var(--yellow)';
     } else if (data.running) {
       statusEl.textContent = '● RUNNING'; statusEl.style.color = 'var(--green)';
@@ -1109,10 +1124,10 @@ async function fetchState() {
       wb.style.display = 'block'; wb.style.background = 'rgba(255,61,90,0.15)';
       wb.style.border = '1px solid var(--red)'; wb.style.color = 'var(--red)';
       wb.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
-    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 10) * 0.70) {
+    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 20) * 0.70) {
       wb.style.display = 'block'; wb.style.background = 'rgba(255,194,51,0.15)';
       wb.style.border = '1px solid var(--yellow)'; wb.style.color = 'var(--yellow)';
-      wb.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 10) + '% FUND LOSS LIMIT — ' + (data.currentLossPct || 0).toFixed(1) + '% lost';
+      wb.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 20) + '% FUND LOSS LIMIT — ' + (data.currentLossPct || 0).toFixed(1) + '% lost';
     } else {
       wb.style.display = 'none';
     }
@@ -1205,11 +1220,11 @@ async function fetchState() {
     var maxOpenDisp = document.getElementById('current-maxopen-display');
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
     var fundLossDisp = document.getElementById('current-fundloss-display');
-    if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 10;
+    if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 20;
     var fundLossDisp2 = document.getElementById('current-fundloss-display-2');
-    if (fundLossDisp2) fundLossDisp2.textContent = data.fundStopLossPct || 10;
+    if (fundLossDisp2) fundLossDisp2.textContent = data.fundStopLossPct || 20;
     var fundLossDisp3 = document.getElementById('current-fundloss-display-3');
-    if (fundLossDisp3) fundLossDisp3.textContent = data.fundStopLossPct || 10;
+    if (fundLossDisp3) fundLossDisp3.textContent = data.fundStopLossPct || 20;
     var fundLiveDisp = document.getElementById('current-fund-live');
     if (fundLiveDisp) fundLiveDisp.textContent = f2(data.fund || 0);
     var poolSizeDisp = document.getElementById('current-poolsize-display');
@@ -1312,6 +1327,13 @@ async function fetchState() {
     } else {
       savingsAddrEl.textContent = 'Not configured yet';
       savingsAddrEl.style.color = 'var(--dim)';
+    }
+
+    var liveFundEl = document.getElementById('live-fund-display');
+    if (liveFundEl) {
+      var lf = data.liveFund || 0;
+      liveFundEl.textContent = '$' + lf.toFixed(4);
+      liveFundEl.style.color = lf > 0 ? 'var(--green)' : 'var(--red)';
     }
 
     // Best trade
