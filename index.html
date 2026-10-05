@@ -748,7 +748,11 @@ function showPage(page) {
   if (page === 'livetrade') refreshLivePrice();
 }
 
+var lastLivePriceRefresh = 0;
 async function refreshLivePrice() {
+  var now = Date.now();
+  if (now - lastLivePriceRefresh < 20000) return; // avoid firing a new real request on every rapid tab switch
+  lastLivePriceRefresh = now;
   try { await fetch(BASE + '/api/live/refresh-price', { method: 'POST' }); }
   catch (e) {}
 }
