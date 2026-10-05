@@ -151,14 +151,31 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
   const { getAssociatedTokenAddress } = require('@solana/spl-token');
   var tokenProgram = await getTokenProgramId(connection, mint);
   var tokenAccount = await getAssociatedTokenAddress(mint, ownerPublicKey, false, tokenProgram);
+  var diagnostic = {
+    tokenProgram: tokenProgram.toString(),
+    tokenAccount: tokenAccount.toString(),
+  };
   try {
     var balance = await connection.getTokenAccountBalance(tokenAccount);
-    return { amount: balance.value.amount, decimals: balance.value.decimals };
+    return { amount: balance.value.amount, decimals: balance.value.decimals, diagnostic: diagnostic };
   } catch (e) {
-    if (e.message && e.message.indexOf('could not find account') !== -1) {
-      return { amount: '0', decimals: 0 };
+    // Only treat this as a genuine zero balance for the specific,
+    // confirmed "the account doesn't exist" case -- anything else is a
+    // real, different failure and must not be silently reported as
+    // zero, which would hide the actual problem.
+    var isAccountNotFound = e.message && (
+      e.message.indexOf('could not find account') !== -1 ||
+      e.message.indexOf('Invalid param') !== -1 ||
+      e.message.indexOf('AccountNotFound') !== -1
+    );
+    if (isAccountNotFound) {
+      diagnostic.rawError = e.message;
+      return { amount: '0', decimals: 0, diagnostic: diagnostic };
     }
-    throw e;
+    diagnostic.rawError = e.message;
+    var err = new Error('getTokenAccountBalance failed unexpectedly -- ' + e.message + ' -- tokenProgram: ' + diagnostic.tokenProgram + ' -- tokenAccount: ' + diagnostic.tokenAccount);
+    err.diagnostic = diagnostic;
+    throw err;
   }
 }
 
