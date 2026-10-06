@@ -446,6 +446,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <div class="settings-panel" id="settings-panel-lt">
     <div class="settings-menu" id="settings-menu-lt">
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-tp')"><span>🎯 TAKE PROFIT MODE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-sl')"><span>🛡️ STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
@@ -454,12 +455,28 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSubLive('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
     </div>
 
+    <div class="settings-sub" id="sub-live-tp">
+      <button class="settings-back" onclick="closeSubLive('sub-live-tp')">← BACK</button>
+      <div class="settings-sub-title">TAKE PROFIT MODE (LIVE)</div>
+      <div class="settings-lbl">SELECT MODE</div>
+      <div class="tp-mode-row" style="grid-template-columns:1fr 1fr 1fr;">
+        <button class="tp-btn" id="btn-live-trail" onclick="selectLiveTP('TRAIL')">TRAIL STOP</button>
+        <button class="tp-btn" id="btn-live-fixed" onclick="selectLiveTP('FIXED')">FIXED %</button>
+        <button class="tp-btn active" id="btn-live-tiered" onclick="selectLiveTP('TIERED')">TIERED PROFITS</button>
+      </div>
+      <div class="settings-lbl" id="live-tp-pct-lbl" style="color:var(--bb)">TARGET % — SELECT FIXED ABOVE</div>
+      <input class="settings-input" id="input-live-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;"/>
+      <div class="settings-hint">Separate from paper's own setting. Applies to real positions opened after you save.<br>Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.<br>Tiered: sells 50% of the real position the first time it reaches +100% gain. If it keeps climbing to +500%, it sells half of what's left (25% of the original position). Whatever remains keeps running on the same trail-stop logic. Checked on every live price update, same as paper.</div>
+      <button class="settings-save" onclick="saveLiveTP()">SAVE TAKE PROFIT</button>
+      <div class="settings-status" id="status-live-tp"></div>
+    </div>
+
     <div class="settings-sub" id="sub-live-sl">
       <button class="settings-back" onclick="closeSubLive('sub-live-sl')">← BACK</button>
       <div class="settings-sub-title">STOP LOSS (LIVE)</div>
       <div class="settings-lbl">STOP LOSS %</div>
       <input class="settings-input" id="input-live-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10"/>
-      <div class="settings-hint">Current: <span id="current-live-sl-display">10</span>%. Separate from paper's own setting. Checked every 10 seconds against real price.</div>
+      <div class="settings-hint">Current: <span id="current-live-sl-display">10</span>%. Separate from paper's own setting. Checked on every live price update, same as paper.</div>
       <button class="settings-save" onclick="saveLiveSL()">SAVE STOP LOSS</button>
       <div class="settings-status" id="status-live-sl"></div>
     </div>
@@ -760,6 +777,7 @@ var liveAllLogs = [];
 var startTime = null;
 var timerId = null;
 var currentTPMode = 'TIERED';
+var currentLiveTPMode = 'TIERED';
 var currentAutoLockEnabled = false;
 var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
@@ -900,6 +918,23 @@ function selectTP(mode) {
   }
 }
 
+function selectLiveTP(mode) {
+  currentLiveTPMode = mode;
+  document.getElementById('btn-live-trail').classList.toggle('active', mode === 'TRAIL');
+  document.getElementById('btn-live-fixed').classList.toggle('active', mode === 'FIXED');
+  document.getElementById('btn-live-tiered').classList.toggle('active', mode === 'TIERED');
+  var input = document.getElementById('input-live-tp-pct');
+  var lbl = document.getElementById('live-tp-pct-lbl');
+  if (mode === 'FIXED') {
+    input.disabled = false; input.style.opacity = '1';
+    lbl.textContent = 'TARGET PROFIT %'; lbl.style.color = 'var(--dim)';
+    input.focus();
+  } else {
+    input.disabled = true; input.style.opacity = '0.4';
+    lbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; lbl.style.color = 'var(--bb)';
+  }
+}
+
 function setAutoLock(enabled) {
   currentAutoLockEnabled = enabled;
   document.getElementById('btn-autolock-on').classList.toggle('active', enabled);
@@ -941,6 +976,18 @@ async function saveTP() {
     var pct = parseFloat(document.getElementById('input-tp-pct').value);
     if (isNaN(pct) || pct <= 0) { el.textContent = 'Enter a valid %'; el.style.color = 'var(--red)'; return; }
     body.takeProfitPct = pct;
+  }
+  var ok = await apiPost(body);
+  el.textContent = ok ? '✅ Saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveTP() {
+  var el = document.getElementById('status-live-tp');
+  var body = { liveTakeProfitMode: currentLiveTPMode };
+  if (currentLiveTPMode === 'FIXED') {
+    var pct = parseFloat(document.getElementById('input-live-tp-pct').value);
+    if (isNaN(pct) || pct <= 0) { el.textContent = 'Enter a valid %'; el.style.color = 'var(--red)'; return; }
+    body.liveTakeProfitPct = pct;
   }
   var ok = await apiPost(body);
   el.textContent = ok ? '✅ Saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
@@ -1434,6 +1481,25 @@ async function fetchState() {
       currentAutoLockEnabled = autoLockOn;
       document.getElementById('btn-autolock-on').classList.toggle('active', autoLockOn);
       document.getElementById('btn-autolock-off').classList.toggle('active', !autoLockOn);
+    }
+
+    // Sync live TP buttons only when the live settings panel is closed
+    var liveSettingsOpen = document.getElementById('settings-panel-lt').classList.contains('open');
+    if (!liveSettingsOpen) {
+      var liveTpMode = data.liveTakeProfitMode || 'TIERED';
+      currentLiveTPMode = liveTpMode;
+      document.getElementById('btn-live-trail').classList.toggle('active', liveTpMode === 'TRAIL');
+      document.getElementById('btn-live-fixed').classList.toggle('active', liveTpMode === 'FIXED');
+      document.getElementById('btn-live-tiered').classList.toggle('active', liveTpMode === 'TIERED');
+      var liveTpInput = document.getElementById('input-live-tp-pct');
+      var liveTpLbl = document.getElementById('live-tp-pct-lbl');
+      if (liveTpMode === 'FIXED') {
+        liveTpInput.disabled = false; liveTpInput.style.opacity = '1';
+        liveTpLbl.textContent = 'TARGET PROFIT %'; liveTpLbl.style.color = 'var(--dim)';
+      } else {
+        liveTpInput.disabled = true; liveTpInput.style.opacity = '0.4';
+        liveTpLbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; liveTpLbl.style.color = 'var(--bb)';
+      }
     }
 
     // Settings hints
