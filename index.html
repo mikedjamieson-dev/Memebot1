@@ -441,11 +441,22 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <div class="settings-panel" id="settings-panel-lt">
     <div class="settings-menu" id="settings-menu-lt">
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-sl')"><span>🛡️ STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-sl">
+      <button class="settings-back" onclick="closeSubLive('sub-live-sl')">← BACK</button>
+      <div class="settings-sub-title">STOP LOSS (LIVE)</div>
+      <div class="settings-lbl">STOP LOSS %</div>
+      <input class="settings-input" id="input-live-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10"/>
+      <div class="settings-hint">Current: <span id="current-live-sl-display">10</span>%. Separate from paper's own setting. Checked every 10 seconds against real price.</div>
+      <button class="settings-save" onclick="saveLiveSL()">SAVE STOP LOSS</button>
+      <div class="settings-status" id="status-live-sl"></div>
     </div>
 
     <div class="settings-sub" id="sub-live-maxopen">
@@ -901,6 +912,14 @@ async function saveFundLoss() {
   el.textContent = ok ? '✅ Fund SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveLiveSL() {
+  var el = document.getElementById('status-live-sl');
+  var n = parseFloat(document.getElementById('input-live-sl').value);
+  if (isNaN(n) || n < 1 || n > 100) { el.textContent = 'Enter 1-100'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveStopLossPct: n });
+  el.textContent = ok ? '✅ Live Stop Loss set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function saveLiveMaxOpen() {
   var el = document.getElementById('status-live-maxopen');
   var n = parseInt(document.getElementById('input-live-maxopen').value);
@@ -1340,6 +1359,8 @@ async function fetchState() {
     if (fundDisp) fundDisp.textContent = '$' + f2(data.sessionFund || 100);
     var maxOpenDisp = document.getElementById('current-maxopen-display');
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
+    var liveSlDisp = document.getElementById('current-live-sl-display');
+    if (liveSlDisp) liveSlDisp.textContent = data.liveStopLossPct || 10;
     var liveMaxOpenDisp = document.getElementById('current-live-maxopen-display');
     if (liveMaxOpenDisp) liveMaxOpenDisp.textContent = data.liveMaxOpen || 4;
     var liveFundLossDisp = document.getElementById('current-live-fundloss-display');
@@ -1640,11 +1661,4 @@ async function loadTrades() {
       tradesEl.appendChild(d);
     });
     var pages=data.pages||1;
-    document.getElementById('pt-page-info').textContent='Page '+(ptPage+1)+' of '+pages;
-    document.getElementById('pt-prev').disabled=ptPage<=0;
-    document.getElementById('pt-next').disabled=ptPage>=pages-1;
-  } catch(e) {}
-}
-</script>
-</body>
-</html>
+    document.getElementById('pt-page-info').textContent='Page '+(ptPage+
