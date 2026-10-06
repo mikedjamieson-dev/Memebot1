@@ -107,6 +107,7 @@ const S = {
   liveDayStartFund: 0,
   liveMaxOpen: 4,
   liveFundStopLossPct: 20,
+  liveStopLossPct: 10,
   liveWindingDown: false,
   liveOpen: [],
   liveTradingEnabled: false,
@@ -2067,6 +2068,7 @@ app.get('/api/state', function(req, res) {
     liveTradingEnabled: S.liveTradingEnabled,
     liveMaxOpen: S.liveMaxOpen,
     liveFundStopLossPct: S.liveFundStopLossPct,
+    liveStopLossPct: S.liveStopLossPct,
     liveWindingDown: S.liveWindingDown,
     liveOpen: S.liveOpen,
     solPriceUsd: SOL_PRICE_USD,
@@ -2499,7 +2501,7 @@ async function checkLiveStopLoss() {
       continue;
     }
     var pct = (currentPrice - pos.entryPriceUsd) / pos.entryPriceUsd;
-    if (pct > -0.10) continue;
+    if (pct > -(S.liveStopLossPct / 100)) continue;
 
     log('LIVE STOP LOSS HIT: ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> current $' + currentPrice.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', 'loss');
 
@@ -2574,6 +2576,10 @@ app.post('/api/settings', function(req, res) {
   if (req.body.liveFundStopLossPct !== undefined) {
     var lfsl = parseFloat(req.body.liveFundStopLossPct);
     if (!isNaN(lfsl) && lfsl > 0 && lfsl <= 100) { S.liveFundStopLossPct = parseFloat(lfsl.toFixed(1)); log('LIVE FUND STOP LOSS: ' + S.liveFundStopLossPct + '%', 'info'); }
+  }
+  if (req.body.liveStopLossPct !== undefined) {
+    var lsl = parseFloat(req.body.liveStopLossPct);
+    if (!isNaN(lsl) && lsl > 0 && lsl <= 100) { S.liveStopLossPct = parseFloat(lsl.toFixed(1)); log('LIVE STOP LOSS: ' + S.liveStopLossPct + '%', 'info'); }
   }
   if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
