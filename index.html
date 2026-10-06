@@ -598,6 +598,21 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div id="live-open-positions" style="margin-top:8px;color:var(--dim);">None open right now.</div>
   </div>
 
+  <div class="logwrap" style="margin-top:10px;">
+    <div class="logbox" id="live-logbox">
+      <div class="log-header">
+        <div class="log-header-lbl">LIVE ACTIVITY LOG</div>
+        <div class="log-cnt" id="live-log-cnt">0 entries</div>
+      </div>
+      <div class="log-filters">
+        <button class="lf act" onclick="setLiveFilter('all')">ALL</button>
+        <button class="lf" onclick="setLiveFilter('win')">WINS</button>
+        <button class="lf" onclick="setLiveFilter('loss')">LOSSES</button>
+      </div>
+      <div id="live-log-list"><div style="font-size:13px;color:var(--dim)">Connecting...</div></div>
+    </div>
+  </div>
+
   <div class="foot">BunkerBuster.io -- LIVE TRADING</div>
 </div>
 
@@ -740,6 +755,8 @@ var liveTradingOn = false;
 var logFilter = 'all';
 var allLogs = [];
 var frozen = false;
+var liveLogFilter = 'all';
+var liveAllLogs = [];
 var startTime = null;
 var timerId = null;
 var currentTPMode = 'TIERED';
@@ -1244,6 +1261,32 @@ function renderLog() {
   });
 }
 
+function setLiveFilter(f) {
+  try {
+    liveLogFilter = f;
+    var liveBox = document.getElementById('live-logbox');
+    if (liveBox) {
+      liveBox.querySelectorAll('.lf').forEach(function(b) {
+        b.classList.toggle('act', b.textContent.toLowerCase().indexOf(f) >= 0 || (f === 'all' && b.textContent === 'ALL'));
+      });
+    }
+    renderLiveLog();
+  } catch (e) { showJsError('setLiveFilter failed: ' + e.message); }
+}
+
+function renderLiveLog() {
+  var el = document.getElementById('live-log-list');
+  if (!el) return;
+  var fl = liveLogFilter === 'all' ? liveAllLogs : liveAllLogs.filter(function(e) { return e.type === liveLogFilter; });
+  el.innerHTML = '';
+  fl.slice(0, 150).forEach(function(e) {
+    var d = document.createElement('div');
+    d.className = 'le ' + (e.type || 'info');
+    d.innerHTML = '<span class="lt">' + e.time + '</span>' + linkifyMint(e.msg);
+    el.appendChild(d);
+  });
+}
+
 function startTimer(st) {
   startTime = st || Date.now();
   if (timerId) clearInterval(timerId);
@@ -1450,6 +1493,14 @@ async function fetchState() {
       allLogs = data.logs;
       document.getElementById('log-cnt').textContent = allLogs.length + ' entries';
       if (!frozen) renderLog();
+    }
+
+    // Live logs -- separate from paper's, same pattern
+    if (data.liveLogs && data.liveLogs.length > 0) {
+      liveAllLogs = data.liveLogs;
+      var liveLogCntEl = document.getElementById('live-log-cnt');
+      if (liveLogCntEl) liveLogCntEl.textContent = liveAllLogs.length + ' entries';
+      renderLiveLog();
     }
 
     // Closed trades
