@@ -191,6 +191,11 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 </head>
 <body>
 
+<div id="js-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#ff3d5a;color:#fff;padding:12px;font-family:monospace;font-size:13px;word-break:break-word;">
+  <div style="font-weight:bold;margin-bottom:4px;">⚠️ A real error just happened -- screenshot this and send it:</div>
+  <div id="js-error-text"></div>
+</div>
+
 <!-- PAPER TRADING PAGE -->
 <div class="wrap" id="paper-page">
 
@@ -715,6 +720,20 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 </div>
 
 <script>
+function showJsError(msg) {
+  var banner = document.getElementById('js-error-banner');
+  var text = document.getElementById('js-error-text');
+  if (banner && text) { text.textContent = msg; banner.style.display = 'block'; }
+}
+window.onerror = function(msg, source, lineno, colno, error) {
+  var banner = document.getElementById('js-error-banner');
+  var text = document.getElementById('js-error-text');
+  if (banner && text) {
+    text.textContent = msg + ' -- line ' + lineno + ', col ' + colno + (error && error.stack ? ' -- ' + error.stack.split('\n')[0] : '');
+    banner.style.display = 'block';
+  }
+  return false;
+};
 var BASE = '';
 var botRunning = false;
 var liveTradingOn = false;
@@ -766,21 +785,27 @@ async function copyCA(mint, ev) {
 
 // ── PAGE NAVIGATION ───────────────────────────────────────────
 function showPage(page) {
-  var pages = { paper: 'paper-page', livetrade: 'livetrade-page', portfolio: 'port-page' };
-  Object.keys(pages).forEach(function(key) {
-    document.getElementById(pages[key]).style.display = (key === page) ? 'block' : 'none';
-  });
-  var navSuffixes = ['', '-p', '-l'];
-  navSuffixes.forEach(function(suf) {
-    var paperBtn = document.getElementById('nav-paper' + suf);
-    var liveBtn = document.getElementById('nav-livetrade' + suf);
-    var portBtn = document.getElementById('nav-port' + suf);
-    if (paperBtn) paperBtn.classList.toggle('active', page === 'paper');
-    if (liveBtn) liveBtn.classList.toggle('active', page === 'livetrade');
-    if (portBtn) portBtn.classList.toggle('active', page === 'portfolio');
-  });
-  if (page === 'portfolio') loadPortfolioPage();
-  if (page === 'livetrade') refreshLivePrice();
+  try {
+    var pages = { paper: 'paper-page', livetrade: 'livetrade-page', portfolio: 'port-page' };
+    Object.keys(pages).forEach(function(key) {
+      var el = document.getElementById(pages[key]);
+      if (!el) throw new Error('showPage: missing page element for "' + key + '" (expected id="' + pages[key] + '")');
+      el.style.display = (key === page) ? 'block' : 'none';
+    });
+    var navSuffixes = ['', '-p', '-l'];
+    navSuffixes.forEach(function(suf) {
+      var paperBtn = document.getElementById('nav-paper' + suf);
+      var liveBtn = document.getElementById('nav-livetrade' + suf);
+      var portBtn = document.getElementById('nav-port' + suf);
+      if (paperBtn) paperBtn.classList.toggle('active', page === 'paper');
+      if (liveBtn) liveBtn.classList.toggle('active', page === 'livetrade');
+      if (portBtn) portBtn.classList.toggle('active', page === 'portfolio');
+    });
+    if (page === 'portfolio') loadPortfolioPage();
+    if (page === 'livetrade') refreshLivePrice();
+  } catch (e) {
+    showJsError('showPage(' + page + ') failed: ' + e.message);
+  }
 }
 
 var lastLivePriceRefresh = 0;
@@ -794,35 +819,51 @@ async function refreshLivePrice() {
 
 // ── SETTINGS ──────────────────────────────────────────────────
 function toggleSettings() {
-  document.getElementById('settings-panel').classList.toggle('open');
-  document.getElementById('settings-menu').style.display = 'flex';
-  document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+  try {
+    document.getElementById('settings-panel').classList.toggle('open');
+    document.getElementById('settings-menu').style.display = 'flex';
+    document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+  } catch (e) { showJsError('toggleSettings failed: ' + e.message); }
 }
 
 function openSub(id) {
-  document.getElementById('settings-menu').style.display = 'none';
-  document.getElementById(id).classList.add('open');
+  try {
+    document.getElementById('settings-menu').style.display = 'none';
+    var el = document.getElementById(id);
+    if (!el) throw new Error('no settings panel with id="' + id + '"');
+    el.classList.add('open');
+  } catch (e) { showJsError('openSub(' + id + ') failed: ' + e.message); }
 }
 
 function closeSub(id) {
-  document.getElementById(id).classList.remove('open');
-  document.getElementById('settings-menu').style.display = 'flex';
+  try {
+    document.getElementById(id).classList.remove('open');
+    document.getElementById('settings-menu').style.display = 'flex';
+  } catch (e) { showJsError('closeSub(' + id + ') failed: ' + e.message); }
 }
 
 function toggleSettingsLive() {
-  document.getElementById('settings-panel-lt').classList.toggle('open');
-  document.getElementById('settings-menu-lt').style.display = 'flex';
-  document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+  try {
+    document.getElementById('settings-panel-lt').classList.toggle('open');
+    document.getElementById('settings-menu-lt').style.display = 'flex';
+    document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+  } catch (e) { showJsError('toggleSettingsLive failed: ' + e.message); }
 }
 
 function openSubLive(id) {
-  document.getElementById('settings-menu-lt').style.display = 'none';
-  document.getElementById(id).classList.add('open');
+  try {
+    document.getElementById('settings-menu-lt').style.display = 'none';
+    var el = document.getElementById(id);
+    if (!el) throw new Error('no settings panel with id="' + id + '"');
+    el.classList.add('open');
+  } catch (e) { showJsError('openSubLive(' + id + ') failed: ' + e.message); }
 }
 
 function closeSubLive(id) {
-  document.getElementById(id).classList.remove('open');
-  document.getElementById('settings-menu-lt').style.display = 'flex';
+  try {
+    document.getElementById(id).classList.remove('open');
+    document.getElementById('settings-menu-lt').style.display = 'flex';
+  } catch (e) { showJsError('closeSubLive(' + id + ') failed: ' + e.message); }
 }
 
 function selectTP(mode) {
@@ -1661,4 +1702,11 @@ async function loadTrades() {
       tradesEl.appendChild(d);
     });
     var pages=data.pages||1;
-    document.getElementById('pt-page-info').textContent='Page '+(ptPage+
+    document.getElementById('pt-page-info').textContent='Page '+(ptPage+1)+' of '+pages;
+    document.getElementById('pt-prev').disabled=ptPage<=0;
+    document.getElementById('pt-next').disabled=ptPage>=pages-1;
+  } catch(e) {}
+}
+</script>
+</body>
+</html>
