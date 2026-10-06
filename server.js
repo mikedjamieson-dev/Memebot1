@@ -108,6 +108,8 @@ const S = {
   liveMaxOpen: 4,
   liveFundStopLossPct: 20,
   liveStopLossPct: 10,
+  liveTakeProfitMode: 'TIERED',
+  liveTakeProfitPct: 5,
   liveWindingDown: false,
   liveOpen: [],
   liveLogs: [],
@@ -206,7 +208,6 @@ async function refreshLiveWalletBalance() {
 }
 refreshLiveWalletBalance();
 var liveWalletI = setInterval(refreshLiveWalletBalance, 30000);
-var liveStopLossI = setInterval(function() { checkLiveStopLoss().catch(function(e) { liveLog('LIVE STOP LOSS checker error: ' + e.message, 'warn'); }); }, 10000);
 
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
@@ -1097,6 +1098,9 @@ function handleSwap(t) {
         }
       }
     });
+
+    // Live positions are checked on this same tick, same moment as paper.
+    handleLiveTick(mint, priceUsd);
   }
 }
 
@@ -2084,6 +2088,8 @@ app.get('/api/state', function(req, res) {
     liveMaxOpen: S.liveMaxOpen,
     liveFundStopLossPct: S.liveFundStopLossPct,
     liveStopLossPct: S.liveStopLossPct,
+    liveTakeProfitMode: S.liveTakeProfitMode,
+    liveTakeProfitPct: S.liveTakeProfitPct,
     liveWindingDown: S.liveWindingDown,
     liveOpen: S.liveOpen,
     liveLogs: S.liveLogs,
@@ -2405,6 +2411,13 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             tokenDecimals: heldBalance.decimals,
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
+            tpl: S.liveTakeProfitMode,
+            tpPct: S.liveTakeProfitPct,
+            peakPriceUsd: entryPriceUsd,
+            tier1Done: false,
+            tier2Done: false,
+            busy: false,
+            retryAfter: 0,
           });
           liveLog(logPrefix + ' (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
         } else {
@@ -2437,7 +2450,7 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
 // other. logPrefix lets each caller label its own log lines clearly
 // (e.g. "LIVE TRADE TEST" vs "LIVE STOP LOSS") while sharing the same
 // underlying logic.
-async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
+async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -2457,8 +2470,20 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
       return { ok: false, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag };
     }
 
-    liveLog(logPrefix + ' (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
-    var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, balance.amount, 15);
+    // Optional fraction (0 < fraction < 1) sells only part of the real
+    // balance -- used by the tiered exits. Left empty it sells everything,
+    // exactly as before.
+    var sellAmount = balance.amount;
+    if (fraction !== undefined && fraction !== null && fraction > 0 && fraction < 1) {
+      sellAmount = (BigInt(balance.amount) * BigInt(Math.round(fraction * 10000)) / BigInt(10000)).toString();
+      if (sellAmount === '0') {
+        return { ok: false, error: 'Partial sell amount rounds to zero -- nothing sold' };
+      }
+    }
+    var remainingAmount = (BigInt(balance.amount) - BigInt(sellAmount)).toString();
+
+    liveLog(logPrefix + ' (' + platformName + ' sell): building sell for ' + sellAmount + ' of real balance ' + balance.amount + '...', 'info');
+    var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, 15);
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
@@ -2482,7 +2507,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
       }
     }
 
-    return { ok: true, result: result, soldAmount: balance.amount, liveFund: S.liveFund };
+    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     return { ok: false, error: e.message };
@@ -2498,39 +2523,104 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
   res.json(outcome);
 }
 
-// Checks every real open position against the same proven stop-loss
-// logic paper trading already uses (pct <= -0.10 from entry), using a
-// real, independent price fetch for each specific held token. On
-// trigger, sells for real through the shared sell core. A sell that
-// doesn't confirm leaves the position in S.liveOpen deliberately, so
-// it's retried next tick rather than silently lost from tracking.
-async function checkLiveStopLoss() {
+// Per-tick live exit check. Called from handleSwap for every incoming
+// Bitquery trade, so a real position is checked the instant its token
+// trades -- the same moment, and the same feed, paper trades use. Same
+// rules and same order as paper: fixed TP, tier 1 (+100%, sell 50%),
+// tier 2 (+500%, sell half of what's left), trail (activates at
+// CFG.TRAIL_ACT, exits on CFG.TRAIL_PB pullback), then stop loss.
+// The check itself is synchronous and cheap; the real sell runs in the
+// background so the feed is never held up. pos.busy stops two sells
+// ever running on the same position at once.
+function handleLiveTick(mint, priceUsd) {
   if (!S.liveOpen || S.liveOpen.length === 0) return;
-  var pumpfun = require('./pumpfun');
-  var letsbonk = require('./letsbonk');
-
-  for (var i = S.liveOpen.length - 1; i >= 0; i--) {
+  for (var i = 0; i < S.liveOpen.length; i++) {
     var pos = S.liveOpen[i];
-    var currentPrice = await getRealTokenPriceUsd(pos.mint);
-    if (currentPrice === null) {
-      liveLog('LIVE STOP LOSS: could not read current price for ' + pos.mint + ' -- will retry next check', 'warn');
-      continue;
+    if (pos.mint !== mint) continue;
+    if (!pos.entryPriceUsd || pos.entryPriceUsd <= 0) continue;
+
+    // Same guard paper has: a single-tick crash of more than 90% is
+    // treated as a bad tick, not a real price.
+    if (pos.currentPriceUsd && pos.currentPriceUsd > 0) {
+      var drop = (pos.currentPriceUsd - priceUsd) / pos.currentPriceUsd;
+      if (drop > 0.90) {
+        liveLog('LIVE PRICE SANITY REJECT ' + mint.slice(0, 8) + '... | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
+        continue;
+      }
     }
-    var pct = (currentPrice - pos.entryPriceUsd) / pos.entryPriceUsd;
-    if (pct > -(S.liveStopLossPct / 100)) continue;
 
-    liveLog('LIVE STOP LOSS HIT: ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> current $' + currentPrice.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', 'loss');
+    pos.currentPriceUsd = priceUsd;
+    if (priceUsd > (pos.peakPriceUsd || 0)) pos.peakPriceUsd = priceUsd;
 
+    if (pos.busy || Date.now() < (pos.retryAfter || 0)) continue;
+
+    var pct = (priceUsd - pos.entryPriceUsd) / pos.entryPriceUsd;
+    var action = null;
+
+    if (pos.tpl === 'FIXED' && pct >= (pos.tpPct / 100)) {
+      action = { kind: 'FIXED', fraction: null };
+    } else if (pos.tpl === 'TIERED' && !pos.tier1Done && pct >= 1.0) {
+      action = { kind: 'TIER1', fraction: 0.5 };
+    } else if (pos.tpl === 'TIERED' && pos.tier1Done && !pos.tier2Done && pct >= 5.0) {
+      action = { kind: 'TIER2', fraction: 0.5 };
+    } else if ((pos.tpl === 'TRAIL' || pos.tpl === 'TIERED') && pos.peakPriceUsd) {
+      var peakGain = (pos.peakPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd;
+      if (peakGain >= CFG.TRAIL_ACT) {
+        var pullback = (pos.peakPriceUsd - priceUsd) / pos.peakPriceUsd;
+        if (pullback >= CFG.TRAIL_PB) {
+          action = { kind: 'TRAIL', fraction: null, peakGain: peakGain, pullback: pullback };
+        }
+      }
+    }
+    if (!action && pct <= -(S.liveStopLossPct / 100)) {
+      action = { kind: 'SL', fraction: null };
+    }
+
+    if (action) {
+      runLiveExit(pos, action, priceUsd, pct).catch(function(e) {
+        liveLog('LIVE EXIT error: ' + e.message, 'warn');
+      });
+    }
+  }
+}
+
+async function runLiveExit(pos, action, priceUsd, pct) {
+  pos.busy = true;
+  try {
+    var pumpfun = require('./pumpfun');
+    var letsbonk = require('./letsbonk');
     var platformName = pos.platform === 'pumpfun' ? 'pump.fun' : 'LetsBonk';
     var buildSellFn = pos.platform === 'pumpfun' ? pumpfun.buildSellInstructions : letsbonk.buildSellInstructions;
-    var outcome = await performRealSell(pos.mint, platformName, buildSellFn, 'LIVE STOP LOSS');
 
-    if (outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED') {
-      S.liveOpen.splice(i, 1);
-      liveLog('LIVE STOP LOSS: position closed for real, removed from tracking -- ' + pos.mint, 'win');
+    var prefix, kindText, logType;
+    if (action.kind === 'SL') { prefix = 'LIVE STOP LOSS'; kindText = 'STOP LOSS HIT'; logType = 'loss'; }
+    else if (action.kind === 'TRAIL') { prefix = 'LIVE TRAIL EXIT'; kindText = 'TRAIL EXIT | Peak +' + (action.peakGain * 100).toFixed(1) + '% | Pullback -' + (action.pullback * 100).toFixed(1) + '%'; logType = 'win'; }
+    else if (action.kind === 'FIXED') { prefix = 'LIVE TAKE PROFIT'; kindText = 'TP HIT'; logType = 'win'; }
+    else if (action.kind === 'TIER1') { prefix = 'LIVE TIER 1'; kindText = 'TIER 1 (+100%) -- selling 50% of the position'; logType = 'win'; }
+    else { prefix = 'LIVE TIER 2'; kindText = 'TIER 2 (+500%) -- selling half of what is left'; logType = 'win'; }
+
+    liveLog(prefix + ': ' + kindText + ' | ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> $' + priceUsd.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', logType);
+
+    var outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction);
+    var confirmed = !!(outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED');
+
+    if (confirmed && action.fraction) {
+      pos.tokenAmountRaw = outcome.remainingAmount;
+      if (action.kind === 'TIER1') pos.tier1Done = true; else pos.tier2Done = true;
+      liveLog(prefix + ': partial sell confirmed -- position stays open, remaining raw amount ' + pos.tokenAmountRaw + ' -- ' + pos.mint, 'win');
+    } else if (confirmed) {
+      var idx = S.liveOpen.indexOf(pos);
+      if (idx !== -1) S.liveOpen.splice(idx, 1);
+      liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
     } else {
-      liveLog('LIVE STOP LOSS: real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry next check', 'warn');
+      pos.retryAfter = Date.now() + 1500;
+      liveLog(prefix + ': real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry on a later tick', 'warn');
     }
+  } catch (e) {
+    pos.retryAfter = Date.now() + 1500;
+    liveLog('LIVE EXIT error for ' + pos.mint + ': ' + e.message + ' -- position kept, will retry on a later tick', 'warn');
+  } finally {
+    pos.busy = false;
   }
 }
 
@@ -2596,6 +2686,13 @@ app.post('/api/settings', function(req, res) {
   if (req.body.liveStopLossPct !== undefined) {
     var lsl = parseFloat(req.body.liveStopLossPct);
     if (!isNaN(lsl) && lsl > 0 && lsl <= 100) { S.liveStopLossPct = parseFloat(lsl.toFixed(1)); liveLog('LIVE STOP LOSS: ' + S.liveStopLossPct + '%', 'info'); }
+  }
+  if (req.body.liveTakeProfitMode && (req.body.liveTakeProfitMode === 'TRAIL' || req.body.liveTakeProfitMode === 'FIXED' || req.body.liveTakeProfitMode === 'TIERED')) {
+    S.liveTakeProfitMode = req.body.liveTakeProfitMode; liveLog('LIVE TAKE PROFIT MODE: ' + S.liveTakeProfitMode, 'info');
+  }
+  if (req.body.liveTakeProfitPct !== undefined) {
+    var ltp = parseFloat(req.body.liveTakeProfitPct);
+    if (!isNaN(ltp) && ltp > 0 && ltp <= 1000) { S.liveTakeProfitPct = parseFloat(ltp.toFixed(1)); liveLog('LIVE TP TARGET: ' + S.liveTakeProfitPct + '%', 'info'); }
   }
   if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
