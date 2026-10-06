@@ -441,9 +441,31 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <div class="settings-panel" id="settings-panel-lt">
     <div class="settings-menu" id="settings-menu-lt">
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-maxopen">
+      <button class="settings-back" onclick="closeSubLive('sub-live-maxopen')">← BACK</button>
+      <div class="settings-sub-title">MAX OPEN TRADES (LIVE)</div>
+      <div class="settings-lbl">MAXIMUM SIMULTANEOUS REAL TRADES</div>
+      <input class="settings-input" id="input-live-maxopen" type="number" min="1" max="20" step="1" placeholder="e.g. 4"/>
+      <div class="settings-hint">Current: <span id="current-live-maxopen-display">4</span>. Range: 1-20. Separate from paper's own setting.</div>
+      <button class="settings-save" onclick="saveLiveMaxOpen()">SAVE MAX TRADES</button>
+      <div class="settings-status" id="status-live-maxopen"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-fundloss">
+      <button class="settings-back" onclick="closeSubLive('sub-live-fundloss')">← BACK</button>
+      <div class="settings-sub-title">FUND STOP LOSS (LIVE)</div>
+      <div class="settings-lbl">FUND LOSS LIMIT %</div>
+      <input class="settings-input" id="input-live-fundloss" type="number" min="1" max="100" step="0.1" placeholder="e.g. 20"/>
+      <div class="settings-hint">Current: <span id="current-live-fundloss-display">20</span>%. Separate from paper's own setting. Resets the baseline whenever you set the Live Trading Fund or turn automatic trading on.</div>
+      <button class="settings-save" onclick="saveLiveFundLoss()">SAVE FUND STOP LOSS</button>
+      <div class="settings-status" id="status-live-fundloss"></div>
     </div>
 
 <!-- Wallets -->
@@ -879,6 +901,22 @@ async function saveFundLoss() {
   el.textContent = ok ? '✅ Fund SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveLiveMaxOpen() {
+  var el = document.getElementById('status-live-maxopen');
+  var n = parseInt(document.getElementById('input-live-maxopen').value);
+  if (isNaN(n) || n < 1 || n > 20) { el.textContent = 'Enter 1-20'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveMaxOpen: n });
+  el.textContent = ok ? '✅ Live max set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveFundLoss() {
+  var el = document.getElementById('status-live-fundloss');
+  var n = parseFloat(document.getElementById('input-live-fundloss').value);
+  if (isNaN(n) || n < 1 || n > 100) { el.textContent = 'Enter 1-100'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveFundStopLossPct: n });
+  el.textContent = ok ? '✅ Live Fund SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function lockFund() {
   var el = document.getElementById('status-lockfund');
   try {
@@ -1302,6 +1340,10 @@ async function fetchState() {
     if (fundDisp) fundDisp.textContent = '$' + f2(data.sessionFund || 100);
     var maxOpenDisp = document.getElementById('current-maxopen-display');
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
+    var liveMaxOpenDisp = document.getElementById('current-live-maxopen-display');
+    if (liveMaxOpenDisp) liveMaxOpenDisp.textContent = data.liveMaxOpen || 4;
+    var liveFundLossDisp = document.getElementById('current-live-fundloss-display');
+    if (liveFundLossDisp) liveFundLossDisp.textContent = data.liveFundStopLossPct || 20;
     var fundLossDisp = document.getElementById('current-fundloss-display');
     if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 20;
     var fundLossDisp2 = document.getElementById('current-fundloss-display-2');
