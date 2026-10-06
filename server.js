@@ -2732,7 +2732,12 @@ app.get('/health', function(req, res) {
   res.json({ status: 'ok', pool: S.tokens.size, pump: S.pumpCount, fund: S.fund });
 });
 
-app.get('/', function(req, res) { res.sendFile(__dirname + '/index.html'); });
+app.get('/', function(req, res) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(__dirname + '/index.html');
+});
 
 app.listen(PORT, function() {
   console.log('BunkerBuster - Sniper Bot - running on port ' + PORT);
