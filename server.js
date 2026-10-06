@@ -104,6 +104,10 @@ const S = {
   maxOpen: 4,
   fundStopLossPct: 20,
   liveFund: 0,
+  liveDayStartFund: 0,
+  liveMaxOpen: 4,
+  liveFundStopLossPct: 20,
+  liveWindingDown: false,
   liveOpen: [],
   liveTradingEnabled: false,
   windingDown: false,
@@ -1872,12 +1876,18 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
 
   if (S.liveTradingEnabled && (tok.src === 'PUMP' || tok.src === 'BONK')) {
-    var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
-    var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
-    var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
-    performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
-      log('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
-    });
+    if (S.liveOpen.length >= S.liveMaxOpen) {
+      log('LIVE AUTO ENTRY skipped: max open (' + S.liveMaxOpen + ') reached', 'info');
+    } else if (S.liveWindingDown) {
+      log('LIVE AUTO ENTRY skipped: live fund stop loss active, no new entries until it recovers', 'info');
+    } else {
+      var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
+      var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
+      var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
+      performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
+        log('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
+      });
+    }
   }
 }
 
@@ -2055,6 +2065,9 @@ app.get('/api/state', function(req, res) {
     liveWallet: liveWalletState,
     liveFund: S.liveFund,
     liveTradingEnabled: S.liveTradingEnabled,
+    liveMaxOpen: S.liveMaxOpen,
+    liveFundStopLossPct: S.liveFundStopLossPct,
+    liveWindingDown: S.liveWindingDown,
     liveOpen: S.liveOpen,
     solPriceUsd: SOL_PRICE_USD,
     solPriceFresh: isSolPriceFresh(),
@@ -2282,6 +2295,24 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
 // uses exactly the pieces already proven tonight -- nothing new
 // invented, just wired together for the first real trade.
 
+// Checks real fund drawdown against the configured live fund stop
+// loss, mirroring paper's exact mechanism: once the threshold is
+// crossed, new automatic entries stop (existing positions keep being
+// watched normally), and it auto-resumes if the fund recovers back
+// above the line before everything closes.
+function checkLiveFundStopLoss() {
+  if (!S.liveDayStartFund || S.liveDayStartFund <= 0) return;
+  var lossLimit = S.liveFundStopLossPct / 100;
+  var currentLoss = (S.liveDayStartFund - S.liveFund) / S.liveDayStartFund;
+  if (currentLoss >= lossLimit && !S.liveWindingDown) {
+    S.liveWindingDown = true;
+    log('LIVE FUND LOSS LIMIT HIT - ' + S.liveFundStopLossPct + '% reached - no new automatic real entries until it recovers or you reset the fund', 'rug');
+  } else if (S.liveWindingDown && currentLoss < lossLimit) {
+    S.liveWindingDown = false;
+    log('LIVE FUND recovered back above the ' + S.liveFundStopLossPct + '% loss line -- automatic real entries resumed', 'win');
+  }
+}
+
 // Real position sizing: 5% of the live fund (mirroring paper
 // trading's exact CFG.MAX_POS formula), hard capped at $15 -- the cap
 // paper trading decided on but never actually had built into its own
@@ -2337,6 +2368,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
         log(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
+        checkLiveFundStopLoss();
       } catch (feeErr) {
         log(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
@@ -2426,6 +2458,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
         log(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
+        checkLiveFundStopLoss();
       } catch (feeErr) {
         log(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
@@ -2519,11 +2552,28 @@ app.post('/api/settings', function(req, res) {
   }
   if (req.body.liveFund !== undefined) {
     var lf = parseFloat(req.body.liveFund);
-    if (!isNaN(lf) && lf >= 0) { S.liveFund = parseFloat(lf.toFixed(4)); log('LIVE TRADING FUND set to $' + S.liveFund, 'info'); }
+    if (!isNaN(lf) && lf >= 0) {
+      S.liveFund = parseFloat(lf.toFixed(4));
+      S.liveDayStartFund = S.liveFund;
+      S.liveWindingDown = false;
+      log('LIVE TRADING FUND set to $' + S.liveFund, 'info');
+    }
   }
   if (req.body.liveTradingEnabled !== undefined) {
     S.liveTradingEnabled = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
+    if (S.liveTradingEnabled) {
+      S.liveDayStartFund = S.liveFund;
+      S.liveWindingDown = false;
+    }
     log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
+  }
+  if (req.body.liveMaxOpen !== undefined) {
+    var lmo = parseInt(req.body.liveMaxOpen);
+    if (!isNaN(lmo) && lmo >= 1 && lmo <= 20) { S.liveMaxOpen = lmo; log('LIVE MAX OPEN TRADES: ' + S.liveMaxOpen, 'info'); }
+  }
+  if (req.body.liveFundStopLossPct !== undefined) {
+    var lfsl = parseFloat(req.body.liveFundStopLossPct);
+    if (!isNaN(lfsl) && lfsl > 0 && lfsl <= 100) { S.liveFundStopLossPct = parseFloat(lfsl.toFixed(1)); log('LIVE FUND STOP LOSS: ' + S.liveFundStopLossPct + '%', 'info'); }
   }
   if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
