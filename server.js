@@ -110,6 +110,7 @@ const S = {
   liveStopLossPct: 10,
   liveWindingDown: false,
   liveOpen: [],
+  liveLogs: [],
   liveTradingEnabled: false,
   windingDown: false,
   maxPool: 10000,
@@ -129,6 +130,20 @@ function log(msg, type) {
   S.logs.unshift(entry);
   if (S.logs.length > 500) S.logs.pop();
   console.log('[' + type.toUpperCase() + '] ' + msg);
+}
+
+// Separate from the paper log above -- real trading's own activity,
+// its own array, never mixed with paper's.
+function liveLog(msg, type) {
+  type = type || 'info';
+  var entry = {
+    msg: msg,
+    type: type,
+    time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+  };
+  S.liveLogs.unshift(entry);
+  if (S.liveLogs.length > 500) S.liveLogs.pop();
+  console.log('[LIVE-' + type.toUpperCase() + '] ' + msg);
 }
 
 // -- LIVE WALLET -------------------------------------------------
@@ -155,13 +170,13 @@ var liveWalletState = {
       liveWalletKeypair = liveWalletModule.loadTradingWallet();
       liveWalletState.address = liveWalletKeypair.publicKey.toBase58();
       liveWalletState.configured = true;
-      log('LIVE WALLET loaded: ' + liveWalletState.address, 'info');
+      liveLog('LIVE WALLET loaded: ' + liveWalletState.address, 'info');
     } catch (e) {
       liveWalletState.configError = e.code === 'WALLET_NOT_CONFIGURED' ? 'Not configured yet' : e.message;
       if (e.code === 'WALLET_NOT_CONFIGURED') {
-        log('LIVE WALLET not configured yet (paper trading unaffected)', 'info');
+        liveLog('LIVE WALLET not configured yet (paper trading unaffected)', 'info');
       } else {
-        log('LIVE WALLET ERROR: ' + e.message + ' (paper trading unaffected)', 'warn');
+        liveLog('LIVE WALLET ERROR: ' + e.message + ' (paper trading unaffected)', 'warn');
       }
     }
     liveWalletState.savingsAddress = liveWalletModule.getSavingsAddress();
@@ -170,7 +185,7 @@ var liveWalletState = {
       : 'LIVE SAVINGS WALLET not configured yet (paper trading unaffected)', 'info');
   } catch (e) {
     liveWalletState.configError = 'Wallet module could not load: ' + e.message;
-    log('LIVE WALLET module could not load (' + e.message + ') -- paper trading unaffected', 'warn');
+    liveLog('LIVE WALLET module could not load (' + e.message + ') -- paper trading unaffected', 'warn');
   }
 })();
 
@@ -191,7 +206,7 @@ async function refreshLiveWalletBalance() {
 }
 refreshLiveWalletBalance();
 var liveWalletI = setInterval(refreshLiveWalletBalance, 30000);
-var liveStopLossI = setInterval(function() { checkLiveStopLoss().catch(function(e) { log('LIVE STOP LOSS checker error: ' + e.message, 'warn'); }); }, 10000);
+var liveStopLossI = setInterval(function() { checkLiveStopLoss().catch(function(e) { liveLog('LIVE STOP LOSS checker error: ' + e.message, 'warn'); }); }, 10000);
 
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = 170;
@@ -1878,15 +1893,15 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   if (S.liveTradingEnabled && (tok.src === 'PUMP' || tok.src === 'BONK')) {
     if (S.liveOpen.length >= S.liveMaxOpen) {
-      log('LIVE AUTO ENTRY skipped: max open (' + S.liveMaxOpen + ') reached', 'info');
+      liveLog('LIVE AUTO ENTRY skipped: max open (' + S.liveMaxOpen + ') reached', 'info');
     } else if (S.liveWindingDown) {
-      log('LIVE AUTO ENTRY skipped: live fund stop loss active, no new entries until it recovers', 'info');
+      liveLog('LIVE AUTO ENTRY skipped: live fund stop loss active, no new entries until it recovers', 'info');
     } else {
       var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
       var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
       var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
       performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
-        log('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
+        liveLog('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
       });
     }
   }
@@ -2071,6 +2086,7 @@ app.get('/api/state', function(req, res) {
     liveStopLossPct: S.liveStopLossPct,
     liveWindingDown: S.liveWindingDown,
     liveOpen: S.liveOpen,
+    liveLogs: S.liveLogs,
     solPriceUsd: SOL_PRICE_USD,
     solPriceFresh: isSolPriceFresh(),
   });
@@ -2101,13 +2117,13 @@ app.post('/api/live/test-transaction', async function(req, res) {
   try {
     var execution = require('./execution');
     var connection = liveWalletModule.getConnection();
-    log('LIVE TEST: sending self-transfer...', 'info');
+    liveLog('LIVE TEST: sending self-transfer...', 'info');
     var result = await execution.testSelfTransfer(liveWalletKeypair, connection);
-    log('LIVE TEST result: ' + result.outcome + ' | signature: ' + result.signature +
+    liveLog('LIVE TEST result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
     res.json({ ok: true, result: result });
   } catch (e) {
-    log('LIVE TEST ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2123,13 +2139,13 @@ app.post('/api/live/test-transaction-sender', async function(req, res) {
     var execution = require('./execution');
     var connection = liveWalletModule.getConnection();
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
-    log('LIVE TEST (Sender): sending self-transfer with tip + priority fee...', 'info');
+    liveLog('LIVE TEST (Sender): sending self-transfer with tip + priority fee...', 'info');
     var result = await execution.testSelfTransferViaSender(liveWalletKeypair, connection, rpcUrl);
-    log('LIVE TEST (Sender) result: ' + result.outcome + ' | signature: ' + result.signature +
+    liveLog('LIVE TEST (Sender) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
     res.json({ ok: true, result: result });
   } catch (e) {
-    log('LIVE TEST (Sender) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (Sender) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2153,12 +2169,12 @@ app.post('/api/live/test-pumpfun-quote', async function(req, res) {
     var connection = liveWalletModule.getConnection();
     var mint = new PublicKey(mintStr);
     var solAmountLamports = 1000000; // 0.001 SOL -- tiny, just to prove the quote/build path
-    log('LIVE TEST (pump.fun quote): building buy instructions for ' + mintStr + '...', 'info');
+    liveLog('LIVE TEST (pump.fun quote): building buy instructions for ' + mintStr + '...', 'info');
     var instructions = await pumpfun.buildBuyInstructions(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
-    log('LIVE TEST (pump.fun quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    liveLog('LIVE TEST (pump.fun quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
     res.json({ ok: true, instructionCount: instructions.length });
   } catch (e) {
-    log('LIVE TEST (pump.fun quote) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (pump.fun quote) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2180,12 +2196,12 @@ app.post('/api/live/test-letsbonk-quote', async function(req, res) {
     var connection = liveWalletModule.getConnection();
     var mint = new PublicKey(mintStr);
     var solAmountLamports = 1000000; // 0.001 SOL -- tiny, just to prove the quote/build path
-    log('LIVE TEST (LetsBonk quote): building buy instructions for ' + mintStr + '...', 'info');
+    liveLog('LIVE TEST (LetsBonk quote): building buy instructions for ' + mintStr + '...', 'info');
     var instructions = await letsbonk.buildBuyInstructions(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 1500);
-    log('LIVE TEST (LetsBonk quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    liveLog('LIVE TEST (LetsBonk quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
     res.json({ ok: true, instructionCount: instructions.length });
   } catch (e) {
-    log('LIVE TEST (LetsBonk quote) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (LetsBonk quote) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2205,10 +2221,10 @@ app.post('/api/live/test-pumpfun-graduated', async function(req, res) {
     var connection = liveWalletModule.getConnection();
     var mint = new PublicKey(mintStr);
     var graduated = await pumpfun.isGraduated(connection, mint, liveWalletKeypair.publicKey);
-    log('LIVE TEST (pump.fun graduation check) result: ' + (graduated ? 'GRADUATED' : 'still on curve'), 'win');
+    liveLog('LIVE TEST (pump.fun graduation check) result: ' + (graduated ? 'GRADUATED' : 'still on curve'), 'win');
     res.json({ ok: true, graduated: graduated });
   } catch (e) {
-    log('LIVE TEST (pump.fun graduation check) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (pump.fun graduation check) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2228,10 +2244,10 @@ app.post('/api/live/test-letsbonk-graduated', async function(req, res) {
     var connection = liveWalletModule.getConnection();
     var mint = new PublicKey(mintStr);
     var graduated = await letsbonk.isGraduated(connection, mint, liveWalletKeypair.publicKey);
-    log('LIVE TEST (LetsBonk graduation check) result: ' + (graduated ? 'GRADUATED/MIGRATED' : 'still on curve'), 'win');
+    liveLog('LIVE TEST (LetsBonk graduation check) result: ' + (graduated ? 'GRADUATED/MIGRATED' : 'still on curve'), 'win');
     res.json({ ok: true, graduated: graduated });
   } catch (e) {
-    log('LIVE TEST (LetsBonk graduation check) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (LetsBonk graduation check) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2253,12 +2269,12 @@ app.post('/api/live/test-pumpswap-quote', async function(req, res) {
     var connection = liveWalletModule.getConnection();
     var mint = new PublicKey(mintStr);
     var tokenAmount = 1000000; // small made-up amount, just to prove the build path
-    log('LIVE TEST (PumpSwap quote): building sell instructions for ' + mintStr + '...', 'info');
+    liveLog('LIVE TEST (PumpSwap quote): building sell instructions for ' + mintStr + '...', 'info');
     var instructions = await pumpswap.buildSellInstructions(connection, mint, liveWalletKeypair.publicKey, tokenAmount, 15);
-    log('LIVE TEST (PumpSwap quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    liveLog('LIVE TEST (PumpSwap quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
     res.json({ ok: true, instructionCount: instructions.length });
   } catch (e) {
-    log('LIVE TEST (PumpSwap quote) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (PumpSwap quote) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2282,12 +2298,12 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
     var mint = new PublicKey(mintStr);
     var poolId = new PublicKey(poolStr);
     var tokenAmount = 1000000; // small made-up amount, just to prove the build path
-    log('LIVE TEST (Raydium CPMM quote): building sell instructions for ' + mintStr + '...', 'info');
+    liveLog('LIVE TEST (Raydium CPMM quote): building sell instructions for ' + mintStr + '...', 'info');
     var instructions = await raydiumcpmm.buildSellInstructions(connection, poolId, mint, liveWalletKeypair.publicKey, tokenAmount, 15);
-    log('LIVE TEST (Raydium CPMM quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
+    liveLog('LIVE TEST (Raydium CPMM quote) result: built ' + instructions.length + ' instruction(s) successfully -- nothing sent', 'win');
     res.json({ ok: true, instructionCount: instructions.length });
   } catch (e) {
-    log('LIVE TEST (Raydium CPMM quote) ERROR: ' + e.message, 'warn');
+    liveLog('LIVE TEST (Raydium CPMM quote) ERROR: ' + e.message, 'warn');
     res.json({ ok: false, error: e.message });
   }
 });
@@ -2308,10 +2324,10 @@ function checkLiveFundStopLoss() {
   var currentLoss = (S.liveDayStartFund - S.liveFund) / S.liveDayStartFund;
   if (currentLoss >= lossLimit && !S.liveWindingDown) {
     S.liveWindingDown = true;
-    log('LIVE FUND LOSS LIMIT HIT - ' + S.liveFundStopLossPct + '% reached - no new automatic real entries until it recovers or you reset the fund', 'rug');
+    liveLog('LIVE FUND LOSS LIMIT HIT - ' + S.liveFundStopLossPct + '% reached - no new automatic real entries until it recovers or you reset the fund', 'rug');
   } else if (S.liveWindingDown && currentLoss < lossLimit) {
     S.liveWindingDown = false;
-    log('LIVE FUND recovered back above the ' + S.liveFundStopLossPct + '% loss line -- automatic real entries resumed', 'win');
+    liveLog('LIVE FUND recovered back above the ' + S.liveFundStopLossPct + '% loss line -- automatic real entries resumed', 'win');
   }
 }
 
@@ -2351,16 +2367,16 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
     }
     var solAmountLamports = Math.round((sizeUsd / SOL_PRICE_USD) * 1000000000);
 
-    log(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
+    liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
     var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
-    log(logPrefix + ' (' + platformName + ' buy): submitting real transaction...', 'info');
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+    liveLog(logPrefix + ' (' + platformName + ' buy): submitting real transaction...', 'info');
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
 
-    log(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
+    liveLog(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
 
     if (result.outcome === 'CONFIRMED') {
@@ -2368,11 +2384,11 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
         var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
         var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
-        log(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
+        liveLog(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
         checkLiveFundStopLoss();
       } catch (feeErr) {
-        log(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+        liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
 
       try {
@@ -2390,18 +2406,18 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
           });
-          log(logPrefix + ' (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
+          liveLog(logPrefix + ' (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
         } else {
-          log(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
+          liveLog(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
         }
       } catch (posErr) {
-        log(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
+        liveLog(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
       }
     }
 
     return { ok: true, result: result, liveFund: S.liveFund };
   } catch (e) {
-    log(logPrefix + ' (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
+    liveLog(logPrefix + ' (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
     return { ok: false, error: e.message };
   }
 }
@@ -2432,25 +2448,25 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
     var mint = new PublicKey(mintStr);
 
-    log(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
+    liveLog(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
     var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
     var diag = balance && balance.diagnostic;
-    log(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
+    liveLog(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
       (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
     if (!balance || balance.amount === '0') {
       return { ok: false, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag };
     }
 
-    log(logPrefix + ' (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
+    liveLog(logPrefix + ' (' + platformName + ' sell): building sell for real balance ' + balance.amount + '...', 'info');
     var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, balance.amount, 15);
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
-    log(logPrefix + ' (' + platformName + ' sell): submitting real transaction...', 'info');
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { log(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+    liveLog(logPrefix + ' (' + platformName + ' sell): submitting real transaction...', 'info');
+    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
 
-    log(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
+    liveLog(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
 
     if (result.outcome === 'CONFIRMED') {
@@ -2458,17 +2474,17 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix) {
         var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
         var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
-        log(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
+        liveLog(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
         checkLiveFundStopLoss();
       } catch (feeErr) {
-        log(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+        liveLog(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
     }
 
     return { ok: true, result: result, soldAmount: balance.amount, liveFund: S.liveFund };
   } catch (e) {
-    log(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
+    liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     return { ok: false, error: e.message };
   }
 }
@@ -2497,13 +2513,13 @@ async function checkLiveStopLoss() {
     var pos = S.liveOpen[i];
     var currentPrice = await getRealTokenPriceUsd(pos.mint);
     if (currentPrice === null) {
-      log('LIVE STOP LOSS: could not read current price for ' + pos.mint + ' -- will retry next check', 'warn');
+      liveLog('LIVE STOP LOSS: could not read current price for ' + pos.mint + ' -- will retry next check', 'warn');
       continue;
     }
     var pct = (currentPrice - pos.entryPriceUsd) / pos.entryPriceUsd;
     if (pct > -(S.liveStopLossPct / 100)) continue;
 
-    log('LIVE STOP LOSS HIT: ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> current $' + currentPrice.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', 'loss');
+    liveLog('LIVE STOP LOSS HIT: ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> current $' + currentPrice.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', 'loss');
 
     var platformName = pos.platform === 'pumpfun' ? 'pump.fun' : 'LetsBonk';
     var buildSellFn = pos.platform === 'pumpfun' ? pumpfun.buildSellInstructions : letsbonk.buildSellInstructions;
@@ -2511,9 +2527,9 @@ async function checkLiveStopLoss() {
 
     if (outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED') {
       S.liveOpen.splice(i, 1);
-      log('LIVE STOP LOSS: position closed for real, removed from tracking -- ' + pos.mint, 'win');
+      liveLog('LIVE STOP LOSS: position closed for real, removed from tracking -- ' + pos.mint, 'win');
     } else {
-      log('LIVE STOP LOSS: real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry next check', 'warn');
+      liveLog('LIVE STOP LOSS: real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry next check', 'warn');
     }
   }
 }
@@ -2558,7 +2574,7 @@ app.post('/api/settings', function(req, res) {
       S.liveFund = parseFloat(lf.toFixed(4));
       S.liveDayStartFund = S.liveFund;
       S.liveWindingDown = false;
-      log('LIVE TRADING FUND set to $' + S.liveFund, 'info');
+      liveLog('LIVE TRADING FUND set to $' + S.liveFund, 'info');
     }
   }
   if (req.body.liveTradingEnabled !== undefined) {
@@ -2571,15 +2587,15 @@ app.post('/api/settings', function(req, res) {
   }
   if (req.body.liveMaxOpen !== undefined) {
     var lmo = parseInt(req.body.liveMaxOpen);
-    if (!isNaN(lmo) && lmo >= 1 && lmo <= 20) { S.liveMaxOpen = lmo; log('LIVE MAX OPEN TRADES: ' + S.liveMaxOpen, 'info'); }
+    if (!isNaN(lmo) && lmo >= 1 && lmo <= 20) { S.liveMaxOpen = lmo; liveLog('LIVE MAX OPEN TRADES: ' + S.liveMaxOpen, 'info'); }
   }
   if (req.body.liveFundStopLossPct !== undefined) {
     var lfsl = parseFloat(req.body.liveFundStopLossPct);
-    if (!isNaN(lfsl) && lfsl > 0 && lfsl <= 100) { S.liveFundStopLossPct = parseFloat(lfsl.toFixed(1)); log('LIVE FUND STOP LOSS: ' + S.liveFundStopLossPct + '%', 'info'); }
+    if (!isNaN(lfsl) && lfsl > 0 && lfsl <= 100) { S.liveFundStopLossPct = parseFloat(lfsl.toFixed(1)); liveLog('LIVE FUND STOP LOSS: ' + S.liveFundStopLossPct + '%', 'info'); }
   }
   if (req.body.liveStopLossPct !== undefined) {
     var lsl = parseFloat(req.body.liveStopLossPct);
-    if (!isNaN(lsl) && lsl > 0 && lsl <= 100) { S.liveStopLossPct = parseFloat(lsl.toFixed(1)); log('LIVE STOP LOSS: ' + S.liveStopLossPct + '%', 'info'); }
+    if (!isNaN(lsl) && lsl > 0 && lsl <= 100) { S.liveStopLossPct = parseFloat(lsl.toFixed(1)); liveLog('LIVE STOP LOSS: ' + S.liveStopLossPct + '%', 'info'); }
   }
   if (req.body.takeProfitMode && (req.body.takeProfitMode === 'TRAIL' || req.body.takeProfitMode === 'FIXED' || req.body.takeProfitMode === 'TIERED')) {
     S.takeProfitMode = req.body.takeProfitMode; log('Take profit mode: ' + S.takeProfitMode, 'info');
