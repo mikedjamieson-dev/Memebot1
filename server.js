@@ -112,6 +112,7 @@ const S = {
   liveTakeProfitPct: 5,
   liveWindingDown: false,
   liveOpen: [],
+  liveClosed: [],
   liveLogs: [],
   liveTradingEnabled: false,
   windingDown: false,
@@ -2411,6 +2412,10 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             tokenDecimals: heldBalance.decimals,
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
+            name: ((S.tokens && S.tokens.get(mintStr)) || {}).n || '',
+            buyImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null,
+            sellImpactUsd: 0,
+            sellImpactKnown: true,
             tpl: S.liveTakeProfitMode,
             tpPct: S.liveTakeProfitPct,
             peakPriceUsd: entryPriceUsd,
@@ -2507,7 +2512,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
       }
     }
 
-    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund };
+    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     return { ok: false, error: e.message };
@@ -2603,14 +2608,59 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 
     var outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction);
     var confirmed = !!(outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED');
+    var nowEst = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+
+    // Real wallet change from this sale, added to the position's running total.
+    if (confirmed) {
+      if (typeof outcome.realImpactUsd === 'number') pos.sellImpactUsd = (pos.sellImpactUsd || 0) + outcome.realImpactUsd;
+      else pos.sellImpactKnown = false;
+    }
 
     if (confirmed && action.fraction) {
       pos.tokenAmountRaw = outcome.remainingAmount;
-      if (action.kind === 'TIER1') pos.tier1Done = true; else pos.tier2Done = true;
+      if (action.kind === 'TIER1') {
+        pos.tier1Done = true; pos.tier1ExitPrice = priceUsd; pos.tier1ClosedAt = nowEst;
+        pos.tier1ProceedsUsd = (typeof outcome.realImpactUsd === 'number') ? outcome.realImpactUsd : null;
+        pos.tier1RealizedPct = parseFloat((pct * 100).toFixed(2));
+      } else {
+        pos.tier2Done = true; pos.tier2ExitPrice = priceUsd; pos.tier2ClosedAt = nowEst;
+        pos.tier2ProceedsUsd = (typeof outcome.realImpactUsd === 'number') ? outcome.realImpactUsd : null;
+        pos.tier2RealizedPct = parseFloat((pct * 100).toFixed(2));
+      }
       liveLog(prefix + ': partial sell confirmed -- position stays open, remaining raw amount ' + pos.tokenAmountRaw + ' -- ' + pos.mint, 'win');
     } else if (confirmed) {
       var idx = S.liveOpen.indexOf(pos);
       if (idx !== -1) S.liveOpen.splice(idx, 1);
+
+      // Closed-trade record for the Live CSV. PnL is the REAL wallet result:
+      // what the buy cost plus everything every sale brought back, including
+      // fees and tips -- blank if any of those real numbers could not be read.
+      var realKnown = pos.buyImpactUsd !== null && pos.buyImpactUsd !== undefined && pos.sellImpactKnown !== false;
+      var realPnl = realKnown ? parseFloat((pos.buyImpactUsd + pos.sellImpactUsd).toFixed(4)) : null;
+      var closeReason = action.kind === 'SL' ? 'Stop loss hit' : action.kind === 'TRAIL' ? 'Trail exit' : 'Take profit hit';
+      S.liveClosed.push({
+        name: pos.name || '', mint: pos.mint, platform: pos.platform,
+        size: pos.sizeUsd, entryPrice: pos.entryPriceUsd, exitPrice: priceUsd,
+        pnl: realPnl,
+        pnlPct: (realPnl !== null && pos.sizeUsd > 0) ? parseFloat((realPnl / pos.sizeUsd * 100).toFixed(2)) : null,
+        peakGainPct: (pos.peakPriceUsd && pos.entryPriceUsd) ? parseFloat(((pos.peakPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100).toFixed(2)) : null,
+        closeReason: closeReason,
+        openedAt: new Date(pos.openedAt).toLocaleString('en-US', { timeZone: 'America/New_York' }),
+        closedAt: nowEst,
+        closedDate: new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
+        holdTimeSec: Math.round((Date.now() - pos.openedAt) / 1000),
+        takeProfitMode: pos.tpl, stopLossPct: S.liveStopLossPct,
+        buyImpactUsd: pos.buyImpactUsd, totalSellProceedsUsd: realKnown ? parseFloat(pos.sellImpactUsd.toFixed(4)) : null,
+        tieredSold: !!pos.tier1Done, tier1ExitPrice: pos.tier1Done ? pos.tier1ExitPrice : null,
+        tier1RealizedPct: pos.tier1Done ? pos.tier1RealizedPct : null, tier1ProceedsUsd: pos.tier1Done ? pos.tier1ProceedsUsd : null,
+        tier1ClosedAt: pos.tier1Done ? pos.tier1ClosedAt : '',
+        tieredSold2: !!pos.tier2Done, tier2ExitPrice: pos.tier2Done ? pos.tier2ExitPrice : null,
+        tier2RealizedPct: pos.tier2Done ? pos.tier2RealizedPct : null, tier2ProceedsUsd: pos.tier2Done ? pos.tier2ProceedsUsd : null,
+        tier2ClosedAt: pos.tier2Done ? pos.tier2ClosedAt : '',
+        fundAfterTrade: S.liveFund,
+        buySignature: pos.id, sellSignature: outcome.result.signature || ''
+      });
+      if (S.liveClosed.length > 1000) S.liveClosed.shift();
       liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
     } else {
       pos.retryAfter = Date.now() + 1500;
@@ -2623,6 +2673,26 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     pos.busy = false;
   }
 }
+
+// Live CSV: real closed trades only, built from S.liveClosed. PnL is the
+// real wallet result (buy cost + sale proceeds, including fees and tips).
+app.get('/api/live/export', function(req, res) {
+  var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAfterTrade','BuySignature','SellSignature'];
+  var rows = [cols.join(',')];
+  S.liveClosed.forEach(function(t) {
+    rows.push([
+      csvSafe(t.name), t.mint || '', t.platform || '', t.size, t.entryPrice, t.exitPrice,
+      t.pnl, t.pnlPct, t.peakGainPct, csvSafe(t.closeReason), csvSafe(t.openedAt), csvSafe(t.closedAt), t.closedDate || '',
+      t.holdTimeSec, t.takeProfitMode || '', t.stopLossPct, t.buyImpactUsd, t.totalSellProceedsUsd,
+      t.tieredSold ? 'Yes' : 'No', t.tier1ExitPrice, t.tier1RealizedPct, t.tier1ProceedsUsd, csvSafe(t.tier1ClosedAt || ''),
+      t.tieredSold2 ? 'Yes' : 'No', t.tier2ExitPrice, t.tier2RealizedPct, t.tier2ProceedsUsd, csvSafe(t.tier2ClosedAt || ''),
+      t.fundAfterTrade, t.buySignature || '', t.sellSignature || ''
+    ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
+  });
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_live_trades_' + Date.now() + '.csv"');
+  res.send(rows.join('\n'));
+});
 
 // On-demand real price refresh -- triggers an immediate, genuine fetch
 // rather than waiting on the passive background cycle. Used when the
