@@ -779,7 +779,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="filter-row" style="margin-top:6px;">
       <button class="filter-btn active" onclick="setFilter2('exit','all',this)">ALL EXITS</button>
       <button class="filter-btn" onclick="setFilter2('exit','trail',this)">TRAIL</button>
-      <button class="filter-btn pt-paper-only" onclick="setFilter2('exit','stale',this)">STALE</button>
+      <button class="filter-btn" onclick="setFilter2('exit','stale',this)">STALE</button>
       <button class="filter-btn" onclick="setFilter2('exit','stop loss',this)">SL</button>
       <button class="filter-btn" onclick="setFilter2('exit','manual',this)">MANUAL</button>
     </div>
@@ -1844,6 +1844,8 @@ async function fetchState() {
           return '<div class="trade"><div class="trade-top"><div class="trade-name">' + safeName + '<span class="real-badge">REAL</span></div>' +
             '<button class="sell-btn"' + (sellingNow ? ' disabled' : '') + ' onclick="sellLiveTrade(\'' + p.id + '\')">' + (sellingNow ? 'SELLING...' : 'SELL') + '</button></div>' +
             '<div class="trade-meta">$' + f2(p.sizeUsd) + ' · ' + ageSec + 's · ' + platLabel + ' · ' + tpDisplay + '</div>' +
+            (p.stuck ? '<div style="margin:6px 0;padding:6px 8px;border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:12px;">⚠ STUCK — ' + (p.sellFails || 0) + ' sell attempts failed. Automatic selling stopped. Press SELL to try again.</div>' : '') +
+            (p.pendingSell ? '<div style="margin:6px 0;font-size:12px;color:var(--dim);">⏳ A sell was submitted and is still being confirmed — it will not be sold twice.</div>' : '') +
             '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (data.liveStopLossPct || 10) + '%</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
