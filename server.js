@@ -236,50 +236,75 @@ function isSolPriceFresh() {
   return SOL_PRICE_LAST_UPDATED !== null && (Date.now() - SOL_PRICE_LAST_UPDATED) < SOL_PRICE_FRESH_WINDOW_MS;
 }
 
-async function updateSolPrice(attempt) {
-  attempt = attempt || 1;
-  var MAX_ATTEMPTS = 3;
+// Native fetch ignores a "timeout" option, so a stalled request could hang
+// forever. This one is cut off after ms.
+async function fetchJsonWithTimeout(url, ms) {
+  var ctl = new AbortController();
+  var timer = setTimeout(function() { ctl.abort(); }, ms);
   try {
-    var res = await fetch(
-      'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112',
-      { timeout: 5000 }
-    );
-    if (res.status === 429) {
-      if (attempt < MAX_ATTEMPTS) {
-        var waitMs = attempt * 1000;
-        log('SOL PRICE: rate limited (429), retrying in ' + waitMs + 'ms (attempt ' + attempt + '/' + MAX_ATTEMPTS + ')', 'warn');
-        await new Promise(function(resolve) { setTimeout(resolve, waitMs); });
-        return updateSolPrice(attempt + 1);
+    var res = await fetch(url, { signal: ctl.signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } finally { clearTimeout(timer); }
+}
+
+async function fetchSolPriceDexScreener() {
+  var data = await fetchJsonWithTimeout('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112', 6000);
+  var pairs = data.pairs || [];
+  if (pairs.length === 0) throw new Error('returned no pairs');
+  var best = pairs[0];
+  for (var i = 1; i < pairs.length; i++) {
+    var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
+    var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
+    if (liq > bestLiq) best = pairs[i];
+  }
+  if (!best.priceUsd) throw new Error('best pair had no priceUsd');
+  return parseFloat(best.priceUsd);
+}
+
+// Backup source, used only when DexScreener fails.
+async function fetchSolPriceCoinbase() {
+  var data = await fetchJsonWithTimeout('https://api.coinbase.com/v2/prices/SOL-USD/spot', 6000);
+  if (!data || !data.data || !data.data.amount) throw new Error('reply had no price');
+  return parseFloat(data.data.amount);
+}
+
+var solPriceWarnAt = 0;
+var solPriceWasFailing = false;
+var solPriceSource = null;
+
+// Tries DexScreener, then Coinbase. The price only counts as fresh when one of
+// them genuinely answered with a sane number. Failures go to the LIVE log (at
+// most one line every 5 minutes), because that is where the balance is read.
+async function updateSolPrice() {
+  var errors = [];
+  var sources = [['DexScreener', fetchSolPriceDexScreener], ['Coinbase', fetchSolPriceCoinbase]];
+  for (var i = 0; i < sources.length; i++) {
+    try {
+      var price = await sources[i][1]();
+      if (!(price > 1 && price < 100000)) throw new Error('price ' + price + ' is not believable');
+      SOL_PRICE_USD = price;
+      SOL_PRICE_LAST_UPDATED = Date.now();
+      if (solPriceSource !== sources[i][0] || solPriceWasFailing) {
+        liveLog('SOL PRICE: $' + price.toFixed(2) + ' from ' + sources[i][0] + (errors.length ? ' (' + errors.join('; ') + ')' : ''), 'info');
       }
-      log('SOL PRICE: rate limited (429) on final attempt ' + attempt + '/' + MAX_ATTEMPTS + ' -- price may be stale', 'warn');
+      solPriceSource = sources[i][0];
+      solPriceWasFailing = false;
       return;
+    } catch (e) {
+      errors.push(sources[i][0] + ' ' + e.message);
     }
-    if (!res.ok) {
-      log('SOL PRICE: fetch failed, HTTP ' + res.status + ' -- price may be stale', 'warn');
-      return;
-    }
-    var data = await res.json();
-    var pairs = data.pairs || [];
-    if (pairs.length === 0) {
-      log('SOL PRICE: fetch succeeded but returned no pairs -- price may be stale', 'warn');
-      return;
-    }
-    var best = pairs[0];
-    for (var i = 1; i < pairs.length; i++) {
-      var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
-      var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
-      if (liq > bestLiq) best = pairs[i];
-    }
-    if (!best.priceUsd) {
-      log('SOL PRICE: best pair had no priceUsd field -- price may be stale', 'warn');
-      return;
-    }
-    SOL_PRICE_USD = parseFloat(best.priceUsd);
-    SOL_PRICE_LAST_UPDATED = Date.now();
-  } catch(e) {
-    log('SOL PRICE: fetch threw -- ' + e.message + ' -- price may be stale', 'warn');
+  }
+  solPriceWasFailing = true;
+  if (Date.now() - solPriceWarnAt > 300000) {
+    solPriceWarnAt = Date.now();
+    liveLog('SOL PRICE: could not get a price from any source -- ' + errors.join('; ') + ' -- USD values show unavailable and real buys are refused until one works. Retrying every minute', 'warn');
   }
 }
+
+// Runs on its own, whether or not paper or live trading is on, so the price is
+// always fresh when you open the dashboard.
+setInterval(updateSolPrice, 60000);
 
 // Real, current price for any specific token mint -- same proven
 // pattern as updateSolPrice (correct tokens endpoint, most liquid
@@ -2029,14 +2054,12 @@ function startFeed() {
   connectBQ();
   if (!scanI) scanI = setInterval(runScan, 500);
   if (!cleanI) cleanI = setInterval(cleanPool, 3600000);
-  if (!solPriceI) solPriceI = setInterval(updateSolPrice, 600000);
   updateSolPrice();
 }
 
 function stopFeed() {
   if (scanI) { clearInterval(scanI); scanI = null; }
   if (cleanI) { clearInterval(cleanI); cleanI = null; }
-  if (solPriceI) { clearInterval(solPriceI); solPriceI = null; }
   if (pumpWs) {
     bqDeliberateStop = true;
     try { pumpWs.close(); } catch(e) {}
