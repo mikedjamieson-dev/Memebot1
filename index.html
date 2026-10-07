@@ -627,7 +627,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="card">
       <div class="card-lbl">SAVINGS</div>
       <div class="card-val" id="live-savings" style="color:var(--yellow)">$0.00</div>
-      <div class="card-sub">20% of profits</div>
+      <div class="card-sub" id="live-savings-sub">20% of profits</div>
     </div>
   </div>
 
@@ -1698,6 +1698,8 @@ async function fetchState() {
       var lpnl = data.liveRealizedPnl || 0;
       document.getElementById('live-alltime').textContent = pSign(lpnl) + '$' + f2(lpnl) + ' all time';
       document.getElementById('live-savings').textContent = '$' + f2(data.liveSavings || 0);
+      var lss = document.getElementById('live-savings-sub');
+      if (lss) lss.textContent = '$' + f2(data.liveSavingsSent || 0) + ' sent · $' + f2(data.livePendingSavings || 0) + ' waiting';
     }
     var liveLockDisp2 = document.getElementById('current-live-fundloss-display-2');
     if (liveLockDisp2) liveLockDisp2.textContent = data.liveFundStopLossPct || 20;

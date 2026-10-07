@@ -120,6 +120,10 @@ const S = {
   liveSessions: [],
   liveSession: null,
   liveSavings: 0,
+  livePendingSavings: 0,
+  liveSavingsSent: 0,
+  liveSavingsTransfers: [],
+  liveSavingsInFlight: null,
   liveStartFund: 0,
   liveRealizedPnl: 0,
   liveSessionHighFund: 0,
@@ -2223,6 +2227,8 @@ app.get('/api/state', function(req, res) {
     liveStats: S.liveStats,
     liveEffectiveFund: liveEffectiveFund(),
     liveSavings: S.liveSavings,
+    livePendingSavings: S.livePendingSavings,
+    liveSavingsSent: S.liveSavingsSent,
     liveStartFund: S.liveStartFund,
     liveRealizedPnl: S.liveRealizedPnl,
     liveAutoLockEnabled: S.liveAutoLockEnabled,
@@ -2523,7 +2529,12 @@ function liveAutoLockCheck() {
 // size is too small to be worth trading, same floor paper trading uses.
 function computeLivePositionSizeUsd() {
   if (!S.liveFund || S.liveFund <= 0) return null;
-  var size = parseFloat((S.liveFund * CFG.MAX_POS).toFixed(4));
+  // Sized from the whole fund (cash plus what is deployed in open trades),
+  // exactly as paper sizes from its whole fund -- not from the cash left over
+  // after other trades are open. It can never be more than the cash actually
+  // available to spend.
+  var size = parseFloat((liveEffectiveFund() * CFG.MAX_POS).toFixed(4));
+  if (size > S.liveFund) size = parseFloat(S.liveFund.toFixed(4));
   if (size > 15) size = 15;
   if (size < 0.50) return null;
   return size;
@@ -2573,6 +2584,144 @@ async function warmLiveExecution() {
   } catch (e) { /* warming is only a speed-up; a real trade still works without it */ }
 }
 setInterval(warmLiveExecution, 10000);
+
+// -- AUTOMATIC SAVINGS TRANSFER ----------------------------------
+// Every winning trade sets aside 20% of its profit as savings (bookkeeping,
+// above). Once $20 of it has built up, the real SOL is sent from the trading
+// wallet to the savings wallet automatically -- no approval step. The
+// savings wallet only ever RECEIVES; the bot has no key for it.
+//
+// Safety rules: only one transfer at a time; a transfer whose outcome is not
+// known yet is waited on and never re-sent until it is proven it did not
+// land; the trading wallet must keep a cushion of SOL for fees; and if the
+// savings address is missing or invalid the savings simply stay in the
+// trading wallet as "waiting" and trading carries on.
+var SAVINGS_SEND_THRESHOLD_USD = 20;
+var SAVINGS_FEE_CUSHION_LAMPORTS = 10000000;   // 0.01 SOL always left behind
+var savingsXfer = { busy: false, retryAfter: 0, fails: 0, warned: {} };
+
+function savingsWarnOnce(key, msg) {
+  if (savingsXfer.warned[key]) return;
+  savingsXfer.warned[key] = true;
+  liveLog(msg, 'warn');
+}
+
+async function finishSavingsTransfer(connection, result, usd, lamports, address) {
+  S.livePendingSavings = parseFloat(Math.max(0, S.livePendingSavings - usd).toFixed(4));
+  S.liveSavingsSent = parseFloat((S.liveSavingsSent + usd).toFixed(4));
+  S.liveSavingsTransfers.push({ at: Date.now(), usd: usd, lamports: lamports, address: address, signature: result.signature });
+  S.liveSavingsInFlight = null;
+  savingsXfer.fails = 0;
+  savingsXfer.warned = {};
+  liveLog('LIVE SAVINGS SENT: $' + usd.toFixed(2) + ' (' + (lamports / 1000000000).toFixed(6) + ' SOL) to the savings wallet ' + address + ' | signature: ' + result.signature + ' | total sent $' + S.liveSavingsSent.toFixed(2) + ', $' + S.livePendingSavings.toFixed(2) + ' still waiting', 'win');
+  // The savings amount already left the Live Fund when it was set aside; only
+  // the transfer's own tip and network fee are new costs to the wallet.
+  var costs = await readRealTxCosts(connection, result);
+  var costUsd = (costs.tipUsd || 0) + (costs.feeUsd || 0);
+  if (costUsd > 0) {
+    S.liveFund = parseFloat((S.liveFund - costUsd).toFixed(4));
+    liveLog('LIVE SAVINGS SENT: transfer cost $' + costUsd.toFixed(4) + ' (' + describeRealCosts(costs) + ') -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
+  }
+}
+
+// Checks on a transfer whose outcome was not known when it was sent.
+// Settles it one way or the other, or leaves it waiting while it is still unresolved.
+async function resolveSavingsInFlight(connection) {
+  var f = S.liveSavingsInFlight;
+  var readStatus = async function() {
+    var st = await connection.getSignatureStatuses([f.signature], { searchTransactionHistory: true });
+    return st && st.value && st.value[0];
+  };
+  var st = await readStatus();
+  if (!st) {
+    var height = await connection.getBlockHeight();
+    if (!f.lastValidBlockHeight || height <= f.lastValidBlockHeight) {
+      if (Date.now() - f.at > 600000) savingsWarnOnce('inflight', 'LIVE SAVINGS: transfer ' + f.signature + ' is still unresolved after 10 minutes -- NOT sending again until it is settled; check it on a block explorer');
+      return false;
+    }
+    st = await readStatus();   // an expired window alone does not prove it never landed
+  }
+  if (st && !st.err && (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized')) {
+    liveLog('LIVE SAVINGS: the earlier transfer ' + f.signature + ' has CONFIRMED -- recording it, NOT sending again', 'win');
+    await finishSavingsTransfer(connection, { signature: f.signature, tipLamports: f.tipLamports }, f.usd, f.lamports, f.address);
+    return true;
+  }
+  liveLog('LIVE SAVINGS: the earlier transfer ' + f.signature + (st && st.err ? ' landed but was rejected on-chain' : ' expired without landing') + ' -- nothing was sent, the savings are still waiting', 'warn');
+  S.liveSavingsInFlight = null;
+  return true;
+}
+
+async function maybeSendSavings() {
+  if (savingsXfer.busy || !liveWalletKeypair || !liveWalletModule) return;
+  if (Date.now() < savingsXfer.retryAfter) return;
+  if (!S.liveSavingsInFlight && S.livePendingSavings < SAVINGS_SEND_THRESHOLD_USD) return;
+  savingsXfer.busy = true;
+  try {
+    var web3 = require('@solana/web3.js');
+    var connection = liveWalletModule.getConnection();
+    if (S.liveSavingsInFlight) {
+      await resolveSavingsInFlight(connection);
+      // Whatever the answer, a new transfer (if one is still due) starts on the
+      // next check, never in the same breath as settling the old one.
+      return;
+    }
+
+    var address = liveWalletState.savingsAddress;
+    if (!address) {
+      savingsWarnOnce('noaddr', 'LIVE SAVINGS: $' + S.livePendingSavings.toFixed(2) + ' is waiting but no savings wallet address is set -- it stays safe in the trading wallet and will be sent automatically once the address is set (restart needed after setting it)');
+      savingsXfer.retryAfter = Date.now() + 300000;
+      return;
+    }
+    if (address === liveWalletState.address) {
+      savingsWarnOnce('same', 'LIVE SAVINGS: the savings address is the same as the trading wallet -- not sending; fix the savings address');
+      savingsXfer.retryAfter = Date.now() + 300000;
+      return;
+    }
+    var toKey;
+    try { toKey = new web3.PublicKey(address); } catch (e) {
+      savingsWarnOnce('badaddr', 'LIVE SAVINGS: the savings address is not a valid wallet address -- not sending; $' + S.livePendingSavings.toFixed(2) + ' stays in the trading wallet');
+      savingsXfer.retryAfter = Date.now() + 300000;
+      return;
+    }
+    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) {
+      savingsXfer.retryAfter = Date.now() + 60000;
+      return;
+    }
+
+    var usd = S.livePendingSavings;
+    var lamports = Math.floor((usd / SOL_PRICE_USD) * 1000000000);
+    var balanceSol = await liveWalletModule.getTradingWalletBalance(liveWalletKeypair.publicKey);
+    var balanceLamports = Math.floor(balanceSol * 1000000000);
+    if (balanceLamports - lamports < SAVINGS_FEE_CUSHION_LAMPORTS) {
+      liveLog('LIVE SAVINGS: not sending $' + usd.toFixed(2) + ' yet -- the trading wallet would be left with under 0.01 SOL for fees. Will try again shortly', 'warn');
+      savingsXfer.retryAfter = Date.now() + 300000;
+      return;
+    }
+
+    liveLog('LIVE SAVINGS: $' + usd.toFixed(2) + ' has built up -- sending ' + (lamports / 1000000000).toFixed(6) + ' SOL to the savings wallet ' + address + '...', 'info');
+    var tx = new web3.Transaction();
+    tx.add(web3.SystemProgram.transfer({ fromPubkey: liveWalletKeypair.publicKey, toPubkey: toKey, lamports: lamports }));
+    var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
+    var result = await require('./execution').sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
+    if (result.outcome === 'CONFIRMED') {
+      await finishSavingsTransfer(connection, result, usd, lamports, address);
+    } else if (result.outcome === 'PENDING') {
+      S.liveSavingsInFlight = { signature: result.signature, lastValidBlockHeight: result.lastValidBlockHeight, tipLamports: result.tipLamports, usd: usd, lamports: lamports, address: address, at: Date.now() };
+      liveLog('LIVE SAVINGS: transfer ' + result.signature + ' was submitted but not confirmed yet -- waiting on it, NOT sending again', 'warn');
+      savingsXfer.retryAfter = Date.now() + 5000;
+    } else {
+      throw new Error('transfer outcome ' + result.outcome + (result.error ? ' -- ' + result.error : ''));
+    }
+  } catch (e) {
+    savingsXfer.fails++;
+    var wait = savingsXfer.fails >= 5 ? 600000 : 60000;
+    savingsXfer.retryAfter = Date.now() + wait;
+    liveLog('LIVE SAVINGS: transfer did not go through (' + e.message + ') -- the savings are still waiting, trying again in ' + (wait / 60000) + ' min' + (savingsXfer.fails >= 5 ? ' (' + savingsXfer.fails + ' failures in a row -- needs attention)' : ''), 'warn');
+  } finally {
+    savingsXfer.busy = false;
+  }
+}
+setInterval(function() { maybeSendSavings().catch(function() {}); }, 30000);
 
 function describeRealCosts(c) {
   return 'tip ' + (c.tipUsd !== null ? '$' + c.tipUsd.toFixed(4) + ' (' + c.tipLamports + ' lamports)' : 'unreadable') +
@@ -3138,7 +3287,8 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 
       // Savings split, same rule as paper: a win bigger than MIN_SPLIT_WIN sends
       // SAVINGS_PCT of its profit to savings and leaves the rest in the fund.
-      // This is bookkeeping only -- no real SOL is moved to the savings wallet.
+      // The real SOL is sent to the savings wallet automatically once $20 has
+      // built up (see maybeSendSavings).
       // Done once per trade on its overall real result.
       if (realPnl !== null) {
         S.liveRealizedPnl = parseFloat((S.liveRealizedPnl + realPnl).toFixed(4));
@@ -3147,7 +3297,9 @@ async function runLiveExit(pos, action, priceUsd, pct) {
           liveSavingsAmt = parseFloat((realPnl * CFG.SAVINGS_PCT).toFixed(4));
           S.liveFund = parseFloat((S.liveFund - liveSavingsAmt).toFixed(4));
           S.liveSavings = parseFloat((S.liveSavings + liveSavingsAmt).toFixed(4));
-          liveLog(prefix + ': +$' + realPnl.toFixed(4) + ' -- $' + liveSavingsAmt.toFixed(4) + ' to Savings, $' + (realPnl - liveSavingsAmt).toFixed(4) + ' stays in the Live Fund (bookkeeping only, no SOL moved)', 'win');
+          S.livePendingSavings = parseFloat((S.livePendingSavings + liveSavingsAmt).toFixed(4));
+          liveLog(prefix + ': +$' + realPnl.toFixed(4) + ' -- $' + liveSavingsAmt.toFixed(4) + ' to Savings, $' + (realPnl - liveSavingsAmt).toFixed(4) + ' stays in the Live Fund | $' + S.livePendingSavings.toFixed(2) + ' waiting to be sent (sent automatically at $' + SAVINGS_SEND_THRESHOLD_USD + ')', 'win');
+          maybeSendSavings().catch(function() {});
         }
         closedRec.savingsAmount = liveSavingsAmt;
         closedRec.fundAmount = parseFloat((realPnl - liveSavingsAmt).toFixed(4));
