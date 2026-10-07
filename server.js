@@ -2101,6 +2101,7 @@ app.get('/api/state', function(req, res) {
     liveTakeProfitPct: S.liveTakeProfitPct,
     liveWindingDown: S.liveWindingDown,
     liveStats: S.liveStats,
+    liveEffectiveFund: liveEffectiveFund(),
     liveSavings: S.liveSavings,
     liveStartFund: S.liveStartFund,
     liveRealizedPnl: S.liveRealizedPnl,
@@ -2336,6 +2337,30 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
 // uses exactly the pieces already proven tonight -- nothing new
 // invented, just wired together for the first real trade.
 
+// Capital currently sitting in open real positions, at cost (the trade size,
+// scaled down by whatever share a tier sale already sold). The live fund drops
+// by the full buy cost the moment a buy confirms and gets it back on the sale,
+// so without this the fund stop loss would read every open position as a loss.
+// Paper's fund never drops at entry, only at close -- this makes live measure
+// the same way. Fees and tips are NOT added back: those are real money spent.
+function liveDeployedUsd() {
+  var total = 0;
+  (S.liveOpen || []).forEach(function(p) {
+    var frac = 1;
+    if (p.startTokenAmountRaw && p.tokenAmountRaw) {
+      var s0 = Number(p.startTokenAmountRaw), s1 = Number(p.tokenAmountRaw);
+      if (s0 > 0 && s1 >= 0) frac = Math.min(1, s1 / s0);
+    }
+    total += (p.sizeUsd || 0) * frac;
+  });
+  return total;
+}
+
+// The fund as paper measures it: cash plus capital deployed in open positions.
+function liveEffectiveFund() {
+  return S.liveFund + liveDeployedUsd();
+}
+
 // Checks real fund drawdown against the configured live fund stop
 // loss, mirroring paper's exact mechanism: once the threshold is
 // crossed, new automatic entries stop (existing positions keep being
@@ -2344,7 +2369,7 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
 function checkLiveFundStopLoss() {
   if (!S.liveDayStartFund || S.liveDayStartFund <= 0) return;
   var lossLimit = S.liveFundStopLossPct / 100;
-  var currentLoss = (S.liveDayStartFund - S.liveFund) / S.liveDayStartFund;
+  var currentLoss = (S.liveDayStartFund - liveEffectiveFund()) / S.liveDayStartFund;
   if (currentLoss >= lossLimit && !S.liveWindingDown) {
     S.liveWindingDown = true;
     liveLog('LIVE FUND LOSS LIMIT HIT - ' + S.liveFundStopLossPct + '% reached - no new automatic real entries until it recovers or you reset the fund', 'rug');
@@ -2360,13 +2385,14 @@ function checkLiveFundStopLoss() {
 // only ever moves up. Runs after every confirmed real sale, the same moments
 // paper runs its own ratchet.
 function liveAutoLockCheck() {
-  if (S.liveAutoLockEnabled && S.liveFund > S.liveSessionHighFund) {
-    S.liveSessionHighFund = S.liveFund;
+  var eff = liveEffectiveFund();
+  if (S.liveAutoLockEnabled && eff > S.liveSessionHighFund) {
+    S.liveSessionHighFund = eff;
     var oldBase = S.liveDayStartFund;
-    S.liveDayStartFund = S.liveFund;
+    S.liveDayStartFund = eff;
     S.liveWindingDown = false;
-    var newTrigger = S.liveFund * (1 - S.liveFundStopLossPct / 100);
-    liveLog('LIVE AUTO-LOCK: new high $' + S.liveFund.toFixed(2) + ' - stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+    var newTrigger = eff * (1 - S.liveFundStopLossPct / 100);
+    liveLog('LIVE AUTO-LOCK: new high $' + eff.toFixed(2) + ' - stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
   }
 }
 
@@ -2453,7 +2479,6 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
         liveLog(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
-        checkLiveFundStopLoss();
       } catch (feeErr) {
         liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
@@ -2472,6 +2497,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             platform: platformKey,
             entryPriceUsd: entryPriceUsd,
             tokenAmountRaw: heldBalance.amount,
+            startTokenAmountRaw: heldBalance.amount,
             tokenDecimals: heldBalance.decimals,
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
@@ -2493,13 +2519,17 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             busy: false,
             retryAfter: 0,
           });
-          liveLog(logPrefix + ' (' + platformName + ' buy): real position recorded -- entry price $' + entryPriceUsd.toFixed(10) + ' per token, ' + tokensHeld + ' tokens held', 'info');
+          liveLog('LIVE ENTER ' + (S.tokens.get(mintStr) ? S.tokens.get(mintStr).n : mintStr.slice(0, 6) + '...') + ' [' + platformName + '] | ' + mintStr + ' | $' + sizeUsd.toFixed(2) + ' | Entry $' + entryPriceUsd.toFixed(10) + ' | ' + tokensHeld + ' tokens held', 'entry');
         } else {
           liveLog(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
         }
       } catch (posErr) {
         liveLog(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
       }
+
+      // Fund stop loss is checked only now, after the new position is on the
+      // books, so the capital it just deployed is counted (see liveDeployedUsd).
+      checkLiveFundStopLoss();
     }
 
     return { ok: true, result: result, liveFund: S.liveFund };
@@ -2575,7 +2605,6 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
         liveLog(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
-        checkLiveFundStopLoss();
       } catch (feeErr) {
         liveLog(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
@@ -2597,6 +2626,7 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
     return res.json({ ok: false, error: 'Provide the real token mint address you bought, in the request body as "mint"' });
   }
   var outcome = await performRealSell(mintStr, platformName, buildSellFn, 'LIVE TRADE TEST');
+  checkLiveFundStopLoss();
   res.json(outcome);
 }
 
@@ -2821,12 +2851,13 @@ app.get('/api/live/export', function(req, res) {
 // the fund loss line is now measured from the current live fund.
 app.post('/api/live/lock-fund', function(req, res) {
   var oldBase = S.liveDayStartFund;
-  S.liveDayStartFund = S.liveFund;
-  S.liveSessionHighFund = Math.max(S.liveSessionHighFund, S.liveFund);
+  var eff = liveEffectiveFund();
+  S.liveDayStartFund = eff;
+  S.liveSessionHighFund = Math.max(S.liveSessionHighFund, eff);
   S.liveWindingDown = false;
-  var newTrigger = S.liveFund * (1 - S.liveFundStopLossPct / 100);
-  liveLog('Live fund stop loss locked to current balance - new base $' + S.liveFund.toFixed(2) + ' (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
-  res.json({ success: true, newBase: S.liveFund, triggerAt: parseFloat(newTrigger.toFixed(2)) });
+  var newTrigger = eff * (1 - S.liveFundStopLossPct / 100);
+  liveLog('Live fund stop loss locked to current balance - new base $' + eff.toFixed(2) + ' (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  res.json({ success: true, newBase: eff, triggerAt: parseFloat(newTrigger.toFixed(2)) });
 });
 
 // Manual sell for a real open position -- same job paper's /api/sell/:id does,
@@ -2895,8 +2926,8 @@ app.post('/api/settings', function(req, res) {
   if (req.body.liveTradingEnabled !== undefined) {
     S.liveTradingEnabled = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
     if (S.liveTradingEnabled) {
-      S.liveDayStartFund = S.liveFund;
-      S.liveSessionHighFund = S.liveFund;
+      S.liveDayStartFund = liveEffectiveFund();
+      S.liveSessionHighFund = liveEffectiveFund();
       S.liveWindingDown = false;
     } else {
       // Same as paper's stopBot: auto fund protection turns off when a session ends.

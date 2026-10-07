@@ -665,9 +665,11 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
         <div class="log-cnt" id="live-log-cnt">0 entries</div>
       </div>
       <div class="log-filters">
-        <button class="lf act" onclick="setLiveFilter('all')">ALL</button>
-        <button class="lf" onclick="setLiveFilter('win')">WINS</button>
-        <button class="lf" onclick="setLiveFilter('loss')">LOSSES</button>
+        <button class="lf act" data-f="all" onclick="setLiveFilter('all')">ALL</button>
+        <button class="lf" data-f="entry" onclick="setLiveFilter('entry')">ENTRIES</button>
+        <button class="lf" data-f="win" onclick="setLiveFilter('win')">WINS</button>
+        <button class="lf" data-f="loss" onclick="setLiveFilter('loss')">LOSSES</button>
+        <button class="lf" data-f="pump" onclick="setLiveFilter('pump')">🔥PUMP</button>
       </div>
       <div id="live-log-list"><div style="font-size:13px;color:var(--dim)">Connecting...</div></div>
     </div>
@@ -1387,7 +1389,7 @@ function setLiveFilter(f) {
     var liveBox = document.getElementById('live-logbox');
     if (liveBox) {
       liveBox.querySelectorAll('.lf').forEach(function(b) {
-        b.classList.toggle('act', b.textContent.toLowerCase().indexOf(f) >= 0 || (f === 'all' && b.textContent === 'ALL'));
+        b.classList.toggle('act', b.getAttribute('data-f') === f);
       });
     }
     renderLiveLog();
@@ -1397,7 +1399,11 @@ function setLiveFilter(f) {
 function renderLiveLog() {
   var el = document.getElementById('live-log-list');
   if (!el) return;
-  var fl = liveLogFilter === 'all' ? liveAllLogs : liveAllLogs.filter(function(e) { return e.type === liveLogFilter; });
+  var fl = liveLogFilter === 'all' ? liveAllLogs : liveAllLogs.filter(function(e) {
+    // PUMP on the live log = every real-trade line on pump.fun (paper's PUMP shows feed status lines instead)
+    if (liveLogFilter === 'pump') return String(e.msg || '').toLowerCase().indexOf('pump.fun') >= 0;
+    return e.type === liveLogFilter;
+  });
   el.innerHTML = '';
   fl.slice(0, 150).forEach(function(e) {
     var d = document.createElement('div');
@@ -1679,7 +1685,7 @@ async function fetchState() {
     // Live fund + savings cards, auto-protection sync, settings hints
     var lfc = document.getElementById('live-fund-card');
     if (lfc) {
-      var lfv = data.liveFund || 0;
+      var lfv = (data.liveEffectiveFund !== undefined) ? data.liveEffectiveFund : (data.liveFund || 0);
       lfc.textContent = '$' + f2(lfv);
       lfc.style.color = lfv >= (data.liveStartFund || 0) ? 'var(--green)' : 'var(--red)';
       var lpnl = data.liveRealizedPnl || 0;
@@ -1691,7 +1697,7 @@ async function fetchState() {
     var liveLockDisp3 = document.getElementById('current-live-fundloss-display-3');
     if (liveLockDisp3) liveLockDisp3.textContent = data.liveFundStopLossPct || 20;
     var liveFundNow = document.getElementById('current-live-fund-live');
-    if (liveFundNow) liveFundNow.textContent = f2(data.liveFund || 0);
+    if (liveFundNow) liveFundNow.textContent = f2((data.liveEffectiveFund !== undefined) ? data.liveEffectiveFund : (data.liveFund || 0));
     if (!document.getElementById('settings-panel-lt').classList.contains('open')) {
       var liveAlOn = data.liveAutoLockEnabled === true;
       currentLiveAutoLockEnabled = liveAlOn;
