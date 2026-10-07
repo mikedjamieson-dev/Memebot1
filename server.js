@@ -2525,6 +2525,8 @@ function liveEffectiveFund() {
 // above the line before everything closes.
 function checkLiveFundStopLoss() {
   if (!S.liveDayStartFund || S.liveDayStartFund <= 0) return;
+  // A fund stop loss of 0 means no fund stop loss at all: live keeps trading.
+  if (!(S.liveFundStopLossPct > 0)) { S.liveWindingDown = false; return; }
   var lossLimit = S.liveFundStopLossPct / 100;
   var currentLoss = (S.liveDayStartFund - liveEffectiveFund()) / S.liveDayStartFund;
   if (currentLoss >= lossLimit && !S.liveWindingDown) {
@@ -2567,7 +2569,9 @@ function computeLivePositionSizeUsd() {
   var size = parseFloat((liveEffectiveFund() * CFG.MAX_POS).toFixed(4));
   if (size > S.liveFund) size = parseFloat(S.liveFund.toFixed(4));
   if (size > 15) size = 15;
-  if (size < 0.50) return null;
+  // No minimum trade size on live: 5% of the fund, always. Only the fund stop
+  // loss (checkLiveFundStopLoss) stops live entries.
+  if (!(size > 0)) return null;
   return size;
 }
 
@@ -3620,7 +3624,7 @@ app.post('/api/settings', function(req, res) {
   }
   if (req.body.liveFundStopLossPct !== undefined) {
     var lfsl = parseFloat(req.body.liveFundStopLossPct);
-    if (!isNaN(lfsl) && lfsl > 0 && lfsl <= 100) { S.liveFundStopLossPct = parseFloat(lfsl.toFixed(1)); liveLog('LIVE FUND STOP LOSS: ' + S.liveFundStopLossPct + '%', 'info'); }
+    if (!isNaN(lfsl) && lfsl >= 0 && lfsl <= 100) { S.liveFundStopLossPct = parseFloat(lfsl.toFixed(1)); liveLog('LIVE FUND STOP LOSS: ' + S.liveFundStopLossPct + '%', 'info'); }
   }
   if (req.body.liveStopLossPct !== undefined) {
     var lsl = parseFloat(req.body.liveStopLossPct);
