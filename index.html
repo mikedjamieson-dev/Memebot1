@@ -602,6 +602,10 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="stat"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
     <div class="stat"><div class="stat-lbl">LIVE TRADING FUND</div><div class="stat-val" id="live-fund-display-main" style="color:var(--green);font-size:14px;">$0.0000</div></div>
   </div>
+  <div class="g2">
+    <div class="stat"><div class="stat-lbl">TIPS PAID</div><div class="stat-val" id="live-tips-paid" style="color:var(--yellow);font-size:14px;">$0.0000</div></div>
+    <div class="stat"><div class="stat-lbl">NETWORK FEES</div><div class="stat-val" id="live-network-fees" style="color:var(--red);font-size:14px;">$0.0000</div></div>
+  </div>
 
   <div class="card" style="margin-top:10px;background:rgba(255,80,80,0.08);border-color:var(--red);">
     <div style="color:var(--red);text-align:center;padding:10px;">
@@ -1647,6 +1651,11 @@ async function fetchState() {
     if (liveFundEl) { liveFundEl.textContent = '$' + lf.toFixed(4); liveFundEl.style.color = lfColor; }
     if (liveFundElMain) { liveFundElMain.textContent = '$' + lf.toFixed(4); liveFundElMain.style.color = lfColor; }
 
+    var liveTipsEl = document.getElementById('live-tips-paid');
+    if (liveTipsEl) liveTipsEl.textContent = '$' + (data.liveTipsPaidUsd || 0).toFixed(4);
+    var liveNetFeesEl = document.getElementById('live-network-fees');
+    if (liveNetFeesEl) liveNetFeesEl.textContent = '$' + (data.liveNetworkFeesUsd || 0).toFixed(4);
+
     liveTradingOn = !!data.liveTradingEnabled;
     var liveToggleBtn = document.getElementById('live-trading-toggle-btn');
     if (liveToggleBtn) {
@@ -1664,7 +1673,7 @@ async function fetchState() {
         liveOpenEl.innerHTML = lo.map(function(p) {
           var ageSec = Math.floor((Date.now() - p.openedAt) / 1000);
           return '<div style="margin-bottom:6px;padding:6px;background:rgba(0,0,0,0.2);border-radius:4px;">' +
-            p.mint.slice(0,8) + '... (' + p.platform + ') -- entry $' + p.entryPriceUsd.toFixed(10) + ' -- size $' + p.sizeUsd.toFixed(2) + ' -- ' + ageSec + 's ago</div>';
+            p.mint.slice(0,8) + '... (' + p.platform + ') -- entry $' + p.entryPriceUsd.toFixed(10) + ' -- size $' + p.sizeUsd.toFixed(2) + ' -- tip $' + ((p.buyTipUsd !== null && p.buyTipUsd !== undefined) ? p.buyTipUsd.toFixed(4) : '?') + ' -- ' + ageSec + 's ago</div>';
         }).join('');
       }
     }

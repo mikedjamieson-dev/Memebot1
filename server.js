@@ -113,6 +113,8 @@ const S = {
   liveWindingDown: false,
   liveOpen: [],
   liveClosed: [],
+  liveTipsPaidUsd: 0,
+  liveNetworkFeesUsd: 0,
   liveLogs: [],
   liveTradingEnabled: false,
   windingDown: false,
@@ -2092,6 +2094,8 @@ app.get('/api/state', function(req, res) {
     liveTakeProfitMode: S.liveTakeProfitMode,
     liveTakeProfitPct: S.liveTakeProfitPct,
     liveWindingDown: S.liveWindingDown,
+    liveTipsPaidUsd: S.liveTipsPaidUsd,
+    liveNetworkFeesUsd: S.liveNetworkFeesUsd,
     liveOpen: S.liveOpen,
     liveLogs: S.liveLogs,
     solPriceUsd: SOL_PRICE_USD,
@@ -2351,6 +2355,34 @@ function computeLivePositionSizeUsd() {
   return size;
 }
 
+// Reads the two real, separate costs of a confirmed transaction: the Sender
+// tip (exact -- we set it ourselves) and the network fee (read from the
+// transaction's own on-chain record; base fee + priority fee). Never throws:
+// a cost that cannot be read comes back null, never guessed. Both are also
+// already inside the wallet-impact number that moves the Live Fund -- these
+// are tracked on top of that, purely so they can be shown on their own.
+async function readRealTxCosts(connection, result) {
+  var out = { tipLamports: null, feeLamports: null, tipUsd: null, feeUsd: null };
+  if (typeof result.tipLamports === 'number') {
+    out.tipLamports = result.tipLamports;
+    out.tipUsd = (result.tipLamports / 1000000000) * SOL_PRICE_USD;
+  }
+  try {
+    var feeLamports = await liveWalletModule.getRealTransactionFee(connection, result.signature);
+    out.feeLamports = feeLamports;
+    out.feeUsd = (feeLamports / 1000000000) * SOL_PRICE_USD;
+  } catch (e) { /* stays null */ }
+  if (out.tipUsd !== null) S.liveTipsPaidUsd = parseFloat((S.liveTipsPaidUsd + out.tipUsd).toFixed(6));
+  if (out.feeUsd !== null) S.liveNetworkFeesUsd = parseFloat((S.liveNetworkFeesUsd + out.feeUsd).toFixed(6));
+  return out;
+}
+
+function describeRealCosts(c) {
+  return 'tip ' + (c.tipUsd !== null ? '$' + c.tipUsd.toFixed(4) + ' (' + c.tipLamports + ' lamports)' : 'unreadable') +
+    ' | network fee ' + (c.feeUsd !== null ? '$' + c.feeUsd.toFixed(4) + ' (' + c.feeLamports + ' lamports)' : 'unreadable') +
+    ' -- tracked separately';
+}
+
 // Shared real-buy core -- used by both the manual Live Trade Test
 // button and the automatic entry trigger below. One real
 // implementation, so the two can never behave differently.
@@ -2398,6 +2430,9 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
         liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
 
+      var buyCosts = await readRealTxCosts(connection, result);
+      liveLog(logPrefix + ' (' + platformName + ' buy): ' + describeRealCosts(buyCosts), 'info');
+
       try {
         var heldBalance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
         var tokensHeld = parseFloat(heldBalance.amount) / Math.pow(10, heldBalance.decimals);
@@ -2416,6 +2451,12 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             buyImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null,
             sellImpactUsd: 0,
             sellImpactKnown: true,
+            buyTipUsd: buyCosts.tipUsd,
+            buyFeeUsd: buyCosts.feeUsd,
+            sellTipUsd: 0,
+            sellFeeUsd: 0,
+            tipKnown: buyCosts.tipUsd !== null,
+            feeKnown: buyCosts.feeUsd !== null,
             tpl: S.liveTakeProfitMode,
             tpPct: S.liveTakeProfitPct,
             peakPriceUsd: entryPriceUsd,
@@ -2510,9 +2551,12 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
       } catch (feeErr) {
         liveLog(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
+
+      var sellCosts = await readRealTxCosts(connection, result);
+      liveLog(logPrefix + ' (' + platformName + ' sell): ' + describeRealCosts(sellCosts), 'info');
     }
 
-    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null };
+    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null, tipUsd: (typeof sellCosts !== 'undefined') ? sellCosts.tipUsd : null, feeUsd: (typeof sellCosts !== 'undefined') ? sellCosts.feeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     return { ok: false, error: e.message };
@@ -2614,6 +2658,10 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     if (confirmed) {
       if (typeof outcome.realImpactUsd === 'number') pos.sellImpactUsd = (pos.sellImpactUsd || 0) + outcome.realImpactUsd;
       else pos.sellImpactKnown = false;
+      if (typeof outcome.tipUsd === 'number') pos.sellTipUsd = (pos.sellTipUsd || 0) + outcome.tipUsd;
+      else pos.tipKnown = false;
+      if (typeof outcome.feeUsd === 'number') pos.sellFeeUsd = (pos.sellFeeUsd || 0) + outcome.feeUsd;
+      else pos.feeKnown = false;
     }
 
     if (confirmed && action.fraction) {
@@ -2657,6 +2705,10 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         tieredSold2: !!pos.tier2Done, tier2ExitPrice: pos.tier2Done ? pos.tier2ExitPrice : null,
         tier2RealizedPct: pos.tier2Done ? pos.tier2RealizedPct : null, tier2ProceedsUsd: pos.tier2Done ? pos.tier2ProceedsUsd : null,
         tier2ClosedAt: pos.tier2Done ? pos.tier2ClosedAt : '',
+        buyTipUsd: pos.buyTipUsd, sellTipUsd: pos.tipKnown !== false ? parseFloat((pos.sellTipUsd || 0).toFixed(6)) : null,
+        totalTipUsd: (pos.tipKnown !== false && pos.buyTipUsd !== null && pos.buyTipUsd !== undefined) ? parseFloat((pos.buyTipUsd + (pos.sellTipUsd || 0)).toFixed(6)) : null,
+        buyFeeUsd: pos.buyFeeUsd, sellFeeUsd: pos.feeKnown !== false ? parseFloat((pos.sellFeeUsd || 0).toFixed(6)) : null,
+        totalFeeUsd: (pos.feeKnown !== false && pos.buyFeeUsd !== null && pos.buyFeeUsd !== undefined) ? parseFloat((pos.buyFeeUsd + (pos.sellFeeUsd || 0)).toFixed(6)) : null,
         fundAfterTrade: S.liveFund,
         buySignature: pos.id, sellSignature: outcome.result.signature || ''
       });
@@ -2677,13 +2729,14 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 // Live CSV: real closed trades only, built from S.liveClosed. PnL is the
 // real wallet result (buy cost + sale proceeds, including fees and tips).
 app.get('/api/live/export', function(req, res) {
-  var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAfterTrade','BuySignature','SellSignature'];
+  var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','BuyTipUsd','SellTipUsd','TotalTipUsd','BuyNetworkFeeUsd','SellNetworkFeeUsd','TotalNetworkFeeUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAfterTrade','BuySignature','SellSignature'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
       csvSafe(t.name), t.mint || '', t.platform || '', t.size, t.entryPrice, t.exitPrice,
       t.pnl, t.pnlPct, t.peakGainPct, csvSafe(t.closeReason), csvSafe(t.openedAt), csvSafe(t.closedAt), t.closedDate || '',
       t.holdTimeSec, t.takeProfitMode || '', t.stopLossPct, t.buyImpactUsd, t.totalSellProceedsUsd,
+      t.buyTipUsd, t.sellTipUsd, t.totalTipUsd, t.buyFeeUsd, t.sellFeeUsd, t.totalFeeUsd,
       t.tieredSold ? 'Yes' : 'No', t.tier1ExitPrice, t.tier1RealizedPct, t.tier1ProceedsUsd, csvSafe(t.tier1ClosedAt || ''),
       t.tieredSold2 ? 'Yes' : 'No', t.tier2ExitPrice, t.tier2RealizedPct, t.tier2ProceedsUsd, csvSafe(t.tier2ClosedAt || ''),
       t.fundAfterTrade, t.buySignature || '', t.sellSignature || ''
