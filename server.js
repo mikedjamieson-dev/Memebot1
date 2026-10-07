@@ -196,7 +196,7 @@ var liveWalletState = {
       }
     }
     liveWalletState.savingsAddress = liveWalletModule.getSavingsAddress();
-    log(liveWalletState.savingsAddress
+    liveLog(liveWalletState.savingsAddress
       ? 'LIVE SAVINGS WALLET address: ' + liveWalletState.savingsAddress
       : 'LIVE SAVINGS WALLET not configured yet (paper trading unaffected)', 'info');
   } catch (e) {
