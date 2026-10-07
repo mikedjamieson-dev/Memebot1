@@ -53,29 +53,52 @@ function quoteSolForTokens(bondingCurve, tokensInBN) {
   return numerator.div(denominator);
 }
 
+// pump.fun's global settings and fee configuration almost never change, but
+// they used to be fetched from the chain on every single buy and sell. They
+// are now kept for CONFIG_TTL_MS and refreshed in the background (see
+// warmCaches), and cleared whenever a real transaction does not go through
+// (clearCaches), so a changed fee setup can never keep failing on stale data.
+var CONFIG_TTL_MS = 30000;
+var configCache = { global: null, feeConfig: null, at: 0 };
+
+function clearCaches() {
+  configCache = { global: null, feeConfig: null, at: 0 };
+}
+
+async function refreshConfigs(sdk) {
+  var fetched = await Promise.all([
+    sdk.fetchGlobal().catch(function(e) { throw new Error('fetchGlobal failed: ' + e.message); }),
+    sdk.fetchFeeConfig().catch(function(e) { throw new Error('fetchFeeConfig failed: ' + e.message); }),
+  ]);
+  configCache = { global: fetched[0], feeConfig: fetched[1], at: Date.now() };
+  return configCache;
+}
+
+async function getConfigs(sdk) {
+  if (configCache.global && configCache.feeConfig && (Date.now() - configCache.at) < CONFIG_TTL_MS) return configCache;
+  return refreshConfigs(sdk);
+}
+
+// Called on a timer while live trading is on, so the settings are already
+// in memory when a real buy or sell needs them.
+async function warmCaches(connection) {
+  return refreshConfigs(new OnlinePumpSdk(connection));
+}
+
 async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent) {
   var sdk = new OnlinePumpSdk(connection);
 
-  var global;
-  try {
-    global = await sdk.fetchGlobal();
-  } catch (e) {
-    throw new Error('fetchGlobal failed: ' + e.message);
-  }
-
-  var feeConfig;
-  try {
-    feeConfig = await sdk.fetchFeeConfig();
-  } catch (e) {
-    throw new Error('fetchFeeConfig failed: ' + e.message);
-  }
-
-  var buyState;
-  try {
-    buyState = await sdk.fetchBuyState(mint, user);
-  } catch (e) {
-    throw new Error('fetchBuyState failed: ' + e.message);
-  }
+  // The lookups below do not depend on each other, so they run at the
+  // same time instead of one after another.
+  var fetched = await Promise.all([
+    getConfigs(sdk),
+    sdk.fetchBuyState(mint, user).catch(function(e) { throw new Error('fetchBuyState failed: ' + e.message); }),
+    require('./wallet').getTokenProgramId(connection, mint).catch(function(e) { throw new Error('getTokenProgramId failed: ' + e.message); }),
+  ]);
+  var global = fetched[0].global;
+  var feeConfig = fetched[0].feeConfig;
+  var buyState = fetched[1];
+  var tokenProgram = fetched[2];
   if (!buyState || !buyState.bondingCurve) {
     throw new Error('fetchBuyState returned no usable bondingCurve -- ' + describe('buyState', buyState));
   }
@@ -94,13 +117,6 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
       ' -- ' + describe('bondingCurve', bc) +
       ' -- ' + describe('solAmountBN', solAmountBN)
     );
-  }
-
-  var tokenProgram;
-  try {
-    tokenProgram = await require('./wallet').getTokenProgramId(connection, mint);
-  } catch (e) {
-    throw new Error('getTokenProgramId failed: ' + e.message);
   }
 
   try {
@@ -131,32 +147,22 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
 async function buildSellInstructions(connection, mint, user, tokenAmount, slippagePercent) {
   var sdk = new OnlinePumpSdk(connection);
 
-  var global;
-  try {
-    global = await sdk.fetchGlobal();
-  } catch (e) {
-    throw new Error('fetchGlobal failed: ' + e.message);
-  }
-
-  var feeConfig;
-  try {
-    feeConfig = await sdk.fetchFeeConfig();
-  } catch (e) {
-    throw new Error('fetchFeeConfig failed: ' + e.message);
-  }
-
   // Uses fetchBuyState, not fetchSellState -- the sell call below only
   // ever reads bondingCurve and bondingCurveAccountInfo, both of which
   // fetchBuyState also returns, and fetchBuyState doesn't gate on the
   // user's associated token account already existing. fetchSellState
   // does gate on that, which is a real, documented SDK behavior that
   // has nothing to do with the data actually needed here.
-  var sellState;
-  try {
-    sellState = await sdk.fetchBuyState(mint, user);
-  } catch (e) {
-    throw new Error('fetchBuyState (used for sell data) failed: ' + e.message);
-  }
+  // The lookups run at the same time instead of one after another.
+  var fetched = await Promise.all([
+    getConfigs(sdk),
+    sdk.fetchBuyState(mint, user).catch(function(e) { throw new Error('fetchBuyState (used for sell data) failed: ' + e.message); }),
+    require('./wallet').getTokenProgramId(connection, mint).catch(function(e) { throw new Error('getTokenProgramId failed: ' + e.message); }),
+  ]);
+  var global = fetched[0].global;
+  var feeConfig = fetched[0].feeConfig;
+  var sellState = fetched[1];
+  var tokenProgram = fetched[2];
   if (!sellState || !sellState.bondingCurve) {
     throw new Error('fetchBuyState (used for sell data) returned no usable bondingCurve -- ' + describe('sellState', sellState));
   }
@@ -175,13 +181,6 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
       ' -- ' + describe('bondingCurve', bc) +
       ' -- ' + describe('tokenAmountBN', tokenAmountBN)
     );
-  }
-
-  var tokenProgram;
-  try {
-    tokenProgram = await require('./wallet').getTokenProgramId(connection, mint);
-  } catch (e) {
-    throw new Error('getTokenProgramId failed: ' + e.message);
   }
 
   try {
@@ -231,4 +230,6 @@ module.exports = {
   quoteTokensForSol,
   quoteSolForTokens,
   isGraduated,
+  warmCaches,
+  clearCaches,
 };

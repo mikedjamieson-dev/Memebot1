@@ -57,20 +57,62 @@ const SENDER_TIERS = {
 // back to the tier's documented minimum if the fetch fails or the
 // response shape isn't what's expected, rather than ever blocking a
 // real trade on this being unavailable.
-async function fetchCurrentTipLamports(tier) {
+//
+// The number is kept for TIP_CACHE_TTL_MS and refreshed in the background
+// (warmTipCache), so a real buy or sell no longer waits on this outside web
+// request before it can be sent. If the web request fails, the last good
+// number (up to TIP_CACHE_STALE_MS old) is used before falling back to the
+// tier's minimum.
+// Node's built-in fetch ignores a "timeout" option, so the two outside web
+// requests in this file would wait forever if the other side stopped
+// answering -- and a real sell waiting on one would never go out. This gives
+// them a real time limit.
+async function fetchWithTimeout(url, options, timeoutMs) {
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, timeoutMs);
+  try {
+    return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+var TIP_CACHE_TTL_MS = 15000;
+var TIP_CACHE_STALE_MS = 60000;
+var tipCache = {};
+
+async function fetchTipFloorLamports(tier) {
   var minLamports = tier.minLamports;
   try {
-    var res = await fetch('https://bundles.jito.wtf/api/v1/bundles/tip_floor', { timeout: 3000 });
-    if (!res.ok) return minLamports;
+    var res = await fetchWithTimeout('https://bundles.jito.wtf/api/v1/bundles/tip_floor', {}, 3000);
+    if (!res.ok) return null;
     var data = await res.json();
     var row = Array.isArray(data) ? data[0] : data;
     var p75 = row && (row.landed_tips_75th_percentile || row.landedTips75thPercentile);
-    if (typeof p75 !== 'number' || !(p75 > 0)) return minLamports;
+    if (typeof p75 !== 'number' || !(p75 > 0)) return null;
     var fetchedLamports = Math.round(p75 * 1000000000); // the endpoint reports SOL, not lamports
     return Math.max(fetchedLamports, minLamports);
   } catch (e) {
-    return minLamports;
+    return null;
   }
+}
+
+async function fetchCurrentTipLamports(tier, forceRefresh) {
+  var key = String(tier.minLamports);
+  var cached = tipCache[key];
+  if (!forceRefresh && cached && (Date.now() - cached.at) < TIP_CACHE_TTL_MS) return cached.lamports;
+  var fresh = await fetchTipFloorLamports(tier);
+  if (fresh !== null) {
+    tipCache[key] = { lamports: fresh, at: Date.now() };
+    return fresh;
+  }
+  if (cached && (Date.now() - cached.at) < TIP_CACHE_STALE_MS) return cached.lamports;
+  return tier.minLamports;
+}
+
+// Keeps the tip number fresh while live trading is on.
+function warmTipCache() {
+  return fetchCurrentTipLamports(SENDER_TIERS.SWQOS_ONLY, true).catch(function() {});
 }
 
 // Pulls the api-key out of the already-configured LIVE_RPC_URL rather
@@ -108,9 +150,10 @@ function isSuccessStatus(status) {
 // the transaction was actually submitted -- a signature is a
 // signature, checked the same honest way either time.
 async function pollForOutcome(signature, connection, latest, options) {
-  var pollIntervalMs = options.pollIntervalMs || 1000;
+  var pollIntervalMs = options.pollIntervalMs || 400;
   var maxPollMs = options.maxPollMs || 30000;
   var startTime = Date.now();
+  var lastHeightCheck = 0;
 
   while (true) {
     var statuses = await connection.getSignatureStatuses([signature]);
@@ -125,17 +168,23 @@ async function pollForOutcome(signature, connection, latest, options) {
       }
     }
 
-    var currentBlockHeight = await connection.getBlockHeight();
-    if (currentBlockHeight > latest.lastValidBlockHeight) {
-      var finalStatuses = await connection.getSignatureStatuses([signature]);
-      var finalStatus = finalStatuses && finalStatuses.value && finalStatuses.value[0];
-      if (isSuccessStatus(finalStatus)) {
-        return { outcome: 'CONFIRMED', signature: signature };
+    // The status is checked about 2.5 times a second so a landed transaction
+    // is noticed quickly; the (slower-changing) block height only needs
+    // checking every couple of seconds.
+    if (Date.now() - lastHeightCheck >= 2000) {
+      lastHeightCheck = Date.now();
+      var currentBlockHeight = await connection.getBlockHeight();
+      if (currentBlockHeight > latest.lastValidBlockHeight) {
+        var finalStatuses = await connection.getSignatureStatuses([signature]);
+        var finalStatus = finalStatuses && finalStatuses.value && finalStatuses.value[0];
+        if (isSuccessStatus(finalStatus)) {
+          return { outcome: 'CONFIRMED', signature: signature };
+        }
+        if (finalStatus && finalStatus.err) {
+          return { outcome: 'FAILED', signature: signature, error: JSON.stringify(finalStatus.err) };
+        }
+        return { outcome: 'EXPIRED', signature: signature };
       }
-      if (finalStatus && finalStatus.err) {
-        return { outcome: 'FAILED', signature: signature, error: JSON.stringify(finalStatus.err) };
-      }
-      return { outcome: 'EXPIRED', signature: signature };
     }
 
     if (Date.now() - startTime > maxPollMs) {
@@ -175,7 +224,11 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   if (!tier) throw new Error('unknown Sender tier: ' + tierName);
   var microLamportsPerCu = options.microLamportsPerCu || 100000;
 
-  var tipLamports = await fetchCurrentTipLamports(tier);
+  // The tip number and the latest blockhash do not depend on each other, so
+  // they are fetched at the same time.
+  var tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), connection.getLatestBlockhash()]);
+  var tipLamports = tipAndHash[0];
+  var latest = tipAndHash[1];
 
   transaction.instructions.unshift(
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: microLamportsPerCu })
@@ -188,7 +241,6 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     })
   );
 
-  var latest = await connection.getLatestBlockhash();
   transaction.recentBlockhash = latest.blockhash;
   transaction.feePayer = keypair.publicKey;
 
@@ -210,12 +262,11 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     method: 'sendTransaction',
     params: [serialized.toString('base64'), { encoding: 'base64', skipPreflight: true }],
   };
-  var res = await fetch(senderUrl, {
+  var res = await fetchWithTimeout(senderUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    timeout: 10000,
-  });
+  }, 10000);
   var json = await res.json();
   if (json.error) {
     var err = new Error('Sender rejected the submission: ' + JSON.stringify(json.error));
@@ -267,6 +318,7 @@ module.exports = {
   testSelfTransfer,
   testSelfTransferViaSender,
   fetchCurrentTipLamports,
+  warmTipCache,
   HELIUS_SENDER_TIP_ACCOUNTS,
   SENDER_TIERS,
 };

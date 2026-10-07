@@ -185,8 +185,17 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
 // directly from Solana's own documentation: assuming the original
 // program for a Token-2022 mint produces an IncorrectProgramId
 // failure, exactly the kind this exists to prevent.
+// A mint's token program never changes once it exists, so it is looked up
+// once per mint and remembered. Without this, every buy and sell of the
+// same token paid for this on-chain lookup several times over.
+var tokenProgramCache = new Map();
+
 async function getTokenProgramId(connection, mint) {
   const { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } = require('@solana/spl-token');
+  var cacheKey = mint.toString();
+  var cachedProgram = tokenProgramCache.get(cacheKey);
+  if (cachedProgram === '2022') return TOKEN_2022_PROGRAM_ID;
+  if (cachedProgram === 'legacy') return TOKEN_PROGRAM_ID;
   var accountInfo = await connection.getAccountInfo(mint);
   if (!accountInfo) {
     var err = new Error('Mint account not found on-chain: ' + mint.toString());
@@ -194,8 +203,10 @@ async function getTokenProgramId(connection, mint) {
     throw err;
   }
   if (accountInfo.owner.equals(TOKEN_2022_PROGRAM_ID)) {
+    tokenProgramCache.set(cacheKey, '2022');
     return TOKEN_2022_PROGRAM_ID;
   }
+  tokenProgramCache.set(cacheKey, 'legacy');
   return TOKEN_PROGRAM_ID;
 }
 

@@ -42,6 +42,40 @@ function describe(label, value) {
 // state, its platform's fee configuration, both mints' info, and the
 // current network epoch. Shared by both buy and sell since both need
 // the same context.
+// Things that rarely or never change are remembered instead of being looked
+// up on-chain for every buy and sell: a token's own info (the same token is
+// sold right after it was bought), the platform's fee settings, and the
+// epoch info (changes about once every two days). All are short-lived or
+// per-token, and cleared by clearCaches() whenever a real transaction fails.
+var TOKEN_INFO_TTL_MS = 600000;
+var PLATFORM_TTL_MS = 300000;
+var EPOCH_TTL_MS = 20000;
+var tokenInfoCache = new Map();
+var platformCache = new Map();
+var epochCache = { info: null, at: 0 };
+
+function clearCaches() {
+  tokenInfoCache = new Map();
+  platformCache = new Map();
+  epochCache = { info: null, at: 0 };
+}
+
+async function cachedTokenInfo(raydium, mint) {
+  var key = mint.toBase58();
+  var hit = tokenInfoCache.get(key);
+  if (hit && (Date.now() - hit.at) < TOKEN_INFO_TTL_MS) return hit.info;
+  var info = await raydium.token.getTokenInfo(mint);
+  tokenInfoCache.set(key, { info: info, at: Date.now() });
+  return info;
+}
+
+async function cachedEpochInfo(raydium) {
+  if (epochCache.info && (Date.now() - epochCache.at) < EPOCH_TTL_MS) return epochCache.info;
+  var info = await raydium.connection.getEpochInfo();
+  epochCache = { info: info, at: Date.now() };
+  return info;
+}
+
 async function gatherContext(raydium, mintA, mintB, programId) {
   var poolId;
   try {
@@ -50,10 +84,11 @@ async function gatherContext(raydium, mintA, mintB, programId) {
     throw new Error('getPdaLaunchpadPoolId failed: ' + e.message);
   }
 
-  var poolInfo;
-  try {
-    poolInfo = await raydium.launchpad.getRpcPoolInfo({ poolId: poolId });
-  } catch (e) {
+  // The pool, both tokens' info and the epoch do not depend on each other,
+  // so they are looked up at the same time instead of one after another.
+  // (The quote token is the one the pool address was built from, so its info
+  // can be fetched without waiting for the pool.)
+  var poolPromise = raydium.launchpad.getRpcPoolInfo({ poolId: poolId }).catch(function(e) {
     throw new Error(
       'getRpcPoolInfo failed: ' + e.message +
       ' -- computed poolId: ' + poolId.toBase58() +
@@ -62,33 +97,47 @@ async function gatherContext(raydium, mintA, mintB, programId) {
       ' -- programId: ' + programId.toBase58() +
       ' -- paste the poolId above into a block explorer to check directly whether it exists'
     );
-  }
+  });
+  var tokenInfoPromise = Promise.all([cachedTokenInfo(raydium, mintA), cachedTokenInfo(raydium, mintB)]).catch(function(e) {
+    throw new Error('getTokenInfo failed: ' + e.message);
+  });
+  var epochPromise = cachedEpochInfo(raydium).catch(function(e) {
+    throw new Error('getEpochInfo failed: ' + e.message);
+  });
+  var gathered = await Promise.all([poolPromise, tokenInfoPromise, epochPromise]);
+  var poolInfo = gathered[0];
+  var mintInfo = gathered[1][0];
+  var mintBInfo = gathered[1][1];
+  var epochInfo = gathered[2];
+
   if (!poolInfo) {
     throw new Error('getRpcPoolInfo returned nothing for this mint pair -- this token may not be on LetsBonk, or may have already graduated');
   }
 
+  // Safety net: if the pool's own quote token is somehow not the one the
+  // address was built from, use the pool's, exactly as before.
+  if (poolInfo.mintB && typeof poolInfo.mintB.toBase58 === 'function' && poolInfo.mintB.toBase58() !== mintB.toBase58()) {
+    try {
+      mintBInfo = await cachedTokenInfo(raydium, poolInfo.mintB);
+    } catch (e) {
+      throw new Error('getTokenInfo failed: ' + e.message);
+    }
+  }
+
   var platformInfo;
   try {
-    var accountData = await raydium.connection.getAccountInfo(poolInfo.platformId);
-    if (!accountData) throw new Error('platform account not found on-chain');
-    platformInfo = PlatformConfig.decode(accountData.data);
+    var platformKey = poolInfo.platformId.toBase58();
+    var platformHit = platformCache.get(platformKey);
+    if (platformHit && (Date.now() - platformHit.at) < PLATFORM_TTL_MS) {
+      platformInfo = platformHit.info;
+    } else {
+      var accountData = await raydium.connection.getAccountInfo(poolInfo.platformId);
+      if (!accountData) throw new Error('platform account not found on-chain');
+      platformInfo = PlatformConfig.decode(accountData.data);
+      platformCache.set(platformKey, { info: platformInfo, at: Date.now() });
+    }
   } catch (e) {
     throw new Error('fetching/decoding platform config failed: ' + e.message + ' -- ' + describe('platformId', poolInfo.platformId));
-  }
-
-  var mintInfo, mintBInfo;
-  try {
-    mintInfo = await raydium.token.getTokenInfo(mintA);
-    mintBInfo = await raydium.token.getTokenInfo(poolInfo.mintB);
-  } catch (e) {
-    throw new Error('getTokenInfo failed: ' + e.message);
-  }
-
-  var epochInfo;
-  try {
-    epochInfo = await raydium.connection.getEpochInfo();
-  } catch (e) {
-    throw new Error('getEpochInfo failed: ' + e.message);
   }
 
   return { poolId: poolId, poolInfo: poolInfo, platformInfo: platformInfo, mintInfo: mintInfo, mintBInfo: mintBInfo, epochInfo: epochInfo };
@@ -229,4 +278,5 @@ module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
   isGraduated,
+  clearCaches,
 };

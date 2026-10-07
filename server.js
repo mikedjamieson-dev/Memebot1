@@ -2551,6 +2551,29 @@ async function readRealTxCosts(connection, result) {
   return out;
 }
 
+// If a real buy or sell does not go through, the remembered settings used to
+// build it (see pumpfun.js / letsbonk.js) are thrown away, so the next
+// attempt starts from fresh on-chain data instead of anything that might be
+// stale.
+function invalidateBuilderCaches() {
+  try { require('./pumpfun').clearCaches(); } catch (e) {}
+  try { require('./letsbonk').clearCaches(); } catch (e) {}
+}
+
+// While automatic live trading is on (or a real position is still open), keep
+// the things a real buy or sell needs already in memory -- the current tip
+// number and pump.fun's settings -- so none of them is waited on at the
+// moment of the trade.
+async function warmLiveExecution() {
+  if (!liveWalletKeypair || !liveWalletModule) return;
+  if (!S.liveTradingEnabled && S.liveOpen.length === 0) return;
+  try {
+    require('./execution').warmTipCache();
+    require('./pumpfun').warmCaches(liveWalletModule.getConnection()).catch(function() {});
+  } catch (e) { /* warming is only a speed-up; a real trade still works without it */ }
+}
+setInterval(warmLiveExecution, 10000);
+
 function describeRealCosts(c) {
   return 'tip ' + (c.tipUsd !== null ? '$' + c.tipUsd.toFixed(4) + ' (' + c.tipLamports + ' lamports)' : 'unreadable') +
     ' | network fee ' + (c.feeUsd !== null ? '$' + c.feeUsd.toFixed(4) + ' (' + c.feeLamports + ' lamports)' : 'unreadable') +
@@ -2580,34 +2603,52 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
     }
     var solAmountLamports = Math.round((sizeUsd / SOL_PRICE_USD) * 1000000000);
 
+    var buyT0 = Date.now();
     liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
     var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
+    var buyBuiltMs = Date.now() - buyT0;
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
     liveLog(logPrefix + ' (' + platformName + ' buy): submitting real transaction...', 'info');
+    var buySendT0 = Date.now();
     var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+    var buySendMs = Date.now() - buySendT0;
 
     liveLog(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     if (result.outcome === 'CONFIRMED') {
-      try {
-        var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
+      // The three reads below (what the buy cost the wallet, the tip and fee,
+      // and how many tokens arrived) do not depend on each other, so they run
+      // together. The position cannot be watched for exits until all three are
+      // in, so every millisecond here is a millisecond without a stop loss.
+      var postBuyT0 = Date.now();
+      var balanceChangePromise = liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey).then(
+        function(v) { return { value: v }; }, function(e) { return { error: e }; });
+      var costsPromise = readRealTxCosts(connection, result);
+      var heldPromise = liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey).then(
+        function(v) { return { value: v }; }, function(e) { return { error: e }; });
+      var postBuy = await Promise.all([balanceChangePromise, costsPromise, heldPromise]);
+
+      if (postBuy[0].error) {
+        liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + postBuy[0].error.message, 'warn');
+      } else {
+        var changeLamports = postBuy[0].value;
         var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
         S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
         liveLog(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
           ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
-      } catch (feeErr) {
-        liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
       }
 
-      var buyCosts = await readRealTxCosts(connection, result);
+      var buyCosts = postBuy[1];
       liveLog(logPrefix + ' (' + platformName + ' buy): ' + describeRealCosts(buyCosts), 'info');
 
       try {
-        var heldBalance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+        if (postBuy[2].error) throw postBuy[2].error;
+        var heldBalance = postBuy[2].value;
         var tokensHeld = parseFloat(heldBalance.amount) / Math.pow(10, heldBalance.decimals);
         if (tokensHeld > 0) {
           var entryPriceUsd = sizeUsd / tokensHeld;
@@ -2640,6 +2681,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             retryAfter: 0,
           });
           liveLog('LIVE ENTER ' + (S.tokens.get(mintStr) ? S.tokens.get(mintStr).n : mintStr.slice(0, 6) + '...') + ' [' + platformName + '] | ' + mintStr + ' | $' + sizeUsd.toFixed(2) + ' | Entry $' + entryPriceUsd.toFixed(10) + ' | ' + tokensHeld + ' tokens held', 'entry');
+          liveLog('LIVE BUY TIMING: build ' + buyBuiltMs + 'ms | submit to landed ' + buySendMs + 'ms | reads before position was watched ' + (Date.now() - postBuyT0) + 'ms | total ' + (Date.now() - buyT0) + 'ms', 'info');
         } else {
           liveLog(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
         }
@@ -2655,6 +2697,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
     return { ok: true, result: result, liveFund: S.liveFund };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
+    invalidateBuilderCaches();
     return { ok: false, error: e.message };
   }
 }
@@ -2711,8 +2754,10 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
     var mint = new PublicKey(mintStr);
 
+    var sellT0 = Date.now();
     liveLog(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
     var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+    var sellBalanceMs = Date.now() - sellT0;
     var diag = balance && balance.diagnostic;
     liveLog(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
       (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
@@ -2739,16 +2784,21 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     var remainingAmount = (BigInt(balance.amount) - BigInt(sellAmount)).toString();
 
     liveLog(logPrefix + ' (' + platformName + ' sell): building sell for ' + sellAmount + ' of real balance ' + balance.amount + '...', 'info');
+    var sellBuildT0 = Date.now();
     var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, 15);
+    var sellBuildMs = Date.now() - sellBuildT0;
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
     liveLog(logPrefix + ' (' + platformName + ' sell): submitting real transaction...', 'info');
+    var sellSendT0 = Date.now();
     var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+    liveLog('LIVE SELL TIMING: balance read ' + sellBalanceMs + 'ms | build ' + sellBuildMs + 'ms | submit to ' + result.outcome.toLowerCase() + ' ' + (Date.now() - sellSendT0) + 'ms | total ' + (Date.now() - sellT0) + 'ms', 'info');
 
     liveLog(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     var settled = null;
     if (result.outcome === 'CONFIRMED') {
@@ -2758,6 +2808,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
+    invalidateBuilderCaches();
     return { ok: false, error: e.message };
   }
 }
@@ -3274,7 +3325,7 @@ app.post('/api/settings', function(req, res) {
     }
     // Live runs on its own: turning it on starts the shared feed even if paper
     // is stopped, and turning it off shuts the feed down only if paper is off too.
-    if (S.liveTradingEnabled) startFeed(); else if (!feedNeeded()) stopFeed();
+    if (S.liveTradingEnabled) { startFeed(); warmLiveExecution(); } else if (!feedNeeded()) stopFeed();
     log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
   }
   if (req.body.liveAutoLockEnabled !== undefined) {
