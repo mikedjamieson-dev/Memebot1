@@ -1,0 +1,2060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>BunkerBuster.io</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap');
+:root{
+  --bg:#04080d;--panel:#080f18;--border:#0d2035;--bb:#1a4060;
+  --green:#00ff88;--gd:#00cc6a;--red:#ff3d5a;--yellow:#ffc233;
+  --blue:#33b5ff;--purple:#bb88ff;--text:#e8f4ff;--dim:#7a9ab0;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monospace;min-height:100vh;padding-bottom:40px;font-size:16px;}
+.wrap{max-width:520px;margin:0 auto;padding:16px;}
+
+/* Header */
+.hdr{text-align:center;padding:14px 0 10px;}
+.hdr::after{content:'';display:block;height:1px;background:linear-gradient(90deg,transparent,var(--green),transparent);margin-top:10px;opacity:0.4;}
+.htitle{font-family:'Orbitron',monospace;font-size:26px;font-weight:900;color:#fff;letter-spacing:3px;text-shadow:0 0 20px rgba(0,255,136,0.4);}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:4px;animation:pulse 1.5s infinite;vertical-align:middle;}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 6px var(--green);}50%{opacity:0.4;}}
+
+/* Navigation */
+.nav-bar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.nav-btn{padding:10px;border-radius:8px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:'Orbitron',monospace;letter-spacing:2px;text-align:center;}
+.nav-btn.active{border-color:var(--green);background:rgba(0,255,136,0.08);color:var(--green);}
+
+/* Stats grid */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px;}
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;}
+.stat-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
+.stat-val{font-family:'Orbitron',monospace;font-size:16px;font-weight:700;margin-top:2px;}
+.tbox{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px;text-align:center;}
+.tval{font-family:'Orbitron',monospace;font-size:14px;color:var(--green);margin-top:2px;}
+.tlbl{font-size:11px;color:var(--dim);letter-spacing:1px;}
+
+/* Cards */
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;position:relative;overflow:hidden;margin-bottom:8px;}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--bb),transparent);}
+.card-lbl{font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:6px;text-transform:uppercase;}
+.card-val{font-family:'Orbitron',monospace;font-size:22px;font-weight:700;}
+.card-sub{font-size:12px;color:var(--dim);margin-top:4px;}
+
+/* Pool Info */
+.pool-info-btn{width:100%;padding:7px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:11px;font-family:'Share Tech Mono',monospace;margin-bottom:8px;text-align:center;letter-spacing:1px;}
+.pool-info-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;display:none;}
+.pool-info-panel.open{display:block;}
+.wsbar{background:rgba(255,215,0,0.06);border:1px solid rgba(255,215,0,0.2);border-radius:8px;padding:8px 12px;font-size:12px;color:#ffd700;}
+.srcrow{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px;}
+.bdg{padding:4px 8px;border-radius:4px;font-size:11px;letter-spacing:1px;}
+.live{background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.3);color:var(--green);}
+.dead{background:rgba(255,61,90,0.1);border:1px solid rgba(255,61,90,0.3);color:var(--red);}
+.pump-bdg{background:rgba(255,215,0,0.15);border:1px solid rgba(255,215,0,0.5);color:#ffd700;}
+
+/* Fund warning */
+.warn-bar{padding:10px 14px;border-radius:8px;margin-bottom:10px;font-size:13px;text-align:center;letter-spacing:1px;font-family:'Share Tech Mono',monospace;display:none;}
+
+/* Settings */
+.settings-toggle{width:100%;padding:10px 14px;border-radius:8px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;margin-bottom:8px;text-align:left;letter-spacing:1px;}
+.settings-panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;display:none;}
+.settings-panel.open{display:block;}
+.settings-menu{display:flex;flex-direction:column;gap:8px;}
+.settings-menu-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:14px;color:var(--text);letter-spacing:1px;}
+.settings-menu-item:hover{border-color:var(--bb);color:var(--green);}
+.settings-menu-arrow{color:var(--dim);font-size:16px;}
+.settings-sub{display:none;}
+.settings-sub.open{display:block;}
+.settings-back{display:flex;align-items:center;gap:8px;padding:8px 0;margin-bottom:12px;cursor:pointer;font-size:13px;color:var(--dim);border:none;background:transparent;font-family:'Share Tech Mono',monospace;letter-spacing:1px;}
+.settings-back:hover{color:var(--green);}
+.settings-sub-title{font-size:14px;letter-spacing:2px;color:var(--text);margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+.settings-lbl{font-size:12px;color:var(--dim);letter-spacing:1px;margin-bottom:6px;margin-top:12px;}
+.settings-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:14px;padding:10px 12px;margin-bottom:4px;}
+.settings-save{width:100%;padding:10px;border-radius:6px;border:1px solid var(--green);background:rgba(0,255,136,0.08);color:var(--green);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:2px;margin-top:10px;}
+.settings-status{font-size:12px;margin-top:8px;min-height:18px;}
+.settings-hint{font-size:11px;color:var(--dim);margin-top:4px;line-height:1.5;}
+.tp-mode-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
+.tp-btn{padding:10px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:1px;text-align:center;}
+.tp-btn.active{border-color:var(--green);background:rgba(0,255,136,0.1);color:var(--green);}
+
+/* Trail card */
+
+/* Start/Stop */
+.main-btn{width:100%;padding:16px;border-radius:10px;border:1px solid;cursor:pointer;font-size:14px;font-family:'Orbitron',monospace;font-weight:700;letter-spacing:4px;margin-bottom:10px;}
+.btn-start{background:linear-gradient(135deg,#062a12,#0a3d1a);color:var(--green);border-color:var(--gd);}
+.btn-stop{background:linear-gradient(135deg,#3d0000,#5c0a0a);color:var(--red);border-color:var(--red);}
+
+/* Section labels */
+.sec-lbl{font-size:12px;letter-spacing:3px;color:var(--dim);margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+.sec-lbl::after{content:'';flex:1;height:1px;background:var(--border);}
+
+/* Open trades */
+.trade{background:var(--panel);border:1px solid #0d2a45;border-left:3px solid var(--blue);border-radius:8px;padding:12px;margin-bottom:8px;}
+
+.trade-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.trade-name{color:var(--blue);font-weight:bold;font-size:16px;font-family:'Orbitron',monospace;}
+
+.sell-btn{padding:8px 14px;border-radius:5px;border:1px solid var(--yellow);background:transparent;color:var(--yellow);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;font-weight:bold;}
+.trade-meta{font-size:12px;color:var(--dim);margin-bottom:6px;}
+.real-badge{font-size:11px;background:rgba(0,255,136,0.1);border:1px solid var(--green);border-radius:3px;padding:2px 6px;color:var(--green);margin-left:6px;vertical-align:middle;}
+
+.pnl-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:6px;padding-top:6px;border-top:1px solid var(--border);}
+.pnl-item{text-align:center;background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 4px;}
+.pnl-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
+.pnl-val{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
+.entry-price{font-size:11px;color:var(--dim);margin-top:6px;}
+.ca-row{font-size:11px;color:var(--dim);margin-top:4px;cursor:pointer;}
+.ca-addr{color:var(--blue);font-family:'Share Tech Mono',monospace;}
+.ca-copy{font-size:10px;}
+
+
+
+/* Best trade */
+.best-trade-card{background:rgba(0,255,136,0.04);border:1px solid rgba(0,255,136,0.2);border-radius:8px;padding:10px 12px;margin-top:8px;}
+.best-trade-title{font-size:11px;letter-spacing:2px;color:var(--green);margin-bottom:8px;}
+.best-trade-name{font-family:'Orbitron',monospace;font-size:16px;font-weight:700;color:var(--green);margin-bottom:6px;}
+.best-trade-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.best-trade-cell{background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 8px;}
+.best-trade-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:2px;}
+.best-trade-val{font-family:'Orbitron',monospace;font-size:13px;}
+
+/* Log */
+.logwrap{position:relative;margin-bottom:10px;}
+.fbar{position:absolute;top:0;left:0;right:0;background:rgba(255,194,51,0.15);border:1px solid rgba(255,194,51,0.4);border-radius:8px 8px 0 0;padding:6px 12px;font-size:12px;color:var(--yellow);display:none;z-index:10;text-align:center;}
+.logbox{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px;max-height:300px;overflow-y:auto;}
+.logbox::-webkit-scrollbar{width:3px;}
+.logbox::-webkit-scrollbar-thumb{background:var(--bb);border-radius:3px;}
+.log-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.log-header-lbl{font-size:12px;letter-spacing:2px;color:var(--dim);}
+.log-cnt{font-size:12px;color:var(--dim);}
+.log-filters{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
+.lf{padding:4px 10px;border-radius:4px;border:1px solid var(--bb);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);}
+.lf.act{background:var(--bb);color:var(--text);}
+.le{font-size:12px;padding:4px 0;border-bottom:1px solid rgba(13,32,53,0.4);line-height:1.6;}
+.lt{color:#4a7090;margin-right:6px;}
+.info{color:#8ab4cc;}.warn{color:var(--yellow);}.entry{color:#66ccff;}.win{color:var(--green);}.loss{color:#ff7a7a;}.pump{color:#ffd700;}.rug{color:var(--yellow);}
+
+/* Closed trades */
+.ctrade{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 12px;margin-bottom:8px;}
+.ctrade-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
+.ctrade-name{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;color:var(--blue);}
+.ctrade-pnl{font-family:'Orbitron',monospace;font-size:15px;font-weight:700;}
+.ctrade-g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px;}
+.ctrade-g2{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:6px;}
+.ctrade-cell{background:rgba(0,0,0,0.2);border-radius:4px;padding:6px 8px;text-align:center;}
+.ctrade-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
+.ctrade-val{font-family:'Orbitron',monospace;font-size:12px;}
+.ctrade-footer{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);}
+
+/* Session stats */
+.ss-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+.ss-item{background:rgba(0,0,0,0.2);border-radius:6px;padding:8px 10px;}
+.ss-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:3px;}
+.ss-val{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;}
+
+/* Wallet toggle */
+.wallet-display{font-size:12px;color:var(--dim);margin-top:6px;}
+
+/* Portfolio */
+.port-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
+.port-stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
+.port-lbl{font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:4px;}
+.port-val{font-family:'Orbitron',monospace;font-size:16px;font-weight:700;}
+.search-bar{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;}
+.search-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:14px;padding:8px 12px;margin-bottom:8px;}
+.filter-row{display:flex;gap:6px;flex-wrap:wrap;}
+.filter-btn{padding:4px 10px;border-radius:4px;border:1px solid var(--bb);cursor:pointer;font-size:11px;font-family:'Share Tech Mono',monospace;background:transparent;color:var(--dim);}
+.filter-btn.active{background:var(--bb);color:var(--text);}
+.trade-table{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;}
+.trade-row{padding:8px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;}
+.trade-row:last-child{border-bottom:none;}
+.trade-row-name{font-family:'Orbitron',monospace;font-size:13px;font-weight:700;}
+.trade-row-meta{font-size:11px;color:var(--dim);margin-top:2px;}
+.trade-row-pnl{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;text-align:right;}
+.trade-row-reason{font-size:10px;color:var(--dim);text-align:right;margin-top:2px;}
+.session-row{background:rgba(0,0,0,0.2);border-radius:8px;padding:10px 12px;margin-bottom:8px;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;}
+.session-date{font-size:13px;color:var(--text);font-weight:bold;}
+.session-meta{font-size:11px;color:var(--dim);margin-top:2px;}
+.session-pnl{font-family:'Orbitron',monospace;font-size:14px;font-weight:700;text-align:right;}
+.session-wr{font-size:11px;color:var(--dim);text-align:right;margin-top:2px;}
+.page-row{display:flex;justify-content:space-between;align-items:center;margin-top:10px;}
+.page-btn{padding:6px 14px;border-radius:6px;border:1px solid var(--bb);background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:'Share Tech Mono',monospace;}
+.page-btn:disabled{opacity:0.3;cursor:default;}
+.page-info{font-size:11px;color:var(--dim);}
+
+.foot{text-align:center;font-size:11px;color:var(--bb);margin-top:16px;letter-spacing:2px;}
+</style>
+</head>
+<body>
+
+<div id="js-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#ff3d5a;color:#fff;padding:12px;font-family:monospace;font-size:13px;word-break:break-word;">
+  <div style="font-weight:bold;margin-bottom:4px;">⚠️ A real error just happened -- screenshot this and send it:</div>
+  <div id="js-error-text"></div>
+</div>
+
+<!-- PAPER TRADING PAGE -->
+<div class="wrap" id="paper-page">
+
+  <!-- Header -->
+  <div class="hdr">
+    <div class="htitle"><span class="dot"></span>BunkerBuster.io</div>
+  </div>
+
+  <!-- Navigation -->
+  <div class="nav-bar">
+    <button class="nav-btn active" id="nav-paper" onclick="showPage('paper')">📝 PAPER</button>
+    <button class="nav-btn" id="nav-livetrade" onclick="showPage('livetrade')">🔴 LIVE</button>
+    <button class="nav-btn" id="nav-port" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
+  </div>
+
+  <!-- Settings -->
+  <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
+  <div class="settings-panel" id="settings-panel">
+    <div class="settings-menu" id="settings-menu">
+      <div class="settings-menu-item" onclick="openSub('sub-fund')"><span>💰 TRADING FUND</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-tp')"><span>🎯 TAKE PROFIT MODE</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-sl')"><span>🛡 STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
+    </div>
+
+    <!-- Trading Fund -->
+    <div class="settings-sub" id="sub-fund">
+      <button class="settings-back" onclick="closeSub('sub-fund')">← BACK</button>
+      <div class="settings-sub-title">TRADING FUND</div>
+      <div class="settings-lbl">STARTING FUND ($)</div>
+      <input class="settings-input" id="input-fund" type="number" min="1" step="0.01" placeholder="e.g. 100.00"/>
+      <div class="settings-hint">Current: <span id="current-fund-display">$100.00</span>. Applies to new session only.</div>
+      <button class="settings-save" onclick="saveFund()">SAVE FUND</button>
+      <div class="settings-status" id="status-fund"></div>
+    </div>
+
+    <!-- Take Profit -->
+    <div class="settings-sub" id="sub-tp">
+      <button class="settings-back" onclick="closeSub('sub-tp')">← BACK</button>
+      <div class="settings-sub-title">TAKE PROFIT MODE</div>
+      <div class="settings-lbl">SELECT MODE</div>
+      <div class="tp-mode-row" style="grid-template-columns:1fr 1fr 1fr;">
+        <button class="tp-btn" id="btn-trail" onclick="selectTP('TRAIL')">TRAIL STOP</button>
+        <button class="tp-btn" id="btn-fixed" onclick="selectTP('FIXED')">FIXED %</button>
+        <button class="tp-btn active" id="btn-tiered" onclick="selectTP('TIERED')">TIERED PROFITS</button>
+      </div>
+      <div class="settings-lbl" id="tp-pct-lbl" style="color:var(--bb)">TARGET % — SELECT FIXED ABOVE</div>
+      <input class="settings-input" id="input-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;"/>
+      <div class="settings-hint">Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.<br>Tiered: sells 50% of the position the first time it reaches +100% gain and banks that profit immediately. If it keeps climbing to +500%, it sells half of what's left (25% of the original position) and banks that too. Whatever remains keeps running on the same trail-stop logic.</div>
+      <button class="settings-save" onclick="saveTP()">SAVE TAKE PROFIT</button>
+      <div class="settings-status" id="status-tp"></div>
+    </div>
+
+    <!-- Stop Loss -->
+    <div class="settings-sub" id="sub-sl">
+      <button class="settings-back" onclick="closeSub('sub-sl')">← BACK</button>
+      <div class="settings-sub-title">STOP LOSS</div>
+      <div class="settings-lbl">STOP LOSS %</div>
+      <input class="settings-input" id="input-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10"/>
+      <div class="settings-hint">Current: <span id="current-sl-display">10</span>%. Applies to new trades only.</div>
+      <button class="settings-save" onclick="saveSL()">SAVE STOP LOSS</button>
+      <div class="settings-status" id="status-sl"></div>
+    </div>
+
+    <!-- Max Open -->
+    <div class="settings-sub" id="sub-maxopen">
+      <button class="settings-back" onclick="closeSub('sub-maxopen')">← BACK</button>
+      <div class="settings-sub-title">MAX OPEN TRADES</div>
+      <div class="settings-lbl">MAXIMUM SIMULTANEOUS TRADES</div>
+      <input class="settings-input" id="input-maxopen" type="number" min="1" max="20" step="1" placeholder="e.g. 8"/>
+      <div class="settings-hint">Current: <span id="current-maxopen-display">8</span>. Range: 1-20.</div>
+      <button class="settings-save" onclick="saveMaxOpen()">SAVE MAX TRADES</button>
+      <div class="settings-status" id="status-maxopen"></div>
+    </div>
+
+    <!-- Fund Stop Loss -->
+    <div class="settings-sub" id="sub-fundloss">
+      <button class="settings-back" onclick="closeSub('sub-fundloss')">← BACK</button>
+      <div class="settings-sub-title">FUND STOP LOSS</div>
+      <div class="settings-lbl">FUND LOSS LIMIT %</div>
+      <input class="settings-input" id="input-fundloss" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10"/>
+      <div class="settings-hint">Current: <span id="current-fundloss-display">10</span>%. Warning at 70% of limit.</div>
+      <button class="settings-save" onclick="saveFundLoss()">SAVE FUND STOP LOSS</button>
+      <div class="settings-status" id="status-fundloss"></div>
+      <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
+        <div class="settings-lbl" style="margin-top:0;">LOCK IN CURRENT BALANCE</div>
+        <div class="settings-hint">Resets the stop loss to trigger <span id="current-fundloss-display-2">10</span>% below your <b>current</b> fund value ($<span id="current-fund-live">0.00</span>), instead of your original session start. Use this to protect gains after a win streak. This is manual — nothing resets automatically.</div>
+        <button class="settings-save" onclick="lockFund()" style="border-color:var(--yellow);background:rgba(255,194,51,0.08);color:var(--yellow);">🔒 RAISE STOP LOSS TO CURRENT FUND</button>
+        <div class="settings-status" id="status-lockfund"></div>
+      </div>
+      <div style="border-top:1px solid var(--border);margin-top:16px;padding-top:14px;">
+        <div class="settings-lbl" style="margin-top:0;">🔁 AUTOMATIC FUND PROTECTION</div>
+        <div class="settings-hint">When ON, every time the fund reaches a NEW all-time high for this session, the stop loss automatically raises to <span id="current-fundloss-display-3">10</span>% below that new high — locking in gains as they happen instead of you doing it manually. Only ever moves up, never down. Turns OFF at the start of every new session — must be re-enabled each time.</div>
+        <div class="tp-mode-row">
+          <button class="tp-btn" id="btn-autolock-on" onclick="setAutoLock(true)">● ON</button>
+          <button class="tp-btn active" id="btn-autolock-off" onclick="setAutoLock(false)">○ OFF</button>
+        </div>
+        <button class="settings-save" onclick="saveAutoLock()">SAVE AUTO PROTECTION SETTING</button>
+        <div class="settings-status" id="status-autolock"></div>
+      </div>
+    </div>
+
+    <!-- Pool Size -->
+    <div class="settings-sub" id="sub-poolsize">
+      <button class="settings-back" onclick="closeSub('sub-poolsize')">← BACK</button>
+      <div class="settings-sub-title">POOL SIZE</div>
+      <div class="settings-lbl">MAXIMUM POOL SIZE</div>
+      <input class="settings-input" id="input-poolsize" type="number" min="1000" max="50000" step="1000" placeholder="e.g. 10000"/>
+      <div class="settings-hint">Current: <span id="current-poolsize-display">10000</span>. Range: 1,000-50,000.</div>
+      <button class="settings-save" onclick="savePoolSize()">SAVE POOL SIZE</button>
+      <div class="settings-status" id="status-poolsize"></div>
+    </div>
+
+      </div>
+
+<!-- Fund Warning Bar -->
+  <div class="warn-bar" id="fund-warning-bar"></div>
+
+  <!-- Top Stats -->
+  <div class="g3">
+    <div class="stat"><div class="stat-lbl">POOL SIZE</div><div class="stat-val" id="pool" style="color:var(--blue)">0</div></div>
+    <div class="stat"><div class="stat-lbl">SCANNED</div><div class="stat-val" id="scanned" style="color:var(--dim)">0</div></div>
+    <div class="tbox"><div class="tlbl">RUNTIME</div><div class="tval" id="runtime">00:00:00</div></div>
+  </div>
+
+  <!-- Pool Info -->
+  <button class="pool-info-btn" onclick="togglePoolInfo()">ℹ POOL INFO</button>
+  <div class="pool-info-panel" id="pool-info-panel">
+    <div class="sbar" id="status" style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-size:12px;color:var(--dim);margin-bottom:8px;">CONNECTING...</div>
+    <div class="g3" style="margin-bottom:8px;">
+      <div class="stat"><div class="stat-lbl">PUMP LIVE</div><div class="stat-val" id="pump-cnt" style="color:var(--yellow);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">BONK LIVE</div><div class="stat-val" id="bonk-cnt" style="color:var(--yellow);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">DSC FOUND</div><div class="stat-val" id="dsc-key" style="color:var(--blue);font-size:14px;">0</div></div>
+    </div>
+    <div class="g2" style="margin-bottom:8px;">
+      <div class="stat"><div class="stat-lbl">◎ SOL POOL</div><div class="stat-val" id="sol-pool" style="color:var(--green);font-size:14px;">0</div></div>
+    </div>
+    <div class="g2" style="margin-bottom:8px;">
+      <div class="stat"><div class="stat-lbl">PERM BANS</div><div class="stat-val" id="perm-bans" style="color:var(--red);font-size:14px;">0</div></div>
+      <div class="stat"><div class="stat-lbl">TEMP BANS</div><div class="stat-val" id="temp-bans" style="color:var(--yellow);font-size:14px;">0</div></div>
+    </div>
+    <div class="wsbar" id="wsbar">⚡ PUMP.FUN: CONNECTING...</div>
+    <div class="srcrow" id="srcrow"></div>
+  </div>
+
+  <!-- Fund + Savings -->
+  <div class="g2">
+    <div class="card">
+      <div class="card-lbl">TRADING FUND</div>
+      <div class="card-val" id="fund" style="color:var(--green)">$100.00</div>
+      <div class="card-sub" id="alltime">+$0.00 all time</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">SAVINGS</div>
+      <div class="card-val" id="savings" style="color:var(--yellow)">$0.00</div>
+      <div class="card-sub">20% of profits</div>
+    </div>
+  </div>
+
+  <!-- Win Stats -->
+  <div class="g4" style="margin-bottom:8px;">
+    <div class="stat"><div class="stat-lbl">WIN RATE</div><div class="stat-val" id="winrate" style="color:var(--green)">0%</div></div>
+    <div class="stat"><div class="stat-lbl">WINS</div><div class="stat-val" id="wins" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">LOSSES</div><div class="stat-val" id="losses" style="color:var(--red)">0</div></div>
+    <div class="stat"><div class="stat-lbl">RUGS</div><div class="stat-val" id="rugs" style="color:var(--yellow)">0</div></div>
+  </div>
+
+  <!-- Start/Stop -->
+  <button class="main-btn btn-start" id="main-btn" onclick="toggleBot()">▶ START BOT</button>
+
+  <!-- Open Trades -->
+  <div id="open-sec" style="display:none;margin-bottom:10px;">
+    <div class="sec-lbl">OPEN TRADES <span id="open-cnt" style="color:var(--blue)"></span></div>
+    <div id="open-list"></div>
+  </div>
+
+  <!-- Log -->
+  <div class="logwrap">
+    <div class="fbar" id="frozbar">LOG PAUSED — scroll to top to resume</div>
+    <div class="logbox" id="logbox">
+      <div class="log-header">
+        <div class="log-header-lbl">ACTIVITY LOG</div>
+        <div class="log-cnt" id="log-cnt">0 entries</div>
+      </div>
+      <div class="log-filters">
+        <button class="lf act" onclick="setFilter('all')">ALL</button>
+        <button class="lf" onclick="setFilter('entry')">ENTRIES</button>
+        <button class="lf" onclick="setFilter('win')">WINS</button>
+        <button class="lf" onclick="setFilter('loss')">LOSSES</button>
+        <button class="lf" onclick="setFilter('pump')">🔥PUMP</button>
+      </div>
+      <div id="log-list"><div style="font-size:13px;color:var(--dim)">Connecting...</div></div>
+    </div>
+  </div>
+
+  <!-- Closed Trades -->
+  <div id="closed-sec" class="card" style="display:none;">
+    <div class="card-lbl" style="margin-bottom:8px;">CLOSED TRADES</div>
+    <div id="closed-list"></div>
+  </div>
+
+  <!-- Session Stats -->
+  <div class="card">
+    <div class="card-lbl">SESSION STATS</div>
+    <div class="ss-grid">
+      <div class="ss-item"><div class="ss-lbl">POOL SIZE</div><div class="ss-val" id="ss-pool" style="color:var(--blue)">0</div></div>
+      <div class="ss-item"><div class="ss-lbl">AVG SLIPPAGE</div><div class="ss-val" id="ss-slip" style="color:var(--yellow)">0.00%</div></div>
+      <div class="ss-item"><div class="ss-lbl">FEES PAID</div><div class="ss-val" id="ss-fees" style="color:var(--red)">$0.00</div></div>
+      <div class="ss-item"><div class="ss-lbl">SKIPPED</div><div class="ss-val" id="ss-skip" style="color:var(--dim)">0</div></div>
+      <div class="ss-item"><div class="ss-lbl">SESSION FUND</div><div class="ss-val" id="ss-fund" style="color:var(--dim)">$100</div></div>
+      <div class="ss-item"><div class="ss-lbl">MAX TRADES</div><div class="ss-val" id="ss-maxopen" style="color:var(--dim)">8</div></div>
+    </div>
+    <div class="best-trade-card" id="best-trade-card" style="display:none;">
+      <div class="best-trade-title">⭐ BEST TRADE THIS SESSION</div>
+      <div class="best-trade-name" id="bt-name">—</div>
+      <div class="best-trade-grid">
+        <div class="best-trade-cell"><div class="best-trade-lbl">PROFIT</div><div class="best-trade-val" id="bt-pnl" style="color:var(--green)">$0.00</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">GAIN %</div><div class="best-trade-val" id="bt-pct" style="color:var(--green)">0%</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">ENTRY</div><div class="best-trade-val" id="bt-entry" style="font-size:11px;">—</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">EXIT</div><div class="best-trade-val" id="bt-exit" style="font-size:11px;">—</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">SIZE</div><div class="best-trade-val" id="bt-size">$0.00</div></div>
+        <div class="best-trade-cell"><div class="best-trade-lbl">CLOSED BY</div><div class="best-trade-val" id="bt-reason" style="font-size:11px;color:var(--yellow);">—</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">BunkerBuster.io</div>
+</div>
+
+
+<!-- LIVE TRADING PAGE -->
+<div class="wrap" id="livetrade-page" style="display:none;">
+
+  <!-- Header -->
+  <div class="hdr">
+    <div class="htitle"><span class="dot" style="background:var(--red);"></span>BunkerBuster.io -- LIVE</div>
+  </div>
+
+  <div class="nav-bar">
+    <button class="nav-btn" id="nav-paper-l" onclick="showPage('paper')">📝 PAPER</button>
+    <button class="nav-btn active" id="nav-livetrade-l" onclick="showPage('livetrade')">🔴 LIVE</button>
+    <button class="nav-btn" id="nav-port-l" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
+  </div>
+
+  <button class="settings-toggle" onclick="toggleSettingsLive()">⚙ SETTINGS</button>
+
+  <div class="settings-panel" id="settings-panel-lt">
+    <div class="settings-menu" id="settings-menu-lt">
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-tp')"><span>🎯 TAKE PROFIT MODE</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-sl')"><span>🛡️ STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-tp">
+      <button class="settings-back" onclick="closeSubLive('sub-live-tp')">← BACK</button>
+      <div class="settings-sub-title">TAKE PROFIT MODE (LIVE)</div>
+      <div class="settings-lbl">SELECT MODE</div>
+      <div class="tp-mode-row" style="grid-template-columns:1fr 1fr 1fr;">
+        <button class="tp-btn" id="btn-live-trail" onclick="selectLiveTP('TRAIL')">TRAIL STOP</button>
+        <button class="tp-btn" id="btn-live-fixed" onclick="selectLiveTP('FIXED')">FIXED %</button>
+        <button class="tp-btn active" id="btn-live-tiered" onclick="selectLiveTP('TIERED')">TIERED PROFITS</button>
+      </div>
+      <div class="settings-lbl" id="live-tp-pct-lbl" style="color:var(--bb)">TARGET % — SELECT FIXED ABOVE</div>
+      <input class="settings-input" id="input-live-tp-pct" type="number" min="0.1" max="1000" step="0.1" placeholder="e.g. 5.0" disabled style="opacity:0.4;"/>
+      <div class="settings-hint">Separate from paper's own setting. Applies to real positions opened after you save.<br>Trail: activates at 4% gain, exits on 2% pullback.<br>Fixed: exits at your target %.<br>Tiered: sells 50% of the real position the first time it reaches +100% gain. If it keeps climbing to +500%, it sells half of what's left (25% of the original position). Whatever remains keeps running on the same trail-stop logic. Checked on every live price update, same as paper.</div>
+      <button class="settings-save" onclick="saveLiveTP()">SAVE TAKE PROFIT</button>
+      <div class="settings-status" id="status-live-tp"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-sl">
+      <button class="settings-back" onclick="closeSubLive('sub-live-sl')">← BACK</button>
+      <div class="settings-sub-title">STOP LOSS (LIVE)</div>
+      <div class="settings-lbl">STOP LOSS %</div>
+      <input class="settings-input" id="input-live-sl" type="number" min="1" max="100" step="0.1" placeholder="e.g. 10"/>
+      <div class="settings-hint">Current: <span id="current-live-sl-display">10</span>%. Separate from paper's own setting. Checked on every live price update, same as paper.</div>
+      <button class="settings-save" onclick="saveLiveSL()">SAVE STOP LOSS</button>
+      <div class="settings-status" id="status-live-sl"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-maxopen">
+      <button class="settings-back" onclick="closeSubLive('sub-live-maxopen')">← BACK</button>
+      <div class="settings-sub-title">MAX OPEN TRADES (LIVE)</div>
+      <div class="settings-lbl">MAXIMUM SIMULTANEOUS REAL TRADES</div>
+      <input class="settings-input" id="input-live-maxopen" type="number" min="1" max="20" step="1" placeholder="e.g. 4"/>
+      <div class="settings-hint">Current: <span id="current-live-maxopen-display">4</span>. Range: 1-20. Separate from paper's own setting.</div>
+      <button class="settings-save" onclick="saveLiveMaxOpen()">SAVE MAX TRADES</button>
+      <div class="settings-status" id="status-live-maxopen"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-fundloss">
+      <button class="settings-back" onclick="closeSubLive('sub-live-fundloss')">← BACK</button>
+      <div class="settings-sub-title">FUND STOP LOSS (LIVE)</div>
+      <div class="settings-lbl">FUND LOSS LIMIT %</div>
+      <input class="settings-input" id="input-live-fundloss" type="number" min="1" max="100" step="0.1" placeholder="e.g. 20"/>
+      <div class="settings-hint">Current: <span id="current-live-fundloss-display">20</span>%. Separate from paper's own setting. Resets the baseline whenever you set the Live Trading Fund or turn automatic trading on.</div>
+      <button class="settings-save" onclick="saveLiveFundLoss()">SAVE FUND STOP LOSS</button>
+      <div class="settings-status" id="status-live-fundloss"></div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <div class="settings-lbl">LOCK IN CURRENT BALANCE</div>
+        <div class="settings-hint">Resets the stop loss to trigger <span id="current-live-fundloss-display-2">20</span>% below your <b>current</b> Live Fund ($<span id="current-live-fund-live">0.00</span>), instead of where it started. Use this to protect gains after a win streak. This is manual — nothing resets automatically.</div>
+        <button class="settings-save" onclick="lockLiveFund()">🔒 RAISE STOP LOSS TO CURRENT FUND</button>
+        <div class="settings-status" id="status-live-lockfund"></div>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <div class="settings-lbl">🔁 AUTOMATIC FUND PROTECTION</div>
+        <div class="settings-hint">When ON, every time the Live Fund reaches a NEW high for this session, the stop loss automatically raises to <span id="current-live-fundloss-display-3">20</span>% below that new high — locking in gains as they happen instead of you doing it manually. Only ever moves up, never down. Turns OFF whenever automatic live trading is turned off — must be re-enabled each session.</div>
+        <div class="tp-mode-row">
+          <button class="tp-btn" id="btn-live-autolock-on" onclick="setLiveAutoLock(true)">● ON</button>
+          <button class="tp-btn active" id="btn-live-autolock-off" onclick="setLiveAutoLock(false)">○ OFF</button>
+        </div>
+        <button class="settings-save" onclick="saveLiveAutoLock()">SAVE AUTO PROTECTION SETTING</button>
+        <div class="settings-status" id="status-live-autolock"></div>
+      </div>
+    </div>
+
+<!-- Wallets -->
+    <div class="settings-sub" id="sub-wallets">
+      <button class="settings-back" onclick="closeSubLive('sub-wallets')">← BACK</button>
+      <div class="settings-sub-title">LIVE WALLET</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now. Balance refreshes every 30 seconds — USD estimate every 10 minutes.</div>
+
+      <div class="settings-lbl">TRADING WALLET ADDRESS</div>
+      <div class="wallet-display" id="live-trading-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:10px;">TRADING WALLET BALANCE</div>
+      <div class="wallet-display" id="live-trading-balance">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:10px;">SAVINGS WALLET ADDRESS</div>
+      <div class="wallet-display" id="live-savings-address">Checking...</div>
+
+      <div class="settings-lbl" style="margin-top:16px;">LIVE TRADING FUND</div>
+      <div class="settings-hint" style="margin-bottom:8px;">The only amount the bot is ever allowed to use for real trading -- completely separate from your wallet's actual balance, no matter how much that holds. Every real trade adjusts this number directly.</div>
+      <div class="wallet-display" id="live-fund-display" style="font-size:20px;color:var(--green);">$0.0000</div>
+      <input class="settings-input" id="input-live-fund" placeholder="Set the live trading fund amount..." style="margin-top:8px;"/>
+      <button class="settings-save" onclick="saveLiveFund()" style="margin-top:6px;">SET LIVE TRADING FUND</button>
+      <div class="settings-status" id="status-live-fund"></div>
+    </div>
+
+    <!-- Testing -->
+    <div class="settings-sub" id="sub-testing">
+      <button class="settings-back" onclick="closeSubLive('sub-testing')">← BACK</button>
+      <div class="settings-sub-title">TESTING</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Every real-infrastructure test in one place. All build-only or send tiny real amounts -- see each one's own note for exactly what it does.</div>
+
+      <div class="settings-lbl">TEST TRANSACTIONS</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Sends a real, tiny (0.00001 SOL) transfer from the trading wallet to itself -- a genuine proof against real infrastructure, not a simulation. Costs a normal real network fee each time.</div>
+      <button class="settings-save" onclick="runLiveTest(false)">RUN TEST (NORMAL)</button>
+      <button class="settings-save" onclick="runLiveTest(true)" style="margin-top:6px;">RUN TEST (VIA SENDER)</button>
+      <div class="settings-status" id="status-live-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST PUMP.FUN QUOTE</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Builds real buy instructions for a real token using current on-chain data -- proves the connection works, but sends nothing and costs nothing.</div>
+      <input class="settings-input" id="pumpfun-test-mint" placeholder="Paste a real pump.fun token mint address..."/>
+      <button class="settings-save" onclick="runPumpfunQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-pumpfun-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST LETSBONK QUOTE</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for a real LetsBonk token -- builds real buy instructions using current on-chain data, sends nothing and costs nothing.</div>
+      <input class="settings-input" id="letsbonk-test-mint" placeholder="Paste a real LetsBonk token mint address..."/>
+      <button class="settings-save" onclick="runLetsbonkQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-letsbonk-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (PUMP.FUN)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Reports whether a token has graduated off its bonding curve. Nothing sent, nothing costs anything.</div>
+      <input class="settings-input" id="pumpfun-grad-mint" placeholder="Paste a real pump.fun token mint address..."/>
+      <button class="settings-save" onclick="runPumpfunGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
+      <div class="settings-status" id="status-pumpfun-grad"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST GRADUATION CHECK (LETSBONK)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for LetsBonk. Nothing sent, nothing costs anything.</div>
+      <input class="settings-input" id="letsbonk-grad-mint" placeholder="Paste a real LetsBonk token mint address..."/>
+      <button class="settings-save" onclick="runLetsbonkGradTest()" style="margin-top:6px;">CHECK GRADUATION STATUS</button>
+      <div class="settings-status" id="status-letsbonk-grad"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST PUMPSWAP SELL (GRADUATED PUMP.FUN TOKENS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Builds a real sell for an already-graduated token. Sends nothing, costs nothing -- you don't need to actually hold the token to test this.</div>
+      <input class="settings-input" id="pumpswap-test-mint" placeholder="Paste a real, already-graduated pump.fun token mint..."/>
+      <button class="settings-save" onclick="runPumpswapQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-pumpswap-test"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">TEST RAYDIUM CPMM SELL (MIGRATED LETSBONK TOKENS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Same idea, for an already-migrated LetsBonk token. Needs both the token's mint and its new pool address.</div>
+      <input class="settings-input" id="raydiumcpmm-test-mint" placeholder="Paste the migrated token's mint address..."/>
+      <input class="settings-input" id="raydiumcpmm-test-pool" placeholder="Paste its new Raydium CPMM pool address..." style="margin-top:6px;"/>
+      <button class="settings-save" onclick="runRaydiumCpmmQuoteTest()" style="margin-top:6px;">RUN TEST (BUILD ONLY)</button>
+      <div class="settings-status" id="status-raydiumcpmm-test"></div>
+    </div>
+
+    <!-- Live Trade Test -->
+    <div class="settings-sub" id="sub-livetrade">
+      <button class="settings-back" onclick="closeSubLive('sub-livetrade')">← BACK</button>
+      <div class="settings-sub-title" style="color:var(--red);">⚠️ LIVE TRADE TEST -- REAL MONEY</div>
+      <div class="settings-hint" style="margin-bottom:12px;color:var(--red);">Everything here spends or sells real SOL from your real trading wallet. Nothing here is a simulation. Each action asks you to confirm the exact amount before it submits anything.</div>
+
+      <div class="settings-lbl">TOKEN MINT ADDRESS</div>
+      <input class="settings-input" id="livetrade-mint" placeholder="Paste the real token mint address..."/>
+
+      <div class="settings-lbl" style="margin-top:16px;">STEP 1: BUY (~$1 REAL)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Buys approximately $1 worth of this token, real money, sized from the live SOL price.</div>
+      <button class="settings-save" onclick="runLiveTradeBuy('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON PUMP.FUN ($1 REAL)</button>
+      <button class="settings-save" onclick="runLiveTradeBuy('letsbonk')" style="margin-top:6px;background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON LETSBONK ($1 REAL)</button>
+      <div class="settings-status" id="status-livetrade-buy"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">STEP 2: SELL (WHEN READY)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Sells your real, current balance of this exact token -- reads the real amount fresh each time, not an estimate.</div>
+      <button class="settings-save" onclick="runLiveTradeSell('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">SELL (BOUGHT ON PUMP.FUN)</button>
+      <button class="settings-save" onclick="runLiveTradeSell('letsbonk')" style="margin-top:6px;background:rgba(255,80,80,0.15);border-color:var(--red);">SELL (BOUGHT ON LETSBONK)</button>
+      <div class="settings-status" id="status-livetrade-sell"></div>
+    </div>
+  </div>
+
+  <!-- Real Live Stats -->
+  <div class="g2">
+    <div class="stat"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
+    <div class="stat"><div class="stat-lbl">LIVE TRADING FUND</div><div class="stat-val" id="live-fund-display-main" style="color:var(--green);font-size:14px;">$0.0000</div></div>
+  </div>
+  <div class="g2">
+    <div class="card">
+      <div class="card-lbl">TRADING FUND</div>
+      <div class="card-val" id="live-fund-card" style="color:var(--green)">$0.00</div>
+      <div class="card-sub" id="live-alltime">+$0.00 all time</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">SAVINGS</div>
+      <div class="card-val" id="live-savings" style="color:var(--yellow)">$0.00</div>
+      <div class="card-sub">20% of profits</div>
+    </div>
+  </div>
+
+  <div class="g4" style="margin-bottom:8px;">
+    <div class="stat"><div class="stat-lbl">WIN RATE</div><div class="stat-val" id="live-winrate" style="color:var(--green)">0%</div></div>
+    <div class="stat"><div class="stat-lbl">WINS</div><div class="stat-val" id="live-wins" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">LOSSES</div><div class="stat-val" id="live-losses" style="color:var(--red)">0</div></div>
+    <div class="stat"><div class="stat-lbl">RUGS</div><div class="stat-val" id="live-rugs" style="color:var(--yellow)">0</div></div>
+  </div>
+  <div class="g2">
+    <div class="stat"><div class="stat-lbl">TIPS PAID</div><div class="stat-val" id="live-tips-paid" style="color:var(--yellow);font-size:14px;">$0.0000</div></div>
+    <div class="stat"><div class="stat-lbl">NETWORK FEES</div><div class="stat-val" id="live-network-fees" style="color:var(--red);font-size:14px;">$0.0000</div></div>
+  </div>
+
+  <div class="card" style="margin-top:10px;background:rgba(255,80,80,0.08);border-color:var(--red);">
+    <div style="color:var(--red);text-align:center;padding:10px;">
+      When ON, the bot buys for real, automatically, the instant a qualifying entry fires -- the exact same filters already proven in paper trading, including the wallet concentration check. Every open real position is watched automatically regardless: a 10% stop loss checks its real price every 10 seconds and sells for real if hit.
+    </div>
+    <button class="main-btn btn-start" id="live-trading-toggle-btn" onclick="toggleLiveTrading()" style="margin-top:10px;">▶ TURN ON AUTOMATIC LIVE TRADING</button>
+  </div>
+
+  <div class="card" style="margin-top:10px;">
+    <div class="card-lbl">REAL OPEN POSITIONS</div>
+    <div id="live-open-positions" style="margin-top:8px;color:var(--dim);">None open right now.</div>
+  </div>
+
+  <div class="card" style="margin-top:10px;">
+    <a href="/api/live/export" download style="display:block;width:100%;padding:10px;border-radius:6px;border:1px solid var(--green);background:rgba(0,255,136,0.08);color:var(--green);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:2px;text-align:center;text-decoration:none;box-sizing:border-box;">⬇ EXPORT LIVE TRADES (CSV)</a>
+  </div>
+
+  <div class="logwrap" style="margin-top:10px;">
+    <div class="logbox" id="live-logbox">
+      <div class="log-header">
+        <div class="log-header-lbl">LIVE ACTIVITY LOG</div>
+        <div class="log-cnt" id="live-log-cnt">0 entries</div>
+      </div>
+      <div class="log-filters">
+        <button class="lf act" data-f="all" onclick="setLiveFilter('all')">ALL</button>
+        <button class="lf" data-f="entry" onclick="setLiveFilter('entry')">ENTRIES</button>
+        <button class="lf" data-f="win" onclick="setLiveFilter('win')">WINS</button>
+        <button class="lf" data-f="loss" onclick="setLiveFilter('loss')">LOSSES</button>
+        <button class="lf" data-f="pump" onclick="setLiveFilter('pump')">🔥PUMP</button>
+      </div>
+      <div id="live-log-list"><div style="font-size:13px;color:var(--dim)">Connecting...</div></div>
+    </div>
+  </div>
+
+  <div id="live-closed-sec" class="card" style="display:none;">
+    <div class="card-lbl" style="margin-bottom:8px;">CLOSED TRADES</div>
+    <div id="live-closed-list"></div>
+  </div>
+
+  <div class="foot">BunkerBuster.io -- LIVE TRADING</div>
+</div>
+
+<!-- PORTFOLIO PAGE -->
+<div class="wrap" id="port-page" style="display:none;">
+
+  <div class="hdr">
+    <div class="htitle">BunkerBuster.io</div>
+  </div>
+
+  <div class="nav-bar">
+    <button class="nav-btn" id="nav-paper-p" onclick="showPage('paper')">📝 PAPER</button>
+    <button class="nav-btn" id="nav-livetrade-p" onclick="showPage('livetrade')">🔴 LIVE</button>
+    <button class="nav-btn active" id="nav-port-p" onclick="showPage('portfolio')">📊 PORTFOLIO</button>
+  </div>
+
+  <!-- Paper / Live history toggle -->
+  <div class="tp-mode-row" style="margin-bottom:8px;">
+    <button class="tp-btn active" id="btn-src-paper" onclick="setPortSource('paper')">📝 PAPER</button>
+    <button class="tp-btn" id="btn-src-live" onclick="setPortSource('live')">🔴 LIVE</button>
+  </div>
+
+  <!-- Stats Mode Toggle -->
+  <div class="tp-mode-row" style="margin-bottom:8px;">
+    <button class="tp-btn active" id="btn-stats-all" onclick="setStatsMode('all')">ALL TIME</button>
+    <button class="tp-btn" id="btn-stats-session" onclick="setStatsMode('session')">SESSION</button>
+  </div>
+
+  <!-- Performance Stats -->
+  <div class="card">
+    <div class="card-lbl" id="pt-perf-lbl">ALL TIME PERFORMANCE</div>
+    <div class="port-grid" style="margin-top:8px;">
+      <div class="port-stat"><div class="port-lbl">TOTAL TRADES</div><div class="port-val" id="pt-total" style="color:var(--blue)">0</div></div>
+      <div class="port-stat"><div class="port-lbl">WIN RATE</div><div class="port-val" id="pt-wr" style="color:var(--green)">0%</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL P&L</div><div class="port-val" id="pt-pnl" style="color:var(--green)">$0.00</div></div>
+      <div class="port-stat"><div class="port-lbl">RETURN %</div><div class="port-val" id="pt-return-pct" style="color:var(--green)">0.00%</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL FEES</div><div class="port-val" id="pt-fees" style="color:var(--red)">$0.00</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL WINS</div><div class="port-val" id="pt-wins" style="color:var(--green)">0</div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL LOSSES</div><div class="port-val" id="pt-losses" style="color:var(--red)">0</div></div>
+    </div>
+  </div>
+
+  <!-- Best and Worst -->
+  <div class="g2">
+    <div class="card">
+      <div class="card-lbl">BEST TRADE EVER</div>
+      <div class="port-val" id="pt-best-name" style="color:var(--green);font-size:14px;margin:6px 0;">—</div>
+      <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:var(--green);" id="pt-best-pnl">$0.00</div>
+      <div style="font-size:12px;color:var(--green);margin-top:2px;" id="pt-best-pct">0.00%</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;">
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">SIZE</div><div style="font-size:11px;" id="pt-best-size">—</div></div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">ENTRY→EXIT</div><div style="font-size:10px;" id="pt-best-prices">—</div></div>
+      </div>
+      <div style="font-size:11px;color:var(--dim);margin-top:4px;" id="pt-best-reason">—</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">WORST TRADE EVER</div>
+      <div class="port-val" id="pt-worst-name" style="color:var(--red);font-size:14px;margin:6px 0;">—</div>
+      <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:700;color:var(--red);" id="pt-worst-pnl">$0.00</div>
+      <div style="font-size:12px;color:var(--red);margin-top:2px;" id="pt-worst-pct">0.00%</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;">
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">SIZE</div><div style="font-size:11px;" id="pt-worst-size">—</div></div>
+        <div style="background:rgba(0,0,0,0.2);border-radius:4px;padding:5px;text-align:center;"><div style="font-size:10px;color:var(--dim);">ENTRY→EXIT</div><div style="font-size:10px;" id="pt-worst-prices">—</div></div>
+      </div>
+      <div style="font-size:11px;color:var(--dim);margin-top:4px;" id="pt-worst-reason">—</div>
+    </div>
+  </div>
+
+  <!-- Session History -->
+  <div class="card">
+    <div class="card-lbl" style="margin-bottom:8px;">SESSION HISTORY <span id="pt-session-count" style="color:var(--dim);font-size:11px;"></span></div>
+    <div id="pt-sessions"><div style="font-size:13px;color:var(--dim);">No sessions recorded yet.</div></div>
+  </div>
+
+  <!-- Search -->
+  <div class="search-bar">
+    <div style="font-size:11px;letter-spacing:2px;color:var(--dim);margin-bottom:8px;">SEARCH TRADE HISTORY</div>
+    <input class="search-input" id="pt-search-token" placeholder="Search by token name..." oninput="searchTrades()"/>
+    <div style="font-size:11px;color:var(--dim);letter-spacing:1px;margin-bottom:6px;">FILTER BY DATE</div>
+    <input class="search-input" id="pt-search-date" type="date" oninput="searchTrades()" style="color-scheme:dark;"/>
+    <div class="filter-row">
+      <button class="filter-btn active" onclick="setFilter2('chain','all',this)">ALL CHAINS</button>
+      <button class="filter-btn" onclick="setFilter2('chain','solana',this)">◎ SOL</button>
+    </div>
+    <div class="filter-row" style="margin-top:6px;">
+      <button class="filter-btn active" onclick="setFilter2('src','all',this)">ALL SOURCES</button>
+      <button class="filter-btn" onclick="setFilter2('src','PUMP',this)">PUMP</button>
+      <button class="filter-btn pt-live-only" style="display:none;" onclick="setFilter2('src','BONK',this)">BONK</button>
+      <button class="filter-btn pt-paper-only" onclick="setFilter2('src','DSC',this)">DSC</button>
+      <button class="filter-btn pt-paper-only" onclick="setFilter2('src','GRAD',this)">GRAD</button>
+    </div>
+    <div class="filter-row" style="margin-top:6px;">
+      <button class="filter-btn active" onclick="setFilter2('result','all',this)">ALL</button>
+      <button class="filter-btn" onclick="setFilter2('result','win',this)">WINS</button>
+      <button class="filter-btn" onclick="setFilter2('result','loss',this)">LOSSES</button>
+    </div>
+    <div class="filter-row" style="margin-top:6px;">
+      <button class="filter-btn active" onclick="setFilter2('exit','all',this)">ALL EXITS</button>
+      <button class="filter-btn" onclick="setFilter2('exit','trail',this)">TRAIL</button>
+      <button class="filter-btn" onclick="setFilter2('exit','stale',this)">STALE</button>
+      <button class="filter-btn" onclick="setFilter2('exit','stop loss',this)">SL</button>
+      <button class="filter-btn" onclick="setFilter2('exit','manual',this)">MANUAL</button>
+    </div>
+  </div>
+
+  <!-- Trade History -->
+  <div class="trade-table">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="font-size:11px;letter-spacing:2px;color:var(--dim);">TRADE HISTORY <span id="pt-trade-count" style="color:var(--dim);"></span></div>
+      <select id="pt-per-page" onchange="changePerPage()" style="background:rgba(0,0,0,0.3);border:1px solid var(--bb);border-radius:6px;color:var(--dim);font-family:'Share Tech Mono',monospace;font-size:11px;padding:4px 8px;">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="99999">ALL</option>
+      </select>
+    </div>
+    <a id="pt-export-link" href="/api/portfolio/export" download style="display:block;width:100%;padding:10px;border-radius:6px;border:1px solid var(--green);background:rgba(0,255,136,0.08);color:var(--green);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:2px;text-align:center;text-decoration:none;margin-bottom:10px;">⬇ EXPORT FULL HISTORY (CSV)</a>
+    <div id="pt-trades"><div style="font-size:13px;color:var(--dim);">No trades recorded yet.</div></div>
+    <div class="page-row">
+      <button class="page-btn" id="pt-prev" onclick="changePage(-1)" disabled>← PREV</button>
+      <div class="page-info" id="pt-page-info"></div>
+      <button class="page-btn" id="pt-next" onclick="changePage(1)" disabled>NEXT →</button>
+    </div>
+  </div>
+
+  <div class="foot">BunkerBuster.io</div>
+</div>
+
+<script>
+function showJsError(msg) {
+  var banner = document.getElementById('js-error-banner');
+  var text = document.getElementById('js-error-text');
+  if (banner && text) { text.textContent = msg; banner.style.display = 'block'; }
+}
+window.onerror = function(msg, source, lineno, colno, error) {
+  var banner = document.getElementById('js-error-banner');
+  var text = document.getElementById('js-error-text');
+  if (banner && text) {
+    text.textContent = msg + ' -- line ' + lineno + ', col ' + colno + (error && error.stack ? ' -- ' + error.stack.split('\n')[0] : '');
+    banner.style.display = 'block';
+  }
+  return false;
+};
+var BASE = '';
+var botRunning = false;
+var liveTradingOn = false;
+var logFilter = 'all';
+var allLogs = [];
+var frozen = false;
+var liveLogFilter = 'all';
+var liveAllLogs = [];
+var startTime = null;
+var timerId = null;
+var currentTPMode = 'TIERED';
+var currentLiveTPMode = 'TIERED';
+var currentAutoLockEnabled = false;
+var currentLiveAutoLockEnabled = false;
+var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
+var ptPage = 0;
+var ptLimit = 50;
+
+document.addEventListener('DOMContentLoaded', function() {
+  var lb = document.getElementById('logbox');
+  var fb = document.getElementById('frozbar');
+  lb.addEventListener('scroll', function() {
+    if (lb.scrollTop < 30 && frozen) { frozen = false; fb.style.display = 'none'; renderLog(); }
+    else if (lb.scrollTop >= 30 && !frozen) { frozen = true; fb.style.display = 'block'; }
+  }, { passive: true });
+  setInterval(fetchState, 2000);
+  fetchState();
+});
+
+function f2(n) { return parseFloat(n || 0).toFixed(2); }
+function f8(n) { return parseFloat(n || 0).toFixed(8); }
+function mcapFmt(n) {
+  n = parseFloat(n || 0);
+  if (n >= 1000) return (n/1000).toFixed(1) + 'k';
+  return n.toFixed(0);
+}
+function pSign(n) { return n >= 0 ? '+' : ''; }
+
+function caRow(mint) {
+  if (!mint) return '';
+  var short = mint.slice(0, 4) + '...' + mint.slice(-4);
+  return '<div class="ca-row" onclick="copyCA(\'' + mint + '\', event)">CA: <span class="ca-addr">' + short + '</span> <span class="ca-copy" id="ca-copy-' + mint + '">📋</span></div>';
+}
+
+async function copyCA(mint, ev) {
+  if (ev) ev.stopPropagation();
+  try {
+    await navigator.clipboard.writeText(mint);
+    var el = document.getElementById('ca-copy-' + mint);
+    if (el) { var old = el.textContent; el.textContent = '✅'; setTimeout(function() { el.textContent = old; }, 1200); }
+  } catch(e) {}
+}
+
+// ── PAGE NAVIGATION ───────────────────────────────────────────
+function showPage(page) {
+  try {
+    var pages = { paper: 'paper-page', livetrade: 'livetrade-page', portfolio: 'port-page' };
+    Object.keys(pages).forEach(function(key) {
+      var el = document.getElementById(pages[key]);
+      if (!el) throw new Error('showPage: missing page element for "' + key + '" (expected id="' + pages[key] + '")');
+      el.style.display = (key === page) ? 'block' : 'none';
+    });
+    var navSuffixes = ['', '-p', '-l'];
+    navSuffixes.forEach(function(suf) {
+      var paperBtn = document.getElementById('nav-paper' + suf);
+      var liveBtn = document.getElementById('nav-livetrade' + suf);
+      var portBtn = document.getElementById('nav-port' + suf);
+      if (paperBtn) paperBtn.classList.toggle('active', page === 'paper');
+      if (liveBtn) liveBtn.classList.toggle('active', page === 'livetrade');
+      if (portBtn) portBtn.classList.toggle('active', page === 'portfolio');
+    });
+    if (page === 'portfolio') loadPortfolioPage();
+    if (page === 'livetrade') refreshLivePrice();
+  } catch (e) {
+    showJsError('showPage(' + page + ') failed: ' + e.message);
+  }
+}
+
+var lastLivePriceRefresh = 0;
+async function refreshLivePrice() {
+  var now = Date.now();
+  if (now - lastLivePriceRefresh < 20000) return; // avoid firing a new real request on every rapid tab switch
+  lastLivePriceRefresh = now;
+  try { await fetch(BASE + '/api/live/refresh-price', { method: 'POST' }); }
+  catch (e) {}
+}
+
+// ── SETTINGS ──────────────────────────────────────────────────
+function toggleSettings() {
+  try {
+    document.getElementById('settings-panel').classList.toggle('open');
+    document.getElementById('settings-menu').style.display = 'flex';
+    document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+  } catch (e) { showJsError('toggleSettings failed: ' + e.message); }
+}
+
+function openSub(id) {
+  try {
+    document.getElementById('settings-menu').style.display = 'none';
+    var el = document.getElementById(id);
+    if (!el) throw new Error('no settings panel with id="' + id + '"');
+    el.classList.add('open');
+  } catch (e) { showJsError('openSub(' + id + ') failed: ' + e.message); }
+}
+
+function closeSub(id) {
+  try {
+    document.getElementById(id).classList.remove('open');
+    document.getElementById('settings-menu').style.display = 'flex';
+  } catch (e) { showJsError('closeSub(' + id + ') failed: ' + e.message); }
+}
+
+function toggleSettingsLive() {
+  try {
+    document.getElementById('settings-panel-lt').classList.toggle('open');
+    document.getElementById('settings-menu-lt').style.display = 'flex';
+    document.querySelectorAll('.settings-sub').forEach(function(s) { s.classList.remove('open'); });
+  } catch (e) { showJsError('toggleSettingsLive failed: ' + e.message); }
+}
+
+function openSubLive(id) {
+  try {
+    document.getElementById('settings-menu-lt').style.display = 'none';
+    var el = document.getElementById(id);
+    if (!el) throw new Error('no settings panel with id="' + id + '"');
+    el.classList.add('open');
+  } catch (e) { showJsError('openSubLive(' + id + ') failed: ' + e.message); }
+}
+
+function closeSubLive(id) {
+  try {
+    document.getElementById(id).classList.remove('open');
+    document.getElementById('settings-menu-lt').style.display = 'flex';
+  } catch (e) { showJsError('closeSubLive(' + id + ') failed: ' + e.message); }
+}
+
+function selectTP(mode) {
+  currentTPMode = mode;
+  document.getElementById('btn-trail').classList.toggle('active', mode === 'TRAIL');
+  document.getElementById('btn-fixed').classList.toggle('active', mode === 'FIXED');
+  document.getElementById('btn-tiered').classList.toggle('active', mode === 'TIERED');
+  var input = document.getElementById('input-tp-pct');
+  var lbl = document.getElementById('tp-pct-lbl');
+  if (mode === 'FIXED') {
+    input.disabled = false; input.style.opacity = '1';
+    lbl.textContent = 'TARGET PROFIT %'; lbl.style.color = 'var(--dim)';
+    input.focus();
+  } else {
+    input.disabled = true; input.style.opacity = '0.4';
+    lbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; lbl.style.color = 'var(--bb)';
+  }
+}
+
+function selectLiveTP(mode) {
+  currentLiveTPMode = mode;
+  document.getElementById('btn-live-trail').classList.toggle('active', mode === 'TRAIL');
+  document.getElementById('btn-live-fixed').classList.toggle('active', mode === 'FIXED');
+  document.getElementById('btn-live-tiered').classList.toggle('active', mode === 'TIERED');
+  var input = document.getElementById('input-live-tp-pct');
+  var lbl = document.getElementById('live-tp-pct-lbl');
+  if (mode === 'FIXED') {
+    input.disabled = false; input.style.opacity = '1';
+    lbl.textContent = 'TARGET PROFIT %'; lbl.style.color = 'var(--dim)';
+    input.focus();
+  } else {
+    input.disabled = true; input.style.opacity = '0.4';
+    lbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; lbl.style.color = 'var(--bb)';
+  }
+}
+
+function setLiveAutoLock(enabled) {
+  currentLiveAutoLockEnabled = enabled;
+  document.getElementById('btn-live-autolock-on').classList.toggle('active', enabled);
+  document.getElementById('btn-live-autolock-off').classList.toggle('active', !enabled);
+}
+
+async function lockLiveFund() {
+  var el = document.getElementById('status-live-lockfund');
+  try {
+    var res = await fetch(BASE + '/api/live/lock-fund', { method: 'POST' });
+    if (!res.ok) { el.textContent = '❌ Failed'; el.style.color = 'var(--red)'; return; }
+    var data = await res.json();
+    el.textContent = '✅ Locked at $' + f2(data.newBase) + ' — stop loss now triggers below $' + f2(data.triggerAt);
+    el.style.color = 'var(--green)';
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function saveLiveAutoLock() {
+  var el = document.getElementById('status-live-autolock');
+  var ok = await apiPost({ liveAutoLockEnabled: currentLiveAutoLockEnabled });
+  el.textContent = ok ? '✅ Auto fund protection: ' + (currentLiveAutoLockEnabled ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+function setAutoLock(enabled) {
+  currentAutoLockEnabled = enabled;
+  document.getElementById('btn-autolock-on').classList.toggle('active', enabled);
+  document.getElementById('btn-autolock-off').classList.toggle('active', !enabled);
+}
+
+function togglePoolInfo() {
+  document.getElementById('pool-info-panel').classList.toggle('open');
+}
+
+// ── SAVE FUNCTIONS ────────────────────────────────────────────
+async function apiPost(body) {
+  var res = await fetch(BASE + '/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  });
+  return res.ok;
+}
+
+async function saveFund() {
+  var el = document.getElementById('status-fund');
+  var n = parseFloat(document.getElementById('input-fund').value);
+  if (isNaN(n) || n <= 0) { el.textContent = 'Invalid amount'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ sessionFund: n });
+  el.textContent = ok ? '✅ Fund set to $' + n.toFixed(2) : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveFund() {
+  var el = document.getElementById('status-live-fund');
+  var n = parseFloat(document.getElementById('input-live-fund').value);
+  if (isNaN(n) || n < 0) { el.textContent = 'Invalid amount'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveFund: n });
+  el.textContent = ok ? '✅ Live Trading Fund set to $' + n.toFixed(2) : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveTP() {
+  var el = document.getElementById('status-tp');
+  var body = { takeProfitMode: currentTPMode };
+  if (currentTPMode === 'FIXED') {
+    var pct = parseFloat(document.getElementById('input-tp-pct').value);
+    if (isNaN(pct) || pct <= 0) { el.textContent = 'Enter a valid %'; el.style.color = 'var(--red)'; return; }
+    body.takeProfitPct = pct;
+  }
+  var ok = await apiPost(body);
+  el.textContent = ok ? '✅ Saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveTP() {
+  var el = document.getElementById('status-live-tp');
+  var body = { liveTakeProfitMode: currentLiveTPMode };
+  if (currentLiveTPMode === 'FIXED') {
+    var pct = parseFloat(document.getElementById('input-live-tp-pct').value);
+    if (isNaN(pct) || pct <= 0) { el.textContent = 'Enter a valid %'; el.style.color = 'var(--red)'; return; }
+    body.liveTakeProfitPct = pct;
+  }
+  var ok = await apiPost(body);
+  el.textContent = ok ? '✅ Saved' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveSL() {
+  var el = document.getElementById('status-sl');
+  var n = parseFloat(document.getElementById('input-sl').value);
+  if (isNaN(n) || n <= 0 || n > 100) { el.textContent = 'Enter 1-100'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ stopLossPct: n });
+  el.textContent = ok ? '✅ SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveMaxOpen() {
+  var el = document.getElementById('status-maxopen');
+  var n = parseInt(document.getElementById('input-maxopen').value);
+  if (isNaN(n) || n < 1 || n > 20) { el.textContent = 'Enter 1-20'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ maxOpen: n });
+  el.textContent = ok ? '✅ Max set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveFundLoss() {
+  var el = document.getElementById('status-fundloss');
+  var n = parseFloat(document.getElementById('input-fundloss').value);
+  if (isNaN(n) || n < 1 || n > 100) { el.textContent = 'Enter 1-100'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ fundStopLossPct: n });
+  el.textContent = ok ? '✅ Fund SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveSL() {
+  var el = document.getElementById('status-live-sl');
+  var n = parseFloat(document.getElementById('input-live-sl').value);
+  if (isNaN(n) || n < 1 || n > 100) { el.textContent = 'Enter 1-100'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveStopLossPct: n });
+  el.textContent = ok ? '✅ Live Stop Loss set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveMaxOpen() {
+  var el = document.getElementById('status-live-maxopen');
+  var n = parseInt(document.getElementById('input-live-maxopen').value);
+  if (isNaN(n) || n < 1 || n > 20) { el.textContent = 'Enter 1-20'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveMaxOpen: n });
+  el.textContent = ok ? '✅ Live max set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function saveLiveFundLoss() {
+  var el = document.getElementById('status-live-fundloss');
+  var n = parseFloat(document.getElementById('input-live-fundloss').value);
+  if (isNaN(n) || n < 1 || n > 100) { el.textContent = 'Enter 1-100'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ liveFundStopLossPct: n });
+  el.textContent = ok ? '✅ Live Fund SL set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function lockFund() {
+  var el = document.getElementById('status-lockfund');
+  try {
+    var res = await fetch(BASE + '/api/lock-fund', { method: 'POST' });
+    if (!res.ok) { el.textContent = '❌ Failed'; el.style.color = 'var(--red)'; return; }
+    var data = await res.json();
+    el.textContent = '✅ Locked at $' + f2(data.newBase) + ' — stop loss now triggers below $' + f2(data.triggerAt);
+    el.style.color = 'var(--green)';
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function savePoolSize() {
+  var el = document.getElementById('status-poolsize');
+  var n = parseInt(document.getElementById('input-poolsize').value);
+  if (isNaN(n) || n < 1000 || n > 50000) { el.textContent = 'Enter 1000-50000'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ maxPool: n });
+  el.textContent = ok ? '✅ Pool set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+async function runLiveTest(viaSender) {
+  var el = document.getElementById('status-live-test');
+  var path = viaSender ? '/api/live/test-transaction-sender' : '/api/live/test-transaction';
+  el.textContent = 'Sending real transaction, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + path, { method: 'POST' });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    var r = data.result;
+    var line = r.outcome + ' -- signature: ' + r.signature + (r.error ? ' -- ' + r.error : '');
+    el.textContent = (r.outcome === 'CONFIRMED' ? '✅ ' : '⚠️ ') + line;
+    el.style.color = r.outcome === 'CONFIRMED' ? 'var(--green)' : 'var(--red)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runPumpfunQuoteTest() {
+  var el = document.getElementById('status-pumpfun-test');
+  var mint = document.getElementById('pumpfun-test-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-pumpfun-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runLetsbonkQuoteTest() {
+  var el = document.getElementById('status-letsbonk-test');
+  var mint = document.getElementById('letsbonk-test-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-letsbonk-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runGraduationTest(platform) {
+  var elId = platform === 'pumpfun' ? 'status-pumpfun-grad' : 'status-letsbonk-grad';
+  var mintId = platform === 'pumpfun' ? 'pumpfun-grad-mint' : 'letsbonk-grad-mint';
+  var endpoint = platform === 'pumpfun' ? '/api/live/test-pumpfun-graduated' : '/api/live/test-letsbonk-graduated';
+  var el = document.getElementById(elId);
+  var mint = document.getElementById(mintId).value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Checking, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = data.graduated ? '✅ GRADUATED' : '✅ Still on curve (not graduated)';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+function runPumpfunGradTest() { runGraduationTest('pumpfun'); }
+function runLetsbonkGradTest() { runGraduationTest('letsbonk'); }
+
+async function runPumpswapQuoteTest() {
+  var el = document.getElementById('status-pumpswap-test');
+  var mint = document.getElementById('pumpswap-test-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-pumpswap-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runRaydiumCpmmQuoteTest() {
+  var el = document.getElementById('status-raydiumcpmm-test');
+  var mint = document.getElementById('raydiumcpmm-test-mint').value.trim();
+  var poolId = document.getElementById('raydiumcpmm-test-pool').value.trim();
+  if (!mint || !poolId) { el.textContent = 'Paste both the mint and pool address first'; el.style.color = 'var(--red)'; return; }
+  el.textContent = 'Building instructions, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var res = await fetch(BASE + '/api/live/test-raydiumcpmm-quote', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint, poolId: poolId })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    el.textContent = '✅ Built ' + data.instructionCount + ' instruction(s) successfully -- nothing sent';
+    el.style.color = 'var(--green)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runLiveTradeBuy(platform) {
+  var el = document.getElementById('status-livetrade-buy');
+  var mint = document.getElementById('livetrade-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
+  var platformLabel = platform === 'pumpfun' ? 'pump.fun' : 'LetsBonk';
+  var confirmed = confirm('This will spend approximately $1 in REAL SOL to buy this token on ' + platformLabel + '.\n\nMint: ' + mint + '\n\nThis is not a test -- it is a real transaction. Continue?');
+  if (!confirmed) { el.textContent = 'Cancelled -- nothing sent'; el.style.color = 'var(--dim)'; return; }
+  el.textContent = 'Submitting real transaction, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var endpoint = platform === 'pumpfun' ? '/api/live/buy-pumpfun-real' : '/api/live/buy-letsbonk-real';
+    var res = await fetch(BASE + endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      el.textContent = '❌ ' + (data.error || 'Failed');
+      el.style.color = 'var(--red)';
+      return;
+    }
+    var r = data.result;
+    el.textContent = (r.outcome === 'CONFIRMED' ? '✅ ' : '⚠️ ') + r.outcome + ' -- signature: ' + r.signature + (r.error ? ' -- ' + r.error : '');
+    el.style.color = r.outcome === 'CONFIRMED' ? 'var(--green)' : 'var(--red)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function runLiveTradeSell(platform) {
+  var el = document.getElementById('status-livetrade-sell');
+  var mint = document.getElementById('livetrade-mint').value.trim();
+  if (!mint) { el.textContent = 'Paste the real token mint address you bought first'; el.style.color = 'var(--red)'; return; }
+  var platformLabel = platform === 'pumpfun' ? 'pump.fun' : 'LetsBonk';
+  var confirmed = confirm('This will sell your real, current balance of this token on ' + platformLabel + ' for real SOL.\n\nMint: ' + mint + '\n\nThis is not a test -- it is a real transaction. Continue?');
+  if (!confirmed) { el.textContent = 'Cancelled -- nothing sent'; el.style.color = 'var(--dim)'; return; }
+  el.textContent = 'Reading real balance and submitting, please wait...';
+  el.style.color = 'var(--dim)';
+  try {
+    var endpoint = platform === 'pumpfun' ? '/api/live/sell-pumpfun-real' : '/api/live/sell-letsbonk-real';
+    var res = await fetch(BASE + endpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint: mint })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      var diagText = data.diagnostic ? (' -- tokenProgram: ' + data.diagnostic.tokenProgram + ' | tokenAccount: ' + data.diagnostic.tokenAccount + (data.diagnostic.rawError ? ' | ' + data.diagnostic.rawError : '')) : '';
+      el.textContent = '❌ ' + (data.error || 'Failed') + diagText;
+      el.style.color = 'var(--red)';
+      return;
+    }
+    var r = data.result;
+    el.textContent = (r.outcome === 'CONFIRMED' ? '✅ ' : '⚠️ ') + r.outcome + ' -- sold ' + data.soldAmount + ' raw units -- signature: ' + r.signature + (r.error ? ' -- ' + r.error : '');
+    el.style.color = r.outcome === 'CONFIRMED' ? 'var(--green)' : 'var(--red)';
+  } catch (e) {
+    el.textContent = '❌ Request failed: ' + e.message;
+    el.style.color = 'var(--red)';
+  }
+}
+
+async function saveAutoLock() {
+  var el = document.getElementById('status-autolock');
+  var ok = await apiPost({ autoLockEnabled: currentAutoLockEnabled });
+  el.textContent = ok ? '✅ Auto fund protection: ' + (currentAutoLockEnabled ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
+// ── LOG ───────────────────────────────────────────────────────
+function setFilter(f) {
+  logFilter = f;
+  document.querySelectorAll('.lf').forEach(function(b) {
+    b.classList.toggle('act', b.textContent.toLowerCase().indexOf(f) >= 0 || (f === 'all' && b.textContent === 'ALL'));
+  });
+  if (!frozen) renderLog();
+}
+
+// Detects a Solana mint address (base58, 32-44 chars) inside a log
+// message and wraps it as a one-click copy element, reusing the same
+// copyCA() function already used for open/closed trades — so the same
+// tap-to-copy behavior now works for addresses appearing in the activity
+// log (e.g. "NEW TOKEN X | PUMP | <mint> | Added to pool").
+function linkifyMint(msg) {
+  var mintPattern = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+  return msg.replace(mintPattern, function(match) {
+    return '<span class="ca-addr" style="cursor:pointer;text-decoration:underline;" onclick="copyCA(\'' + match + '\', event)">' + match + ' <span class="ca-copy" id="ca-copy-' + match + '">📋</span></span>';
+  });
+}
+
+function renderLog() {
+  var el = document.getElementById('log-list');
+  var fl = logFilter === 'all' ? allLogs : allLogs.filter(function(e) { return e.type === logFilter; });
+  el.innerHTML = '';
+  fl.slice(0, 150).forEach(function(e) {
+    var d = document.createElement('div');
+    d.className = 'le ' + (e.type || 'info');
+    d.innerHTML = '<span class="lt">' + e.time + '</span>' + linkifyMint(e.msg);
+    el.appendChild(d);
+  });
+}
+
+function setLiveFilter(f) {
+  try {
+    liveLogFilter = f;
+    var liveBox = document.getElementById('live-logbox');
+    if (liveBox) {
+      liveBox.querySelectorAll('.lf').forEach(function(b) {
+        b.classList.toggle('act', b.getAttribute('data-f') === f);
+      });
+    }
+    renderLiveLog();
+  } catch (e) { showJsError('setLiveFilter failed: ' + e.message); }
+}
+
+function renderLiveLog() {
+  var el = document.getElementById('live-log-list');
+  if (!el) return;
+  var fl = liveLogFilter === 'all' ? liveAllLogs : liveAllLogs.filter(function(e) {
+    // PUMP on the live log = every real-trade line on pump.fun (paper's PUMP shows feed status lines instead)
+    if (liveLogFilter === 'pump') return String(e.msg || '').toLowerCase().indexOf('pump.fun') >= 0;
+    return e.type === liveLogFilter;
+  });
+  el.innerHTML = '';
+  fl.slice(0, 150).forEach(function(e) {
+    var d = document.createElement('div');
+    d.className = 'le ' + (e.type || 'info');
+    d.innerHTML = '<span class="lt">' + e.time + '</span>' + linkifyMint(e.msg);
+    el.appendChild(d);
+  });
+}
+
+function startTimer(st) {
+  startTime = st || Date.now();
+  if (timerId) clearInterval(timerId);
+  timerId = setInterval(function() {
+    var s = Math.floor((Date.now() - startTime) / 1000);
+    document.getElementById('runtime').textContent =
+      Math.floor(s/3600).toString().padStart(2,'0') + ':' +
+      Math.floor((s%3600)/60).toString().padStart(2,'0') + ':' +
+      (s%60).toString().padStart(2,'0');
+  }, 1000);
+}
+
+async function toggleBot() {
+  try { await fetch(BASE + (botRunning ? '/api/stop' : '/api/start'), { method: 'POST' }); } catch(e) {}
+}
+
+async function toggleLiveTrading() {
+  var confirmed = confirm(liveTradingOn
+    ? 'Turn OFF automatic live trading? Any already-open real position keeps being watched by the stop loss either way.'
+    : 'Turn ON automatic live trading? The bot will start buying for REAL, automatically, the moment a qualifying entry fires. This is not a test.');
+  if (!confirmed) return;
+  try { await apiPost({ liveTradingEnabled: !liveTradingOn }); } catch(e) {}
+}
+
+var liveSelling = {};
+async function sellLiveTrade(id) {
+  liveSelling[id] = true;
+  try {
+    var res = await fetch(BASE + '/api/live/sell/' + id, { method: 'POST' });
+    var out = await res.json();
+    if (!out.ok) alert(out.error || 'Sell failed -- check the Live Activity Log');
+  } catch (e) { alert('Sell request failed: ' + e.message); }
+  delete liveSelling[id];
+}
+
+async function sellTrade(id) {
+  try { await fetch(BASE + '/api/sell/' + id, { method: 'POST' }); } catch(e) {}
+}
+
+// ── FETCH STATE ───────────────────────────────────────────────
+async function fetchState() {
+  try {
+    var res = await fetch(BASE + '/api/state');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    var data = await res.json();
+    botRunning = data.running;
+
+    // Button
+    var btn = document.getElementById('main-btn');
+    btn.className = 'main-btn ' + (data.running ? 'btn-stop' : 'btn-start');
+    btn.textContent = data.running ? '⏹ STOP BOT' : '▶ START BOT';
+
+    // Status in pool info
+    var statusEl = document.getElementById('status');
+    if (data.windingDown) {
+      statusEl.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
+      statusEl.style.color = 'var(--red)';
+    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 20) * 0.70) {
+      statusEl.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 20) + '% FUND LOSS LIMIT';
+      statusEl.style.color = 'var(--yellow)';
+    } else if (data.running) {
+      statusEl.textContent = '● RUNNING'; statusEl.style.color = 'var(--green)';
+    } else {
+      statusEl.textContent = '○ STANDBY · READY'; statusEl.style.color = 'var(--dim)';
+    }
+
+    // Fund warning bar
+    var wb = document.getElementById('fund-warning-bar');
+    if (data.windingDown) {
+      wb.style.display = 'block'; wb.style.background = 'rgba(255,61,90,0.15)';
+      wb.style.border = '1px solid var(--red)'; wb.style.color = 'var(--red)';
+      wb.textContent = '🛑 FUND LOSS LIMIT HIT — CLOSING OPEN TRADES';
+    } else if (data.running && data.currentLossPct >= (data.fundStopLossPct || 20) * 0.70) {
+      wb.style.display = 'block'; wb.style.background = 'rgba(255,194,51,0.15)';
+      wb.style.border = '1px solid var(--yellow)'; wb.style.color = 'var(--yellow)';
+      wb.textContent = '⚠ APPROACHING ' + (data.fundStopLossPct || 20) + '% FUND LOSS LIMIT — ' + (data.currentLossPct || 0).toFixed(1) + '% lost';
+    } else {
+      wb.style.display = 'none';
+    }
+
+    // Runtime
+    if (data.running && data.startTime) {
+      startTimer(data.startTime);
+    } else if (timerId) {
+      clearInterval(timerId);
+      timerId = null;
+    }
+
+    // Pump.fun bar
+    var wsbar = document.getElementById('wsbar');
+    if (data.pumpLive) { wsbar.textContent = '⚡ PUMP.FUN LIVE — ' + data.pumpCount + ' launches'; wsbar.style.color = 'var(--green)'; }
+    else { wsbar.textContent = '⚡ PUMP.FUN: CONNECTING...'; wsbar.style.color = 'var(--yellow)'; }
+
+    // Pool stats
+    document.getElementById('pool').textContent = data.poolSize;
+    document.getElementById('scanned').textContent = data.scanCount;
+    document.getElementById('pump-cnt').textContent = data.pumpCount;
+    document.getElementById('bonk-cnt').textContent = data.bonkCount || 0;
+    document.getElementById('sol-pool').textContent = data.solPool || 0;
+    document.getElementById('dsc-key').textContent = data.dscKey || 0;
+    document.getElementById('perm-bans').textContent = data.permanentBans || 0;
+    document.getElementById('temp-bans').textContent = data.tempBans || 0;
+
+    // Sources
+    var srcrow = document.getElementById('srcrow');
+    srcrow.innerHTML = '';
+    Object.entries(data.sources || {}).forEach(function(e) {
+      var d2 = document.createElement('div');
+      var live = (e[1] || '').indexOf('live') >= 0;
+      d2.className = 'bdg ' + (e[0] === 'PUMP.FUN' ? 'pump-bdg' : live ? 'live' : 'dead');
+      d2.textContent = (live ? '● ' : '✗ ') + e[0];
+      srcrow.appendChild(d2);
+    });
+
+    // Fund
+    var sessionBase = data.dayStartFund || data.sessionFund || 100;
+    var pnl = (data.fund + data.savings) - sessionBase;
+    var fundEl = document.getElementById('fund');
+    fundEl.textContent = '$' + f2(data.fund);
+    fundEl.style.color = data.fund >= sessionBase ? 'var(--green)' : 'var(--red)';
+    document.getElementById('savings').textContent = '$' + f2(data.savings);
+    document.getElementById('alltime').textContent = pSign(pnl) + '$' + f2(pnl) + ' all time';
+
+    // Win stats
+    var total = data.stats.t || 0;
+    var wr = total > 0 ? ((data.stats.w / total) * 100).toFixed(1) : '0.0';
+    var wrEl = document.getElementById('winrate');
+    wrEl.textContent = wr + '%';
+    wrEl.style.color = parseFloat(wr) >= 50 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('wins').textContent = data.stats.w;
+    document.getElementById('losses').textContent = data.stats.l;
+    document.getElementById('rugs').textContent = data.stats.r;
+
+    // Current take-profit mode (used below to keep the Settings buttons in sync)
+    var tpMode = data.takeProfitMode || 'TRAIL';
+
+    // Sync TP buttons only when settings closed
+    var settingsOpen = document.getElementById('settings-panel').classList.contains('open');
+    if (!settingsOpen) {
+      currentTPMode = tpMode;
+      document.getElementById('btn-trail').classList.toggle('active', tpMode === 'TRAIL');
+      document.getElementById('btn-fixed').classList.toggle('active', tpMode === 'FIXED');
+      document.getElementById('btn-tiered').classList.toggle('active', tpMode === 'TIERED');
+      var tpInput = document.getElementById('input-tp-pct');
+      var tpLbl = document.getElementById('tp-pct-lbl');
+      if (tpMode === 'FIXED') {
+        tpInput.disabled = false; tpInput.style.opacity = '1';
+        tpLbl.textContent = 'TARGET PROFIT %'; tpLbl.style.color = 'var(--dim)';
+      } else {
+        tpInput.disabled = true; tpInput.style.opacity = '0.4';
+        tpLbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; tpLbl.style.color = 'var(--bb)';
+      }
+
+      // Sync auto-lock toggle — same default-OFF pattern
+      var autoLockOn = data.autoLockEnabled === true;
+      currentAutoLockEnabled = autoLockOn;
+      document.getElementById('btn-autolock-on').classList.toggle('active', autoLockOn);
+      document.getElementById('btn-autolock-off').classList.toggle('active', !autoLockOn);
+    }
+
+    // Sync live TP buttons only when the live settings panel is closed
+    var liveSettingsOpen = document.getElementById('settings-panel-lt').classList.contains('open');
+    if (!liveSettingsOpen) {
+      var liveTpMode = data.liveTakeProfitMode || 'TIERED';
+      currentLiveTPMode = liveTpMode;
+      document.getElementById('btn-live-trail').classList.toggle('active', liveTpMode === 'TRAIL');
+      document.getElementById('btn-live-fixed').classList.toggle('active', liveTpMode === 'FIXED');
+      document.getElementById('btn-live-tiered').classList.toggle('active', liveTpMode === 'TIERED');
+      var liveTpInput = document.getElementById('input-live-tp-pct');
+      var liveTpLbl = document.getElementById('live-tp-pct-lbl');
+      if (liveTpMode === 'FIXED') {
+        liveTpInput.disabled = false; liveTpInput.style.opacity = '1';
+        liveTpLbl.textContent = 'TARGET PROFIT %'; liveTpLbl.style.color = 'var(--dim)';
+      } else {
+        liveTpInput.disabled = true; liveTpInput.style.opacity = '0.4';
+        liveTpLbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; liveTpLbl.style.color = 'var(--bb)';
+      }
+    }
+
+    // Settings hints
+    var slDisp = document.getElementById('current-sl-display');
+    if (slDisp) slDisp.textContent = data.stopLossPct || 10;
+    var fundDisp = document.getElementById('current-fund-display');
+    if (fundDisp) fundDisp.textContent = '$' + f2(data.sessionFund || 100);
+    var maxOpenDisp = document.getElementById('current-maxopen-display');
+    if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
+    var liveSlDisp = document.getElementById('current-live-sl-display');
+    if (liveSlDisp) liveSlDisp.textContent = data.liveStopLossPct || 10;
+    var liveMaxOpenDisp = document.getElementById('current-live-maxopen-display');
+    if (liveMaxOpenDisp) liveMaxOpenDisp.textContent = data.liveMaxOpen || 4;
+    var liveFundLossDisp = document.getElementById('current-live-fundloss-display');
+    if (liveFundLossDisp) liveFundLossDisp.textContent = data.liveFundStopLossPct || 20;
+    var fundLossDisp = document.getElementById('current-fundloss-display');
+    if (fundLossDisp) fundLossDisp.textContent = data.fundStopLossPct || 20;
+    var fundLossDisp2 = document.getElementById('current-fundloss-display-2');
+    if (fundLossDisp2) fundLossDisp2.textContent = data.fundStopLossPct || 20;
+    var fundLossDisp3 = document.getElementById('current-fundloss-display-3');
+    if (fundLossDisp3) fundLossDisp3.textContent = data.fundStopLossPct || 20;
+    var fundLiveDisp = document.getElementById('current-fund-live');
+    if (fundLiveDisp) fundLiveDisp.textContent = f2(data.fund || 0);
+    var poolSizeDisp = document.getElementById('current-poolsize-display');
+    if (poolSizeDisp) poolSizeDisp.textContent = data.maxPool || 10000;
+
+    // Open trades
+    var openTrades = data.openTrades || [];
+
+    // Main trades
+    var openSec = document.getElementById('open-sec');
+    if (openTrades.length > 0) {
+      openSec.style.display = 'block';
+      document.getElementById('open-cnt').textContent = '(' + openTrades.length + ')';
+      document.getElementById('open-list').innerHTML = '';
+      openTrades.forEach(function(t) {
+        var age = Math.floor((Date.now() - t.startTime) / 1000);
+        var hasPrice = t.entryPrice && t.entryPrice > 0;
+        var pnlColor = !hasPrice ? 'var(--dim)' : (t.realPnl||0) >= 0 ? 'var(--green)' : 'var(--red)';
+        var pnlDisplay = hasPrice ? pSign(t.realPnl||0) + '$' + f2(Math.abs(t.realPnl||0)) : 'FETCHING...';
+        var pctDisplay = hasPrice ? pSign(t.realPnlPct||0) + ((t.realPnlPct||0)*100).toFixed(1) + '%' : '---';
+        var tpDisplay = t.tpl === 'FIXED' ? 'TP ' + (t.tpPct||'?') + '%' : 'TRAIL';
+        var d4 = document.createElement('div');
+        d4.className = 'trade';
+        d4.innerHTML = '<div class="trade-top"><div class="trade-name">' + t.tok.n + '<span class="real-badge">REAL</span></div><button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button></div>' +
+          '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · ' + '◎SOL' + ' · ' + tpDisplay + '</div>' +
+          '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl?(t.sl*100).toFixed(0):'10') + '%</div></div>' +
+          '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
+          '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
+          '<div class="entry-price">ENTRY: $' + (hasPrice ? f8(t.entryPrice) : 'FETCHING...') + '</div>' + caRow(t.mint);
+        document.getElementById('open-list').appendChild(d4);
+      });
+    } else { openSec.style.display = 'none'; }
+
+    // Logs
+    if (data.logs && data.logs.length > 0) {
+      allLogs = data.logs;
+      document.getElementById('log-cnt').textContent = allLogs.length + ' entries';
+      if (!frozen) renderLog();
+    }
+
+    // Live logs -- separate from paper's, same pattern
+    if (data.liveLogs && data.liveLogs.length > 0) {
+      liveAllLogs = data.liveLogs;
+      var liveLogCntEl = document.getElementById('live-log-cnt');
+      if (liveLogCntEl) liveLogCntEl.textContent = liveAllLogs.length + ' entries';
+      renderLiveLog();
+    }
+
+    // Closed trades
+    var closedSec = document.getElementById('closed-sec');
+    if (data.closedTrades && data.closedTrades.length > 0) {
+      closedSec.style.display = 'block';
+      document.getElementById('closed-list').innerHTML = '';
+      data.closedTrades.slice(0, 15).forEach(function(t) {
+        var pnlColor = t.pnl > 0 ? 'var(--green)' : 'var(--red)';
+        var pctStr = t.pnlPct !== undefined ? pSign(t.pnlPct) + parseFloat(t.pnlPct).toFixed(2) + '%' : 'N/A';
+        var d5 = document.createElement('div');
+        d5.className = 'ctrade'; d5.style.borderLeft = '3px solid ' + pnlColor;
+        d5.innerHTML = '<div class="ctrade-header"><span class="ctrade-name">' + (t.isGrad?'🎓 ':'') + (t.tok?t.tok.n:'?') + '</span><span class="ctrade-pnl" style="color:' + pnlColor + '">' + pSign(t.pnl) + '$' + f2(t.pnl) + '</span></div>' +
+          '<div class="ctrade-g3"><div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val">$' + f2(t.size) + '</div></div>' +
+          '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
+          '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src||'?') + ' ' + '◎' + '</div></div></div>' +
+          '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
+          '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
+          (t.entryMcap ? '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">MC ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.entryMcap) + '</div></div>' +
+          '<div class="ctrade-cell"><div class="ctrade-lbl">MC EXIT</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.exitMcap) + '</div></div></div>' : '') +
+          '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason||'?') + '</span><span>' + (t.openedAt||'') + (t.closedAt?' → '+t.closedAt:'') + '</span></div>' + caRow(t.mint);
+        document.getElementById('closed-list').appendChild(d5);
+      });
+    } else { closedSec.style.display = 'none'; }
+
+    // Live fund + savings cards, auto-protection sync, settings hints
+    var lfc = document.getElementById('live-fund-card');
+    if (lfc) {
+      var lfv = (data.liveEffectiveFund !== undefined) ? data.liveEffectiveFund : (data.liveFund || 0);
+      lfc.textContent = '$' + f2(lfv);
+      lfc.style.color = lfv >= (data.liveStartFund || 0) ? 'var(--green)' : 'var(--red)';
+      var lpnl = data.liveRealizedPnl || 0;
+      document.getElementById('live-alltime').textContent = pSign(lpnl) + '$' + f2(lpnl) + ' all time';
+      document.getElementById('live-savings').textContent = '$' + f2(data.liveSavings || 0);
+    }
+    var liveLockDisp2 = document.getElementById('current-live-fundloss-display-2');
+    if (liveLockDisp2) liveLockDisp2.textContent = data.liveFundStopLossPct || 20;
+    var liveLockDisp3 = document.getElementById('current-live-fundloss-display-3');
+    if (liveLockDisp3) liveLockDisp3.textContent = data.liveFundStopLossPct || 20;
+    var liveFundNow = document.getElementById('current-live-fund-live');
+    if (liveFundNow) liveFundNow.textContent = f2((data.liveEffectiveFund !== undefined) ? data.liveEffectiveFund : (data.liveFund || 0));
+    if (!document.getElementById('settings-panel-lt').classList.contains('open')) {
+      var liveAlOn = data.liveAutoLockEnabled === true;
+      currentLiveAutoLockEnabled = liveAlOn;
+      document.getElementById('btn-live-autolock-on').classList.toggle('active', liveAlOn);
+      document.getElementById('btn-live-autolock-off').classList.toggle('active', !liveAlOn);
+    }
+
+    // Live win stats + closed trades -- separate from paper's, same layout
+    var ls = data.liveStats || { w: 0, l: 0, r: 0, t: 0 };
+    var lwr = ls.t > 0 ? ((ls.w / ls.t) * 100).toFixed(1) : '0.0';
+    var lwrEl = document.getElementById('live-winrate');
+    if (lwrEl) {
+      lwrEl.textContent = lwr + '%';
+      lwrEl.style.color = parseFloat(lwr) >= 50 ? 'var(--green)' : 'var(--red)';
+      document.getElementById('live-wins').textContent = ls.w;
+      document.getElementById('live-losses').textContent = ls.l;
+      document.getElementById('live-rugs').textContent = ls.r;
+    }
+    var liveClosedSec = document.getElementById('live-closed-sec');
+    if (liveClosedSec) {
+      var lct = data.liveClosedTrades || [];
+      if (lct.length > 0) {
+        liveClosedSec.style.display = 'block';
+        var lcList = document.getElementById('live-closed-list');
+        lcList.innerHTML = '';
+        lct.forEach(function(t) {
+          var known = t.pnl !== null && t.pnl !== undefined;
+          var pnlColor = !known ? 'var(--dim)' : t.pnl > 0 ? 'var(--green)' : 'var(--red)';
+          var pnlStr = known ? pSign(t.pnl) + '$' + f2(t.pnl) : 'N/A';
+          var pctStr = (t.pnlPct !== null && t.pnlPct !== undefined) ? pSign(t.pnlPct) + parseFloat(t.pnlPct).toFixed(2) + '%' : 'N/A';
+          var rawN = t.name || (t.mint ? t.mint.slice(0, 6) + '...' : '?');
+          var safeN = String(rawN).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+          var tipS = (t.totalTipUsd !== null && t.totalTipUsd !== undefined) ? '$' + parseFloat(t.totalTipUsd).toFixed(4) : '?';
+          var feeS = (t.totalFeeUsd !== null && t.totalFeeUsd !== undefined) ? '$' + parseFloat(t.totalFeeUsd).toFixed(4) : '?';
+          var dc = document.createElement('div');
+          dc.className = 'ctrade'; dc.style.borderLeft = '3px solid ' + pnlColor;
+          dc.innerHTML = '<div class="ctrade-header"><span class="ctrade-name">' + safeN + '</span><span class="ctrade-pnl" style="color:' + pnlColor + '">' + pnlStr + '</span></div>' +
+            '<div class="ctrade-g3"><div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val">$' + f2(t.size) + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.platform === 'pumpfun' ? 'PUMP' : 'BONK') + '</div></div></div>' +
+            '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
+            '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">TIPS</div><div class="ctrade-val" style="font-size:11px">' + tipS + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">NETWORK FEES</div><div class="ctrade-val" style="font-size:11px">' + feeS + '</div></div></div>' +
+            '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason || '?') + '</span><span>' + (t.openedAt || '') + (t.closedAt ? ' → ' + t.closedAt : '') + '</span></div>' + caRow(t.mint);
+          lcList.appendChild(dc);
+        });
+      } else { liveClosedSec.style.display = 'none'; }
+    }
+
+    // Session stats
+    var closed = data.closedTrades || [];
+    var slips = closed.map(function(t) { return t.slip||0; }).filter(function(v) { return v>0; });
+    var avgSlip = slips.length ? ((slips.reduce(function(a,b){return a+b;},0)/slips.length)*100).toFixed(2) : '0.00';
+    document.getElementById('ss-pool').textContent = data.poolSize;
+    document.getElementById('ss-slip').textContent = avgSlip + '%';
+    document.getElementById('ss-fees').textContent = '$' + f2(data.totalFees||0);
+    document.getElementById('ss-skip').textContent = data.rejectCount||0;
+    document.getElementById('ss-fund').textContent = '$' + f2(data.sessionFund||100);
+    document.getElementById('ss-maxopen').textContent = data.maxOpen||8;
+
+    // Live wallet -- real data only, honest "unable to read" otherwise
+    var lw = data.liveWallet || {};
+    var tradingAddrEl = document.getElementById('live-trading-address');
+    if (lw.address) {
+      tradingAddrEl.textContent = lw.address;
+      tradingAddrEl.style.color = 'var(--green)';
+    } else {
+      tradingAddrEl.textContent = lw.configError || 'Not configured yet';
+      tradingAddrEl.style.color = 'var(--dim)';
+    }
+
+    var balEl = document.getElementById('live-trading-balance');
+    var balElMain = document.getElementById('live-trading-balance-main');
+    if (lw.balanceSol !== null && lw.balanceSol !== undefined) {
+      var usd = (data.solPriceUsd && data.solPriceFresh) ? ' (' + f2(lw.balanceSol * data.solPriceUsd) + ' USD)' : ' (USD unavailable right now)';
+      var balText = lw.balanceSol.toFixed(4) + ' SOL' + usd;
+      balEl.textContent = balText; balEl.style.color = 'var(--green)';
+      if (balElMain) { balElMain.textContent = balText; balElMain.style.color = 'var(--green)'; }
+    } else {
+      var balErrText = lw.address ? ('Unable to read right now' + (lw.balanceError ? ' (' + lw.balanceError + ')' : '')) : 'Not configured yet';
+      balEl.textContent = balErrText; balEl.style.color = 'var(--red)';
+      if (balElMain) { balElMain.textContent = balErrText; balElMain.style.color = 'var(--red)'; }
+    }
+
+    var savingsAddrEl = document.getElementById('live-savings-address');
+    if (lw.savingsAddress) {
+      savingsAddrEl.textContent = lw.savingsAddress;
+      savingsAddrEl.style.color = 'var(--green)';
+    } else {
+      savingsAddrEl.textContent = 'Not configured yet';
+      savingsAddrEl.style.color = 'var(--dim)';
+    }
+
+    var liveFundEl = document.getElementById('live-fund-display');
+    var liveFundElMain = document.getElementById('live-fund-display-main');
+    var lf = data.liveFund || 0;
+    var lfColor = lf > 0 ? 'var(--green)' : 'var(--red)';
+    if (liveFundEl) { liveFundEl.textContent = '$' + lf.toFixed(4); liveFundEl.style.color = lfColor; }
+    if (liveFundElMain) { liveFundElMain.textContent = '$' + lf.toFixed(4); liveFundElMain.style.color = lfColor; }
+
+    var liveTipsEl = document.getElementById('live-tips-paid');
+    if (liveTipsEl) liveTipsEl.textContent = '$' + (data.liveTipsPaidUsd || 0).toFixed(4);
+    var liveNetFeesEl = document.getElementById('live-network-fees');
+    if (liveNetFeesEl) liveNetFeesEl.textContent = '$' + (data.liveNetworkFeesUsd || 0).toFixed(4);
+
+    liveTradingOn = !!data.liveTradingEnabled;
+    var liveToggleBtn = document.getElementById('live-trading-toggle-btn');
+    if (liveToggleBtn) {
+      liveToggleBtn.className = 'main-btn ' + (liveTradingOn ? 'btn-stop' : 'btn-start');
+      liveToggleBtn.textContent = liveTradingOn ? '⏹ TURN OFF AUTOMATIC LIVE TRADING' : '▶ TURN ON AUTOMATIC LIVE TRADING';
+    }
+
+    var liveOpenEl = document.getElementById('live-open-positions');
+    if (liveOpenEl) {
+      var lo = data.liveOpen || [];
+      if (lo.length === 0) {
+        liveOpenEl.textContent = 'None open right now.';
+        liveOpenEl.style.color = 'var(--dim)';
+      } else {
+        liveOpenEl.style.color = '';
+        liveOpenEl.innerHTML = lo.map(function(p) {
+          var ageSec = Math.floor((Date.now() - p.openedAt) / 1000);
+          var sellingNow = !!liveSelling[p.id];
+          var hasPrice = p.currentPriceUsd && p.currentPriceUsd > 0 && p.entryPriceUsd > 0;
+          var pct = hasPrice ? (p.currentPriceUsd - p.entryPriceUsd) / p.entryPriceUsd : 0;
+          var pnl = hasPrice ? p.sizeUsd * pct : 0;
+          var pnlColor = !hasPrice ? 'var(--dim)' : pnl >= 0 ? 'var(--green)' : 'var(--red)';
+          var pnlDisplay = hasPrice ? pSign(pnl) + '$' + f2(Math.abs(pnl)) : 'WAITING...';
+          var pctDisplay = hasPrice ? pSign(pct) + (pct * 100).toFixed(1) + '%' : '---';
+          var tpDisplay = p.tpl === 'FIXED' ? 'TP ' + (p.tpPct || '?') + '%'
+            : (p.tpl === 'TIERED' ? 'TIERED' + (p.tier1Done ? ' T1✓' : '') + (p.tier2Done ? ' T2✓' : '') : 'TRAIL');
+          var platLabel = p.platform === 'pumpfun' ? 'PUMP' : 'BONK';
+          var rawName = p.name || (p.mint.slice(0, 6) + '...');
+          var safeName = String(rawName).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+          var tipTxt = (p.buyTipUsd !== null && p.buyTipUsd !== undefined) ? '$' + p.buyTipUsd.toFixed(4) : '?';
+          return '<div class="trade"><div class="trade-top"><div class="trade-name">' + safeName + '<span class="real-badge">REAL</span></div>' +
+            '<button class="sell-btn"' + (sellingNow ? ' disabled' : '') + ' onclick="sellLiveTrade(\'' + p.id + '\')">' + (sellingNow ? 'SELLING...' : 'SELL') + '</button></div>' +
+            '<div class="trade-meta">$' + f2(p.sizeUsd) + ' · ' + ageSec + 's · ' + platLabel + ' · ' + tpDisplay + '</div>' +
+            (p.stuck ? '<div style="margin:6px 0;padding:6px 8px;border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:12px;">⚠ STUCK — ' + (p.sellFails || 0) + ' sell attempts failed. Automatic selling stopped. Press SELL to try again.</div>' : '') +
+            (p.pendingSell ? '<div style="margin:6px 0;font-size:12px;color:var(--dim);">⏳ A sell was submitted and is still being confirmed — it will not be sold twice.</div>' : '') +
+            '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (data.liveStopLossPct || 10) + '%</div></div>' +
+            '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
+            '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
+            '<div class="entry-price">ENTRY: $' + f8(p.entryPriceUsd) + (hasPrice ? ' · NOW: $' + f8(p.currentPriceUsd) : '') + ' · TIP: ' + tipTxt + '</div>' + caRow(p.mint) + '</div>';
+        }).join('');
+      }
+    }
+
+    // Best trade
+    var bt = data.bestTrade;
+    var btCard = document.getElementById('best-trade-card');
+    if (bt && bt.pnl > 0) {
+      btCard.style.display = 'block';
+      document.getElementById('bt-name').textContent = bt.name||'?';
+      document.getElementById('bt-pnl').textContent = '+$'+f2(bt.pnl);
+      document.getElementById('bt-pct').textContent = '+'+f2(bt.pnlPct)+'%';
+      document.getElementById('bt-entry').textContent = '$'+f8(bt.entryPrice);
+      document.getElementById('bt-exit').textContent = '$'+f8(bt.exitPrice);
+      document.getElementById('bt-size').textContent = '$'+f2(bt.size);
+      document.getElementById('bt-reason').textContent = bt.closeReason||'—';
+    } else { btCard.style.display = 'none'; }
+
+  } catch(e) {
+    var statusEl = document.getElementById('status');
+    if (statusEl) { statusEl.textContent = 'ERROR: ' + e.message; statusEl.style.color = 'var(--red)'; }
+  }
+}
+
+// ── PORTFOLIO ─────────────────────────────────────────────────
+function setFilter2(type, val, btn) {
+  ptFilters[type] = val;
+  btn.parentElement.querySelectorAll('.filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  ptPage = 0; loadTrades();
+}
+
+var statsMode = 'all';
+var ptSource = 'paper';
+
+// Switches the whole Portfolio page between paper history and live history.
+function setPortSource(src) {
+  ptSource = src;
+  document.getElementById('btn-src-paper').classList.toggle('active', src === 'paper');
+  document.getElementById('btn-src-live').classList.toggle('active', src === 'live');
+  document.querySelectorAll('.pt-paper-only').forEach(function(b) { b.style.display = src === 'paper' ? '' : 'none'; });
+  document.querySelectorAll('.pt-live-only').forEach(function(b) { b.style.display = src === 'live' ? '' : 'none'; });
+  document.getElementById('pt-export-link').setAttribute('href', src === 'live' ? '/api/live/export' : '/api/portfolio/export');
+  ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
+  document.querySelectorAll('#port-page .filter-row').forEach(function(row) {
+    row.querySelectorAll('.filter-btn').forEach(function(b, i) { b.classList.toggle('active', i === 0); });
+  });
+  ptPage = 0;
+  loadPortfolioPage();
+}
+
+function setStatsMode(mode) {
+  statsMode = mode;
+  document.getElementById('btn-stats-all').classList.toggle('active', mode === 'all');
+  document.getElementById('btn-stats-session').classList.toggle('active', mode === 'session');
+  document.getElementById('pt-perf-lbl').textContent = mode === 'all' ? 'ALL TIME PERFORMANCE' : 'SESSION PERFORMANCE';
+  loadPortfolioPage();
+}
+
+function searchTrades() { ptPage = 0; loadTrades(); }
+function changePage(dir) { ptPage += dir; loadTrades(); }
+function changePerPage() { ptLimit = parseInt(document.getElementById('pt-per-page').value); ptPage = 0; loadTrades(); }
+
+async function loadPortfolioPage() {
+  try {
+    var res = await fetch(BASE + (ptSource === 'live' ? '/api/live/portfolio' : '/api/portfolio'));
+    if (!res.ok) return;
+    var data = await res.json();
+
+    if (statsMode === 'session' && ptSource === 'live') {
+      var ls = data.session || {};
+      var lstotal = ls.trades || 0;
+      document.getElementById('pt-total').textContent = lstotal;
+      var lwrEl = document.getElementById('pt-wr');
+      lwrEl.textContent = (ls.winRate || 0) + '%'; lwrEl.style.color = (ls.winRate || 0) >= 50 ? 'var(--green)' : 'var(--red)';
+      var lpnl = ls.pnl || 0;
+      var lpnlEl = document.getElementById('pt-pnl');
+      lpnlEl.textContent = pSign(lpnl)+'$'+f2(lpnl);
+      lpnlEl.style.color = lpnl>=0?'var(--green)':'var(--red)';
+      document.getElementById('pt-fees').textContent = '$'+f2(ls.totalFees||0);
+      document.getElementById('pt-wins').textContent = ls.wins || 0;
+      document.getElementById('pt-losses').textContent = ls.losses || 0;
+      var lret = ls.returnPct || 0;
+      var lretEl = document.getElementById('pt-return-pct');
+      lretEl.textContent = pSign(lret)+lret.toFixed(2)+'%';
+      lretEl.style.color = lret>=0?'var(--green)':'var(--red)';
+    } else if (statsMode === 'all') {
+      var at = data.allTime || {};
+      var total = at.t || 0;
+      var wr = total > 0 ? ((at.w/total)*100).toFixed(1) : '0.0';
+      document.getElementById('pt-total').textContent = total;
+      var wrEl = document.getElementById('pt-wr');
+      wrEl.textContent = wr + '%'; wrEl.style.color = parseFloat(wr)>=50?'var(--green)':'var(--red)';
+      var pnlEl = document.getElementById('pt-pnl');
+      pnlEl.textContent = pSign(at.totalPnl||0)+'$'+f2(at.totalPnl||0);
+      pnlEl.style.color = (at.totalPnl||0)>=0?'var(--green)':'var(--red)';
+      document.getElementById('pt-fees').textContent = '$'+f2(at.totalFees||0);
+      document.getElementById('pt-wins').textContent = at.w||0;
+      document.getElementById('pt-losses').textContent = at.l||0;
+      document.getElementById('pt-return-pct').textContent = '—';
+      document.getElementById('pt-return-pct').style.color = 'var(--dim)';
+    } else {
+      var sres = await fetch(BASE + '/api/state');
+      if (!sres.ok) return;
+      var s = await sres.json();
+      var stotal = (s.stats && s.stats.t) || 0;
+      var swr = stotal > 0 ? (((s.stats.w||0)/stotal)*100).toFixed(1) : '0.0';
+      document.getElementById('pt-total').textContent = stotal;
+      var swrEl = document.getElementById('pt-wr');
+      swrEl.textContent = swr + '%'; swrEl.style.color = parseFloat(swr)>=50?'var(--green)':'var(--red)';
+      var sessionBase = s.dayStartFund || s.sessionFund || 100;
+      var sessionPnl = (s.fund||0) + (s.savings||0) - sessionBase;
+      var spnlEl = document.getElementById('pt-pnl');
+      spnlEl.textContent = pSign(sessionPnl)+'$'+f2(sessionPnl);
+      spnlEl.style.color = sessionPnl>=0?'var(--green)':'var(--red)';
+      document.getElementById('pt-fees').textContent = '$'+f2(s.totalFees||0);
+      document.getElementById('pt-wins').textContent = (s.stats && s.stats.w) || 0;
+      document.getElementById('pt-losses').textContent = (s.stats && s.stats.l) || 0;
+      var returnPct = sessionBase > 0 ? (sessionPnl / sessionBase * 100) : 0;
+      var retEl = document.getElementById('pt-return-pct');
+      retEl.textContent = pSign(returnPct)+returnPct.toFixed(2)+'%';
+      retEl.style.color = returnPct>=0?'var(--green)':'var(--red)';
+    }
+
+    if (data.bestTrade) {
+      document.getElementById('pt-best-name').textContent=data.bestTrade.name||'?';
+      document.getElementById('pt-best-pnl').textContent='+$'+f2(data.bestTrade.pnl);
+      document.getElementById('pt-best-pct').textContent=pSign(data.bestTrade.pnlPct||0)+f2(data.bestTrade.pnlPct||0)+'%';
+      document.getElementById('pt-best-size').textContent='$'+f2(data.bestTrade.size||0);
+      document.getElementById('pt-best-prices').textContent='$'+f8(data.bestTrade.entryPrice||0)+' → $'+f8(data.bestTrade.exitPrice||0);
+      document.getElementById('pt-best-reason').textContent=data.bestTrade.closeReason||'?';
+    } else {
+      ['name','reason','size','prices'].forEach(function(k) { document.getElementById('pt-best-'+k).textContent='—'; });
+      document.getElementById('pt-best-pnl').textContent='$0.00'; document.getElementById('pt-best-pct').textContent='0.00%';
+    }
+    if (data.worstTrade) {
+      document.getElementById('pt-worst-name').textContent=data.worstTrade.name||'?';
+      document.getElementById('pt-worst-pnl').textContent='-$'+f2(Math.abs(data.worstTrade.pnl));
+      document.getElementById('pt-worst-pct').textContent=f2(data.worstTrade.pnlPct||0)+'%';
+      document.getElementById('pt-worst-size').textContent='$'+f2(data.worstTrade.size||0);
+      document.getElementById('pt-worst-prices').textContent='$'+f8(data.worstTrade.entryPrice||0)+' → $'+f8(data.worstTrade.exitPrice||0);
+      document.getElementById('pt-worst-reason').textContent=data.worstTrade.closeReason||'?';
+    } else {
+      ['name','reason','size','prices'].forEach(function(k) { document.getElementById('pt-worst-'+k).textContent='—'; });
+      document.getElementById('pt-worst-pnl').textContent='$0.00'; document.getElementById('pt-worst-pct').textContent='0.00%';
+    }
+    var sessEl = document.getElementById('pt-sessions');
+    var sessions = data.sessions||[];
+    document.getElementById('pt-session-count').textContent = '('+( data.totalSessions||0)+' sessions)';
+    if (sessions.length===0) { sessEl.innerHTML='<div style="font-size:13px;color:var(--dim);">No sessions yet.</div>'; }
+    else {
+      sessEl.innerHTML='';
+      sessions.slice(0,10).forEach(function(s) {
+        var pnlColor=(s.pnl||0)>=0?'var(--green)':'var(--red)';
+        var d=document.createElement('div'); d.className='session-row';
+        d.innerHTML='<div><div class="session-date">'+(s.date||'?')+'</div><div class="session-meta">'+(s.trades||0)+' trades · '+(s.winRate||0)+'% WR · Fees $'+f2(s.totalFees||0)+'</div></div>' +
+          '<div><div class="session-pnl" style="color:'+pnlColor+'">'+pSign(s.pnl||0)+'$'+f2(s.pnl||0)+'</div><div class="session-wr">'+(s.wins||0)+'W / '+(s.losses||0)+'L</div></div>';
+        sessEl.appendChild(d);
+      });
+    }
+    loadTrades();
+  } catch(e) {}
+}
+
+async function loadTrades() {
+  try {
+    var params = new URLSearchParams({ page:ptPage, limit:ptLimit, chain:ptFilters.chain, src:ptFilters.src, result:ptFilters.result, exit:ptFilters.exit });
+    var token = document.getElementById('pt-search-token').value.trim();
+    var dateRaw = document.getElementById('pt-search-date').value.trim();
+    var dateSearch = '';
+    if (dateRaw) { var dp=dateRaw.split('-'); if(dp.length===3) dateSearch=parseInt(dp[1])+'/'+parseInt(dp[2])+'/'+dp[0]; }
+    if (token) params.set('token', token);
+    if (dateSearch) params.set('date', dateSearch);
+    var res = await fetch(BASE + (ptSource === 'live' ? '/api/live/portfolio/trades?' : '/api/portfolio/trades?') + params.toString());
+    if (!res.ok) return;
+    var data = await res.json();
+    var tradesEl = document.getElementById('pt-trades');
+    document.getElementById('pt-trade-count').textContent = '('+(data.total||0)+' trades)';
+    if (!data.trades || data.trades.length===0) {
+      tradesEl.innerHTML='<div style="font-size:13px;color:var(--dim);">No trades found.</div>';
+      document.getElementById('pt-page-info').textContent='';
+      document.getElementById('pt-prev').disabled=true;
+      document.getElementById('pt-next').disabled=true;
+      return;
+    }
+    tradesEl.innerHTML='';
+    data.trades.forEach(function(t) {
+      var pnlUnknown = (t.pnl === null || t.pnl === undefined);
+      var pnlColor=pnlUnknown?'var(--dim)':((t.pnl||0)>0?'var(--green)':'var(--red)');
+      var chainIcon='◎';
+      var d=document.createElement('div'); d.className='trade-row';
+      var pctStr2 = (t.pnlPct !== undefined && t.pnlPct !== null) ? pSign(t.pnlPct)+parseFloat(t.pnlPct).toFixed(2)+'%' : '';
+      var safeTradeName = String(t.name||'?').replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+      var caShort = t.mint ? t.mint.slice(0,4)+'...'+t.mint.slice(-4) : '';
+      d.innerHTML='<div><div class="trade-row-name" style="color:'+pnlColor+'">'+chainIcon+' '+safeTradeName+'</div><div class="trade-row-meta">$'+f2(t.size)+' · '+(t.closedDate||'')+' · '+(t.src||'')+'</div>' +
+        (t.mint ? '<div class="ca-row" onclick="copyCA(\''+t.mint+'\', event)">CA: <span class="ca-addr">'+caShort+'</span> <span class="ca-copy" id="ca-copy-'+t.mint+'">📋</span></div>' : '') + '</div>' +
+        '<div style="text-align:right;"><div class="trade-row-pnl" style="color:'+pnlColor+'">'+(pnlUnknown?'—':pSign(t.pnl||0)+'$'+f2(t.pnl||0))+'</div><div class="trade-row-reason" style="color:'+pnlColor+'">'+(pctStr2||'')+'</div><div class="trade-row-reason">'+(t.closeReason||'?')+'</div></div>';
+      tradesEl.appendChild(d);
+    });
+    var pages=data.pages||1;
+    document.getElementById('pt-page-info').textContent='Page '+(ptPage+1)+' of '+pages;
+    document.getElementById('pt-prev').disabled=ptPage<=0;
+    document.getElementById('pt-next').disabled=ptPage>=pages-1;
+  } catch(e) {}
+}
+</script>
+</body>
+</html>

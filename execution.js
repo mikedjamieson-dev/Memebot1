@@ -139,7 +139,7 @@ async function pollForOutcome(signature, connection, latest, options) {
     }
 
     if (Date.now() - startTime > maxPollMs) {
-      return { outcome: 'PENDING', signature: signature };
+      return { outcome: 'PENDING', signature: signature, lastValidBlockHeight: latest.lastValidBlockHeight };
     }
 
     await new Promise(function(resolve) { setTimeout(resolve, pollIntervalMs); });

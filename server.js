@@ -2077,8 +2077,8 @@ function stopBot() {
   if (priceI) clearInterval(priceI);
   if (dsI) clearInterval(dsI);
   if (S.windDownCheckInterval) { clearInterval(S.windDownCheckInterval); S.windDownCheckInterval = null; }
-  // Live may still need the feed -- only shut it down if live is off too.
-  if (!S.liveTradingEnabled) stopFeed();
+  // Live may still need the feed -- only shut it down once nothing needs it.
+  if (!feedNeeded()) stopFeed();
 
   if (S.stats.t > 0) {
     var session = {
@@ -2674,7 +2674,33 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
 // other. logPrefix lets each caller label its own log lines clearly
 // (e.g. "LIVE TRADE TEST" vs "LIVE STOP LOSS") while sharing the same
 // underlying logic.
-async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction) {
+// After a real sell is confirmed: reads what it actually did to the wallet
+// (proceeds, fee and tip all included), moves the Live Fund by that, and reads
+// the tip and network fee separately. Shared by a normal sell and by a sell
+// that confirmed late (see resolvePendingSell), so both are recorded the same way.
+async function settleConfirmedRealSell(connection, result, logPrefix, platformName) {
+  var changeUsd = null;
+  try {
+    var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
+    changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
+    S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
+    liveLog(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
+      ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
+  } catch (feeErr) {
+    liveLog(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
+  }
+  var sellCosts = await readRealTxCosts(connection, result);
+  liveLog(logPrefix + ' (' + platformName + ' sell): ' + describeRealCosts(sellCosts), 'info');
+  return { changeUsd: changeUsd, costs: sellCosts };
+}
+
+// expectedRaw (optional) is how many tokens the bot believes this position
+// holds right now. For a partial sale the amount is worked out from that, not
+// from whatever the wallet shows at this moment -- so if an earlier attempt of
+// the same sale actually landed without the bot hearing about it, the wallet
+// already shows the reduced balance and the sale is recognised as done instead
+// of being sold a second time.
+async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -2691,7 +2717,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     liveLog(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
       (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
     if (!balance || balance.amount === '0') {
-      return { ok: false, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag };
+      return { ok: false, zeroBalance: true, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag };
     }
 
     // Optional fraction (0 < fraction < 1) sells only part of the real
@@ -2699,9 +2725,15 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     // exactly as before.
     var sellAmount = balance.amount;
     if (fraction !== undefined && fraction !== null && fraction > 0 && fraction < 1) {
-      sellAmount = (BigInt(balance.amount) * BigInt(Math.round(fraction * 10000)) / BigInt(10000)).toString();
+      var baseAmount = (expectedRaw && /^[0-9]+$/.test(String(expectedRaw)) && BigInt(expectedRaw) > BigInt(0)) ? BigInt(expectedRaw) : BigInt(balance.amount);
+      sellAmount = (baseAmount * BigInt(Math.round(fraction * 10000)) / BigInt(10000)).toString();
       if (sellAmount === '0') {
         return { ok: false, error: 'Partial sell amount rounds to zero -- nothing sold' };
+      }
+      var expectedAfter = baseAmount - BigInt(sellAmount);
+      if (BigInt(balance.amount) <= expectedAfter) {
+        liveLog(logPrefix + ' (' + platformName + ' sell): the wallet already shows the reduced balance (' + balance.amount + ' <= ' + expectedAfter.toString() + ') -- this sale already landed earlier, NOT selling again. Its proceeds could not be matched to a transaction, so they are recorded as unknown.', 'warn');
+        return { ok: true, alreadyLanded: true, result: { outcome: 'CONFIRMED', signature: '' }, soldAmount: sellAmount, remainingAmount: balance.amount, liveFund: S.liveFund, realImpactUsd: null, tipUsd: null, feeUsd: null };
       }
     }
     var remainingAmount = (BigInt(balance.amount) - BigInt(sellAmount)).toString();
@@ -2718,22 +2750,12 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     liveLog(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
 
+    var settled = null;
     if (result.outcome === 'CONFIRMED') {
-      try {
-        var changeLamports = await liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey);
-        var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
-        S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
-        liveLog(logPrefix + ' (' + platformName + ' sell): real wallet impact $' + changeUsd.toFixed(4) +
-          ' (' + changeLamports + ' lamports, includes proceeds, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
-      } catch (feeErr) {
-        liveLog(logPrefix + ' (' + platformName + ' sell): could not read real balance change to update Live Fund -- ' + feeErr.message, 'warn');
-      }
-
-      var sellCosts = await readRealTxCosts(connection, result);
-      liveLog(logPrefix + ' (' + platformName + ' sell): ' + describeRealCosts(sellCosts), 'info');
+      settled = await settleConfirmedRealSell(connection, result, logPrefix, platformName);
     }
 
-    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null, tipUsd: (typeof sellCosts !== 'undefined') ? sellCosts.tipUsd : null, feeUsd: (typeof sellCosts !== 'undefined') ? sellCosts.feeUsd : null };
+    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     return { ok: false, error: e.message };
@@ -2778,8 +2800,14 @@ function handleLiveTick(mint, priceUsd) {
 
     pos.currentPriceUsd = priceUsd;
     if (priceUsd > (pos.peakPriceUsd || 0)) pos.peakPriceUsd = priceUsd;
+    // Same movement clock paper uses for its stale check: a tick only counts
+    // as movement if the price changed by more than 0.1%.
+    if (!pos.lastPriceUsd || Math.abs(priceUsd - pos.lastPriceUsd) / pos.lastPriceUsd > 0.001) {
+      pos.lastPriceChange = Date.now();
+      pos.lastPriceUsd = priceUsd;
+    }
 
-    if (pos.busy || Date.now() < (pos.retryAfter || 0)) continue;
+    if (pos.busy || pos.stuck || Date.now() < (pos.retryAfter || 0)) continue;
 
     var pct = (priceUsd - pos.entryPriceUsd) / pos.entryPriceUsd;
     var action = null;
@@ -2811,6 +2839,141 @@ function handleLiveTick(mint, priceUsd) {
   }
 }
 
+// Live's own version of paper's stale exit (paper: no price movement for
+// CFG.STALE_TIME on a trade older than 30s). It matters even more for real
+// money: a token whose price falls below the market-cap floor stops sending
+// ticks altogether, so no stop loss could ever fire on it. Checked every
+// second, locally -- no network call -- and sells for real through the same
+// exit path as every other exit.
+function checkLiveStale() {
+  if (!S.liveOpen || S.liveOpen.length === 0) return;
+  var now = Date.now();
+  S.liveOpen.slice().forEach(function(pos) {
+    if (pos.busy || pos.stuck || now < (pos.retryAfter || 0)) return;
+    var lastMove = pos.lastPriceChange || pos.openedAt;
+    if ((now - lastMove) > CFG.STALE_TIME && (now - pos.openedAt) > 30000) {
+      var price = (pos.currentPriceUsd && pos.currentPriceUsd > 0) ? pos.currentPriceUsd : pos.entryPriceUsd;
+      var pct = (price - pos.entryPriceUsd) / pos.entryPriceUsd;
+      runLiveExit(pos, { kind: 'STALE', fraction: null, staleSecs: Math.round((now - lastMove) / 1000) }, price, pct).catch(function(e) {
+        liveLog('LIVE STALE EXIT error: ' + e.message, 'warn');
+      });
+    }
+  });
+}
+setInterval(checkLiveStale, 1000);
+
+// The shared data feed has to stay up for as long as anything needs it:
+// paper running, automatic live trading on, or a real position still open
+// (its exits depend on the same price feed).
+function feedNeeded() {
+  return S.running || S.liveTradingEnabled || (S.liveOpen && S.liveOpen.length > 0);
+}
+
+// Records one failed real sell on a position and decides how soon to try
+// again. Retries stay fast (1.5s) for the first 10 failures, then slow to
+// every 10s; at 30 in a row the position is flagged STUCK and automatic
+// attempts stop (the SELL button still works). A zero real balance is retried
+// more slowly (5s) since it is counted separately, see closeLiveOutsideBot.
+function noteLiveSellFailure(pos, zeroBalance) {
+  pos.sellFails = (pos.sellFails || 0) + 1;
+  pos.zeroFails = zeroBalance ? (pos.zeroFails || 0) + 1 : 0;
+  if (zeroBalance) pos.retryAfter = Date.now() + 5000;
+  else pos.retryAfter = Date.now() + (pos.sellFails <= 10 ? 1500 : 10000);
+  if (!pos.stuck && pos.sellFails >= 30) {
+    pos.stuck = true;
+    liveLog('LIVE STUCK POSITION ' + (pos.name || pos.mint) + ' | ' + pos.mint + ' -- ' + pos.sellFails + ' real sell attempts in a row have failed. Automatic selling has STOPPED for this position so it is not retried forever. It needs your attention: use its SELL button to try again, or check the token in your wallet.', 'warn');
+  }
+}
+
+// A position whose real token balance has read as zero three times in a row
+// (5 seconds apart) holds nothing to sell -- the tokens left the wallet some
+// way the bot did not record. It is removed so it stops using up a Max Open
+// slot and stops counting as money still deployed. Its real result cannot be
+// known, so it is recorded with a blank P&L and left out of the win/loss
+// counts, never guessed.
+function closeLiveOutsideBot(pos, priceUsd, prefix) {
+  var idx = S.liveOpen.indexOf(pos);
+  if (idx !== -1) S.liveOpen.splice(idx, 1);
+  S.liveClosed.push({
+    name: pos.name || '', mint: pos.mint, platform: pos.platform,
+    size: pos.sizeUsd, entryPrice: pos.entryPriceUsd, exitPrice: priceUsd,
+    pnl: null, pnlPct: null,
+    peakGainPct: (pos.peakPriceUsd && pos.entryPriceUsd) ? parseFloat(((pos.peakPriceUsd - pos.entryPriceUsd) / pos.entryPriceUsd * 100).toFixed(2)) : null,
+    closeReason: 'Closed outside bot',
+    openedAt: new Date(pos.openedAt).toLocaleString('en-US', { timeZone: 'America/New_York' }),
+    closedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
+    closedDate: new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
+    holdTimeSec: Math.round((Date.now() - pos.openedAt) / 1000),
+    takeProfitMode: pos.tpl, stopLossPct: S.liveStopLossPct,
+    buyImpactUsd: pos.buyImpactUsd, totalSellProceedsUsd: null,
+    tieredSold: !!pos.tier1Done, tieredSold2: !!pos.tier2Done,
+    buyTipUsd: pos.buyTipUsd, sellTipUsd: null, totalTipUsd: null,
+    buyFeeUsd: pos.buyFeeUsd, sellFeeUsd: null, totalFeeUsd: null,
+    fundAfterTrade: S.liveFund, buySignature: pos.id, sellSignature: '',
+    savingsAmount: null, fundAmount: null
+  });
+  liveCooldowns.set(pos.mint, Date.now());
+  liveLog(prefix + ': real balance for ' + pos.mint + ' read as zero ' + pos.zeroFails + ' times in a row -- nothing left to sell. Position removed from tracking and recorded as "Closed outside bot" with an unknown P&L (not counted as a win or a loss).', 'warn');
+  if (!feedNeeded()) stopFeed();
+}
+
+// An earlier sell for this position was submitted but its outcome was never
+// learned (the bot stopped checking before it confirmed or expired). Before
+// ANY new sell, that exact transaction is looked up:
+//   landed OK        -> recorded as done, no second sale (CONFIRMED)
+//   landed, rejected -> dead, safe to try again (CLEARED)
+//   expired unseen   -> can never land now, safe to try again (CLEARED)
+//   still possible   -> do nothing yet (WAIT)
+// If the lookup keeps failing for 5 minutes it stops waiting; the real wallet
+// balance check in performRealSell is still there to prevent a double sale.
+async function resolvePendingSell(pos, platformName) {
+  var ps = pos.pendingSell;
+  var prefix = 'LIVE PENDING SELL CHECK';
+  try {
+    var connection = liveWalletModule.getConnection();
+    var sig = ps.result.signature;
+    var readStatus = async function() {
+      var st = await connection.getSignatureStatuses([sig], { searchTransactionHistory: true });
+      return st && st.value && st.value[0];
+    };
+    var st1 = await readStatus();
+    if (!st1) {
+      var height = await connection.getBlockHeight();
+      var deadline = ps.result.lastValidBlockHeight;
+      var expired = deadline ? height > deadline : (Date.now() - ps.at) > 90000;
+      if (!expired) {
+        if (Date.now() - ps.at > 300000) {
+          liveLog(prefix + ': ' + sig + ' still unresolved after 5 minutes -- no longer waiting on it; the real balance check will prevent a double sale', 'warn');
+          return { state: 'CLEARED' };
+        }
+        return { state: 'WAIT' };
+      }
+      st1 = await readStatus();   // an expired window alone does not prove it never landed
+    }
+    if (st1 && !st1.err && (st1.confirmationStatus === 'confirmed' || st1.confirmationStatus === 'finalized')) {
+      liveLog(prefix + ': the earlier sell ' + sig + ' has CONFIRMED -- recording it now, NOT selling again', 'win');
+      var settled = await settleConfirmedRealSell(connection, ps.result, prefix, platformName);
+      return { state: 'CONFIRMED', outcome: { ok: true, result: { outcome: 'CONFIRMED', signature: sig, tipLamports: ps.result.tipLamports }, soldAmount: ps.soldAmount, remainingAmount: ps.remainingAmount, realImpactUsd: settled.changeUsd, tipUsd: settled.costs.tipUsd, feeUsd: settled.costs.feeUsd } };
+    }
+    if (st1 && st1.err) {
+      liveLog(prefix + ': the earlier sell ' + sig + ' landed but was rejected on-chain -- nothing was sold, safe to try again', 'warn');
+      return { state: 'CLEARED' };
+    }
+    if (!st1) {
+      liveLog(prefix + ': the earlier sell ' + sig + ' expired without ever landing -- safe to try again', 'warn');
+      return { state: 'CLEARED' };
+    }
+    return { state: 'WAIT' };
+  } catch (e) {
+    if (Date.now() - ps.at > 300000) {
+      liveLog(prefix + ': could not check ' + ps.result.signature + ' for 5 minutes (' + e.message + ') -- no longer waiting on it; the real balance check will prevent a double sale', 'warn');
+      return { state: 'CLEARED' };
+    }
+    liveLog(prefix + ': could not check the earlier sell yet (' + e.message + ') -- waiting', 'warn');
+    return { state: 'WAIT' };
+  }
+}
+
 async function runLiveExit(pos, action, priceUsd, pct) {
   pos.busy = true;
   try {
@@ -2819,22 +2982,41 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     var platformName = pos.platform === 'pumpfun' ? 'pump.fun' : 'LetsBonk';
     var buildSellFn = pos.platform === 'pumpfun' ? pumpfun.buildSellInstructions : letsbonk.buildSellInstructions;
 
+    // Settle any earlier unresolved sell first. If it turns out it did land,
+    // THAT sale is what gets recorded below (with its own action and price),
+    // and nothing new is sold on this pass.
+    var outcome = null;
+    if (pos.pendingSell) {
+      var oldPending = pos.pendingSell;
+      var pend = await resolvePendingSell(pos, platformName);
+      if (pend.state === 'WAIT') { pos.retryAfter = Date.now() + 1000; return; }
+      pos.pendingSell = null;
+      if (pend.state === 'CONFIRMED') {
+        action = oldPending.action; priceUsd = oldPending.priceUsd; pct = oldPending.pct;
+        outcome = pend.outcome;
+      } else {
+        noteLiveSellFailure(pos, false);
+      }
+    }
+
     var prefix, kindText, logType;
     if (action.kind === 'SL') { prefix = 'LIVE STOP LOSS'; kindText = 'STOP LOSS HIT'; logType = 'loss'; }
     else if (action.kind === 'TRAIL') { prefix = 'LIVE TRAIL EXIT'; kindText = 'TRAIL EXIT | Peak +' + (action.peakGain * 100).toFixed(1) + '% | Pullback -' + (action.pullback * 100).toFixed(1) + '%'; logType = 'win'; }
     else if (action.kind === 'FIXED') { prefix = 'LIVE TAKE PROFIT'; kindText = 'TP HIT'; logType = 'win'; }
     else if (action.kind === 'TIER1') { prefix = 'LIVE TIER 1'; kindText = 'TIER 1 (+100%) -- selling 50% of the position'; logType = 'win'; }
     else if (action.kind === 'MANUAL') { prefix = 'LIVE MANUAL SELL'; kindText = 'MANUAL SELL requested'; logType = 'info'; }
+    else if (action.kind === 'STALE') { prefix = 'LIVE STALE EXIT'; kindText = 'TOKEN WENT STALE -- no price movement for ' + action.staleSecs + 's'; logType = 'loss'; }
     else { prefix = 'LIVE TIER 2'; kindText = 'TIER 2 (+500%) -- selling half of what is left'; logType = 'win'; }
 
     liveLog(prefix + ': ' + kindText + ' | ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> $' + priceUsd.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', logType);
 
-    var outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction);
+    if (!outcome) outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw);
     var confirmed = !!(outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED');
     var nowEst = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
 
     // Real wallet change from this sale, added to the position's running total.
     if (confirmed) {
+      pos.sellFails = 0; pos.zeroFails = 0; pos.stuck = false;
       if (typeof outcome.realImpactUsd === 'number') pos.sellImpactUsd = (pos.sellImpactUsd || 0) + outcome.realImpactUsd;
       else pos.sellImpactKnown = false;
       if (typeof outcome.tipUsd === 'number') pos.sellTipUsd = (pos.sellTipUsd || 0) + outcome.tipUsd;
@@ -2864,7 +3046,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // fees and tips -- blank if any of those real numbers could not be read.
       var realKnown = pos.buyImpactUsd !== null && pos.buyImpactUsd !== undefined && pos.sellImpactKnown !== false;
       var realPnl = realKnown ? parseFloat((pos.buyImpactUsd + pos.sellImpactUsd).toFixed(4)) : null;
-      var closeReason = action.kind === 'SL' ? 'Stop loss hit' : action.kind === 'TRAIL' ? 'Trail exit' : action.kind === 'MANUAL' ? 'Manual close' : 'Take profit hit';
+      var closeReason = action.kind === 'SL' ? 'Stop loss hit' : action.kind === 'TRAIL' ? 'Trail exit' : action.kind === 'MANUAL' ? 'Manual close' : action.kind === 'STALE' ? 'Token went stale' : 'Take profit hit';
       S.liveClosed.push({
         name: pos.name || '', mint: pos.mint, platform: pos.platform,
         size: pos.sizeUsd, entryPrice: pos.entryPriceUsd, exitPrice: priceUsd,
@@ -2952,18 +3134,26 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // A result that could not be read is treated like a loss, the safe side.
       liveCooldowns.set(pos.mint, (realPnl !== null && realPnl > 0) ? Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS) : Date.now());
       liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
+    } else if (outcome.ok && outcome.result && outcome.result.outcome === 'PENDING') {
+      // Submitted but not yet known to have landed or expired. Remember the
+      // exact transaction so the next attempt checks it BEFORE selling anything.
+      pos.pendingSell = { result: outcome.result, soldAmount: outcome.soldAmount, remainingAmount: outcome.remainingAmount, action: action, priceUsd: priceUsd, pct: pct, at: Date.now() };
+      pos.retryAfter = Date.now() + 1000;
+      liveLog(prefix + ': the sell was submitted but has not confirmed yet (' + outcome.result.signature + ') -- the bot will check that exact transaction before any retry and will NOT sell this twice', 'warn');
     } else {
-      pos.retryAfter = Date.now() + 1500;
-      liveLog(prefix + ': real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry on a later tick', 'warn');
+      noteLiveSellFailure(pos, outcome.zeroBalance === true);
+      liveLog(prefix + ': real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, attempt ' + pos.sellFails + (pos.stuck ? ', now flagged STUCK' : ', will retry'), 'warn');
+      if (pos.zeroFails >= 3) closeLiveOutsideBot(pos, priceUsd, prefix);
     }
 
     if (confirmed) {
       liveAutoLockCheck();
       checkLiveFundStopLoss();
+      if (S.liveOpen.indexOf(pos) === -1 && !feedNeeded()) stopFeed();
     }
   } catch (e) {
-    pos.retryAfter = Date.now() + 1500;
-    liveLog('LIVE EXIT error for ' + pos.mint + ': ' + e.message + ' -- position kept, will retry on a later tick', 'warn');
+    noteLiveSellFailure(pos, false);
+    liveLog('LIVE EXIT error for ' + pos.mint + ': ' + e.message + ' -- position kept, attempt ' + pos.sellFails + (pos.stuck ? ', now flagged STUCK' : ', will retry'), 'warn');
   } finally {
     pos.busy = false;
   }
@@ -3084,7 +3274,7 @@ app.post('/api/settings', function(req, res) {
     }
     // Live runs on its own: turning it on starts the shared feed even if paper
     // is stopped, and turning it off shuts the feed down only if paper is off too.
-    if (S.liveTradingEnabled) startFeed(); else if (!S.running) stopFeed();
+    if (S.liveTradingEnabled) startFeed(); else if (!feedNeeded()) stopFeed();
     log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
   }
   if (req.body.liveAutoLockEnabled !== undefined) {
