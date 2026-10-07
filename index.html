@@ -1681,12 +1681,29 @@ async function fetchState() {
         liveOpenEl.textContent = 'None open right now.';
         liveOpenEl.style.color = 'var(--dim)';
       } else {
+        liveOpenEl.style.color = '';
         liveOpenEl.innerHTML = lo.map(function(p) {
           var ageSec = Math.floor((Date.now() - p.openedAt) / 1000);
           var sellingNow = !!liveSelling[p.id];
-          return '<div style="margin-bottom:6px;padding:6px;background:rgba(0,0,0,0.2);border-radius:4px;overflow:hidden;">' +
-            '<button class="sell-btn" style="float:right;margin-left:8px;"' + (sellingNow ? ' disabled' : '') + ' onclick="sellLiveTrade(\'' + p.id + '\')">' + (sellingNow ? 'SELLING...' : 'SELL') + '</button>' +
-            p.mint.slice(0,8) + '... (' + p.platform + ') -- entry $' + p.entryPriceUsd.toFixed(10) + ' -- size $' + p.sizeUsd.toFixed(2) + ' -- tip $' + ((p.buyTipUsd !== null && p.buyTipUsd !== undefined) ? p.buyTipUsd.toFixed(4) : '?') + ' -- ' + ageSec + 's ago</div>';
+          var hasPrice = p.currentPriceUsd && p.currentPriceUsd > 0 && p.entryPriceUsd > 0;
+          var pct = hasPrice ? (p.currentPriceUsd - p.entryPriceUsd) / p.entryPriceUsd : 0;
+          var pnl = hasPrice ? p.sizeUsd * pct : 0;
+          var pnlColor = !hasPrice ? 'var(--dim)' : pnl >= 0 ? 'var(--green)' : 'var(--red)';
+          var pnlDisplay = hasPrice ? pSign(pnl) + '$' + f2(Math.abs(pnl)) : 'WAITING...';
+          var pctDisplay = hasPrice ? pSign(pct) + (pct * 100).toFixed(1) + '%' : '---';
+          var tpDisplay = p.tpl === 'FIXED' ? 'TP ' + (p.tpPct || '?') + '%'
+            : (p.tpl === 'TIERED' ? 'TIERED' + (p.tier1Done ? ' T1✓' : '') + (p.tier2Done ? ' T2✓' : '') : 'TRAIL');
+          var platLabel = p.platform === 'pumpfun' ? 'PUMP' : 'BONK';
+          var rawName = p.name || (p.mint.slice(0, 6) + '...');
+          var safeName = String(rawName).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+          var tipTxt = (p.buyTipUsd !== null && p.buyTipUsd !== undefined) ? '$' + p.buyTipUsd.toFixed(4) : '?';
+          return '<div class="trade"><div class="trade-top"><div class="trade-name">' + safeName + '<span class="real-badge">REAL</span></div>' +
+            '<button class="sell-btn"' + (sellingNow ? ' disabled' : '') + ' onclick="sellLiveTrade(\'' + p.id + '\')">' + (sellingNow ? 'SELLING...' : 'SELL') + '</button></div>' +
+            '<div class="trade-meta">$' + f2(p.sizeUsd) + ' · ' + ageSec + 's · ' + platLabel + ' · ' + tpDisplay + '</div>' +
+            '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (data.liveStopLossPct || 10) + '%</div></div>' +
+            '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
+            '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
+            '<div class="entry-price">ENTRY: $' + f8(p.entryPriceUsd) + (hasPrice ? ' · NOW: $' + f8(p.currentPriceUsd) : '') + ' · TIP: ' + tipTxt + '</div>' + caRow(p.mint) + '</div>';
         }).join('');
       }
     }
