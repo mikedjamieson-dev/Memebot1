@@ -114,6 +114,11 @@ const S = {
   liveOpen: [],
   liveClosed: [],
   liveStats: { w: 0, l: 0, r: 0, t: 0 },
+  liveSavings: 0,
+  liveStartFund: 0,
+  liveRealizedPnl: 0,
+  liveSessionHighFund: 0,
+  liveAutoLockEnabled: false,
   liveTipsPaidUsd: 0,
   liveNetworkFeesUsd: 0,
   liveLogs: [],
@@ -2096,6 +2101,10 @@ app.get('/api/state', function(req, res) {
     liveTakeProfitPct: S.liveTakeProfitPct,
     liveWindingDown: S.liveWindingDown,
     liveStats: S.liveStats,
+    liveSavings: S.liveSavings,
+    liveStartFund: S.liveStartFund,
+    liveRealizedPnl: S.liveRealizedPnl,
+    liveAutoLockEnabled: S.liveAutoLockEnabled,
     liveClosedTrades: S.liveClosed.slice(-15).reverse(),
     liveTipsPaidUsd: S.liveTipsPaidUsd,
     liveNetworkFeesUsd: S.liveNetworkFeesUsd,
@@ -2342,6 +2351,22 @@ function checkLiveFundStopLoss() {
   } else if (S.liveWindingDown && currentLoss < lossLimit) {
     S.liveWindingDown = false;
     liveLog('LIVE FUND recovered back above the ' + S.liveFundStopLossPct + '% loss line -- automatic real entries resumed', 'win');
+  }
+}
+
+// Automatic Fund Protection, mirroring paper's auto-lock exactly: when ON, every
+// time the live fund reaches a NEW high this session, the fund stop loss base
+// is raised to that high (so the loss line is measured from the new high). It
+// only ever moves up. Runs after every confirmed real sale, the same moments
+// paper runs its own ratchet.
+function liveAutoLockCheck() {
+  if (S.liveAutoLockEnabled && S.liveFund > S.liveSessionHighFund) {
+    S.liveSessionHighFund = S.liveFund;
+    var oldBase = S.liveDayStartFund;
+    S.liveDayStartFund = S.liveFund;
+    S.liveWindingDown = false;
+    var newTrigger = S.liveFund * (1 - S.liveFundStopLossPct / 100);
+    liveLog('LIVE AUTO-LOCK: new high $' + S.liveFund.toFixed(2) + ' - stop loss raised (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
   }
 }
 
@@ -2717,6 +2742,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         buySignature: pos.id, sellSignature: outcome.result.signature || ''
       });
       if (S.liveClosed.length > 1000) S.liveClosed.shift();
+      var closedRec = S.liveClosed[S.liveClosed.length - 1];
 
       // Win/loss counters, same rule as paper: the trade's overall result above
       // zero is a win, otherwise a loss. A trade whose real result could not be
@@ -2727,10 +2753,36 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       } else {
         liveLog(prefix + ': real result for this trade could not be read -- not counted as a win or a loss', 'warn');
       }
+
+      // Savings split, same rule as paper: a win bigger than MIN_SPLIT_WIN sends
+      // SAVINGS_PCT of its profit to savings and leaves the rest in the fund.
+      // This is bookkeeping only -- no real SOL is moved to the savings wallet.
+      // Done once per trade on its overall real result.
+      if (realPnl !== null) {
+        S.liveRealizedPnl = parseFloat((S.liveRealizedPnl + realPnl).toFixed(4));
+        var liveSavingsAmt = 0;
+        if (realPnl > CFG.MIN_SPLIT_WIN) {
+          liveSavingsAmt = parseFloat((realPnl * CFG.SAVINGS_PCT).toFixed(4));
+          S.liveFund = parseFloat((S.liveFund - liveSavingsAmt).toFixed(4));
+          S.liveSavings = parseFloat((S.liveSavings + liveSavingsAmt).toFixed(4));
+          liveLog(prefix + ': +$' + realPnl.toFixed(4) + ' -- $' + liveSavingsAmt.toFixed(4) + ' to Savings, $' + (realPnl - liveSavingsAmt).toFixed(4) + ' stays in the Live Fund (bookkeeping only, no SOL moved)', 'win');
+        }
+        closedRec.savingsAmount = liveSavingsAmt;
+        closedRec.fundAmount = parseFloat((realPnl - liveSavingsAmt).toFixed(4));
+      } else {
+        closedRec.savingsAmount = null;
+        closedRec.fundAmount = null;
+      }
+      closedRec.fundAfterTrade = S.liveFund;
       liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
     } else {
       pos.retryAfter = Date.now() + 1500;
       liveLog(prefix + ': real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, will retry on a later tick', 'warn');
+    }
+
+    if (confirmed) {
+      liveAutoLockCheck();
+      checkLiveFundStopLoss();
     }
   } catch (e) {
     pos.retryAfter = Date.now() + 1500;
@@ -2743,7 +2795,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 // Live CSV: real closed trades only, built from S.liveClosed. PnL is the
 // real wallet result (buy cost + sale proceeds, including fees and tips).
 app.get('/api/live/export', function(req, res) {
-  var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','BuyTipUsd','SellTipUsd','TotalTipUsd','BuyNetworkFeeUsd','SellNetworkFeeUsd','TotalNetworkFeeUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAfterTrade','BuySignature','SellSignature'];
+  var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','BuyTipUsd','SellTipUsd','TotalTipUsd','BuyNetworkFeeUsd','SellNetworkFeeUsd','TotalNetworkFeeUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAmount','SavingsAmount','FundAfterTrade','BuySignature','SellSignature'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -2753,7 +2805,7 @@ app.get('/api/live/export', function(req, res) {
       t.buyTipUsd, t.sellTipUsd, t.totalTipUsd, t.buyFeeUsd, t.sellFeeUsd, t.totalFeeUsd,
       t.tieredSold ? 'Yes' : 'No', t.tier1ExitPrice, t.tier1RealizedPct, t.tier1ProceedsUsd, csvSafe(t.tier1ClosedAt || ''),
       t.tieredSold2 ? 'Yes' : 'No', t.tier2ExitPrice, t.tier2RealizedPct, t.tier2ProceedsUsd, csvSafe(t.tier2ClosedAt || ''),
-      t.fundAfterTrade, t.buySignature || '', t.sellSignature || ''
+      t.fundAmount, t.savingsAmount, t.fundAfterTrade, t.buySignature || '', t.sellSignature || ''
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   res.setHeader('Content-Type', 'text/csv');
@@ -2765,6 +2817,18 @@ app.get('/api/live/export', function(req, res) {
 // rather than waiting on the passive background cycle. Used when the
 // Live tab opens, so the number shown is actually current at that
 // moment, not whatever the last background check happened to find.
+// Live version of paper's "raise stop loss to current fund" -- same effect:
+// the fund loss line is now measured from the current live fund.
+app.post('/api/live/lock-fund', function(req, res) {
+  var oldBase = S.liveDayStartFund;
+  S.liveDayStartFund = S.liveFund;
+  S.liveSessionHighFund = Math.max(S.liveSessionHighFund, S.liveFund);
+  S.liveWindingDown = false;
+  var newTrigger = S.liveFund * (1 - S.liveFundStopLossPct / 100);
+  liveLog('Live fund stop loss locked to current balance - new base $' + S.liveFund.toFixed(2) + ' (was $' + oldBase.toFixed(2) + ') | triggers below $' + newTrigger.toFixed(2), 'info');
+  res.json({ success: true, newBase: S.liveFund, triggerAt: parseFloat(newTrigger.toFixed(2)) });
+});
+
 // Manual sell for a real open position -- same job paper's /api/sell/:id does,
 // but for real money. Uses the exact same real-sell path as the automatic
 // exits (so the same busy lock, fund update, tip/fee tracking, and CSV record),
@@ -2820,6 +2884,10 @@ app.post('/api/settings', function(req, res) {
     if (!isNaN(lf) && lf >= 0) {
       S.liveFund = parseFloat(lf.toFixed(4));
       S.liveDayStartFund = S.liveFund;
+      S.liveStartFund = S.liveFund;
+      S.liveSessionHighFund = S.liveFund;
+      S.liveSavings = 0;
+      S.liveRealizedPnl = 0;
       S.liveWindingDown = false;
       liveLog('LIVE TRADING FUND set to $' + S.liveFund, 'info');
     }
@@ -2828,9 +2896,17 @@ app.post('/api/settings', function(req, res) {
     S.liveTradingEnabled = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
     if (S.liveTradingEnabled) {
       S.liveDayStartFund = S.liveFund;
+      S.liveSessionHighFund = S.liveFund;
       S.liveWindingDown = false;
+    } else {
+      // Same as paper's stopBot: auto fund protection turns off when a session ends.
+      S.liveAutoLockEnabled = false;
     }
     log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
+  }
+  if (req.body.liveAutoLockEnabled !== undefined) {
+    S.liveAutoLockEnabled = req.body.liveAutoLockEnabled === true || req.body.liveAutoLockEnabled === 'true';
+    liveLog('LIVE AUTO FUND PROTECTION: ' + (S.liveAutoLockEnabled ? 'ON' : 'OFF'), 'info');
   }
   if (req.body.liveMaxOpen !== undefined) {
     var lmo = parseInt(req.body.liveMaxOpen);

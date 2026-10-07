@@ -499,6 +499,22 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-live-fundloss-display">20</span>%. Separate from paper's own setting. Resets the baseline whenever you set the Live Trading Fund or turn automatic trading on.</div>
       <button class="settings-save" onclick="saveLiveFundLoss()">SAVE FUND STOP LOSS</button>
       <div class="settings-status" id="status-live-fundloss"></div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <div class="settings-lbl">LOCK IN CURRENT BALANCE</div>
+        <div class="settings-hint">Resets the stop loss to trigger <span id="current-live-fundloss-display-2">20</span>% below your <b>current</b> Live Fund ($<span id="current-live-fund-live">0.00</span>), instead of where it started. Use this to protect gains after a win streak. This is manual — nothing resets automatically.</div>
+        <button class="settings-save" onclick="lockLiveFund()">🔒 RAISE STOP LOSS TO CURRENT FUND</button>
+        <div class="settings-status" id="status-live-lockfund"></div>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);">
+        <div class="settings-lbl">🔁 AUTOMATIC FUND PROTECTION</div>
+        <div class="settings-hint">When ON, every time the Live Fund reaches a NEW high for this session, the stop loss automatically raises to <span id="current-live-fundloss-display-3">20</span>% below that new high — locking in gains as they happen instead of you doing it manually. Only ever moves up, never down. Turns OFF whenever automatic live trading is turned off — must be re-enabled each session.</div>
+        <div class="tp-mode-row">
+          <button class="tp-btn" id="btn-live-autolock-on" onclick="setLiveAutoLock(true)">● ON</button>
+          <button class="tp-btn active" id="btn-live-autolock-off" onclick="setLiveAutoLock(false)">○ OFF</button>
+        </div>
+        <button class="settings-save" onclick="saveLiveAutoLock()">SAVE AUTO PROTECTION SETTING</button>
+        <div class="settings-status" id="status-live-autolock"></div>
+      </div>
     </div>
 
 <!-- Wallets -->
@@ -602,6 +618,19 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="stat"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
     <div class="stat"><div class="stat-lbl">LIVE TRADING FUND</div><div class="stat-val" id="live-fund-display-main" style="color:var(--green);font-size:14px;">$0.0000</div></div>
   </div>
+  <div class="g2">
+    <div class="card">
+      <div class="card-lbl">TRADING FUND</div>
+      <div class="card-val" id="live-fund-card" style="color:var(--green)">$0.00</div>
+      <div class="card-sub" id="live-alltime">+$0.00 all time</div>
+    </div>
+    <div class="card">
+      <div class="card-lbl">SAVINGS</div>
+      <div class="card-val" id="live-savings" style="color:var(--yellow)">$0.00</div>
+      <div class="card-sub">20% of profits</div>
+    </div>
+  </div>
+
   <div class="g4" style="margin-bottom:8px;">
     <div class="stat"><div class="stat-lbl">WIN RATE</div><div class="stat-val" id="live-winrate" style="color:var(--green)">0%</div></div>
     <div class="stat"><div class="stat-lbl">WINS</div><div class="stat-val" id="live-wins" style="color:var(--green)">0</div></div>
@@ -798,6 +827,7 @@ var timerId = null;
 var currentTPMode = 'TIERED';
 var currentLiveTPMode = 'TIERED';
 var currentAutoLockEnabled = false;
+var currentLiveAutoLockEnabled = false;
 var ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
 var ptPage = 0;
 var ptLimit = 50;
@@ -952,6 +982,30 @@ function selectLiveTP(mode) {
     input.disabled = true; input.style.opacity = '0.4';
     lbl.textContent = 'TARGET % — SELECT FIXED ABOVE'; lbl.style.color = 'var(--bb)';
   }
+}
+
+function setLiveAutoLock(enabled) {
+  currentLiveAutoLockEnabled = enabled;
+  document.getElementById('btn-live-autolock-on').classList.toggle('active', enabled);
+  document.getElementById('btn-live-autolock-off').classList.toggle('active', !enabled);
+}
+
+async function lockLiveFund() {
+  var el = document.getElementById('status-live-lockfund');
+  try {
+    var res = await fetch(BASE + '/api/live/lock-fund', { method: 'POST' });
+    if (!res.ok) { el.textContent = '❌ Failed'; el.style.color = 'var(--red)'; return; }
+    var data = await res.json();
+    el.textContent = '✅ Locked at $' + f2(data.newBase) + ' — stop loss now triggers below $' + f2(data.triggerAt);
+    el.style.color = 'var(--green)';
+  } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
+}
+
+async function saveLiveAutoLock() {
+  var el = document.getElementById('status-live-autolock');
+  var ok = await apiPost({ liveAutoLockEnabled: currentLiveAutoLockEnabled });
+  el.textContent = ok ? '✅ Auto fund protection: ' + (currentLiveAutoLockEnabled ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
 function setAutoLock(enabled) {
@@ -1621,6 +1675,29 @@ async function fetchState() {
         document.getElementById('closed-list').appendChild(d5);
       });
     } else { closedSec.style.display = 'none'; }
+
+    // Live fund + savings cards, auto-protection sync, settings hints
+    var lfc = document.getElementById('live-fund-card');
+    if (lfc) {
+      var lfv = data.liveFund || 0;
+      lfc.textContent = '$' + f2(lfv);
+      lfc.style.color = lfv >= (data.liveStartFund || 0) ? 'var(--green)' : 'var(--red)';
+      var lpnl = data.liveRealizedPnl || 0;
+      document.getElementById('live-alltime').textContent = pSign(lpnl) + '$' + f2(lpnl) + ' all time';
+      document.getElementById('live-savings').textContent = '$' + f2(data.liveSavings || 0);
+    }
+    var liveLockDisp2 = document.getElementById('current-live-fundloss-display-2');
+    if (liveLockDisp2) liveLockDisp2.textContent = data.liveFundStopLossPct || 20;
+    var liveLockDisp3 = document.getElementById('current-live-fundloss-display-3');
+    if (liveLockDisp3) liveLockDisp3.textContent = data.liveFundStopLossPct || 20;
+    var liveFundNow = document.getElementById('current-live-fund-live');
+    if (liveFundNow) liveFundNow.textContent = f2(data.liveFund || 0);
+    if (!document.getElementById('settings-panel-lt').classList.contains('open')) {
+      var liveAlOn = data.liveAutoLockEnabled === true;
+      currentLiveAutoLockEnabled = liveAlOn;
+      document.getElementById('btn-live-autolock-on').classList.toggle('active', liveAlOn);
+      document.getElementById('btn-live-autolock-off').classList.toggle('active', !liveAlOn);
+    }
 
     // Live win stats + closed trades -- separate from paper's, same layout
     var ls = data.liveStats || { w: 0, l: 0, r: 0, t: 0 };
