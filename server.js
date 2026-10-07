@@ -114,6 +114,11 @@ const S = {
   liveOpen: [],
   liveClosed: [],
   liveStats: { w: 0, l: 0, r: 0, t: 0 },
+  liveAllTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 },
+  liveBestTrade: null,
+  liveWorstTrade: null,
+  liveSessions: [],
+  liveSession: null,
   liveSavings: 0,
   liveStartFund: 0,
   liveRealizedPnl: 0,
@@ -2097,6 +2102,68 @@ function stopBot() {
   log('Bot stopped | W: ' + S.stats.w + ' L: ' + S.stats.l + ' | Fund: $' + S.fund.toFixed(2), 'info');
 }
 
+// -- LIVE PORTFOLIO HISTORY ------------------------------------
+// Current live session numbers, same formula as paper's session: what the
+// fund (counting money still in open positions) plus savings is worth now,
+// compared with where the session started.
+function liveSessionSummary() {
+  var ls = S.liveSession;
+  if (!ls) return null;
+  var pnl = parseFloat((liveEffectiveFund() + S.liveSavings - ls.startFund - ls.startSavings).toFixed(2));
+  return {
+    date: new Date(ls.startTime).toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
+    startTime: new Date(ls.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }),
+    trades: ls.t, wins: ls.w, losses: ls.l,
+    winRate: ls.t > 0 ? parseFloat((ls.w / ls.t * 100).toFixed(1)) : 0,
+    startFund: parseFloat(ls.startFund.toFixed(2)),
+    pnl: pnl,
+    returnPct: ls.startFund > 0 ? parseFloat((pnl / ls.startFund * 100).toFixed(2)) : 0,
+    totalFees: parseFloat(ls.fees.toFixed(4)),
+  };
+}
+
+// Saved when automatic live trading is turned off, like paper saves a
+// session when it stops. Only recorded once, and only if trades happened.
+function endLiveSession() {
+  var ls = S.liveSession;
+  if (!ls || ls.recorded) return;
+  ls.recorded = true;
+  if (ls.t <= 0) return;
+  var sum = liveSessionSummary();
+  sum.endTime = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+  sum.endFund = parseFloat(liveEffectiveFund().toFixed(2));
+  sum.savings = parseFloat(S.liveSavings.toFixed(2));
+  S.liveSessions.unshift(sum);
+}
+
+app.get('/api/live/portfolio', function(req, res) {
+  res.json({
+    allTime: S.liveAllTime, bestTrade: S.liveBestTrade, worstTrade: S.liveWorstTrade,
+    sessions: S.liveSessions.slice(0, 50), totalSessions: S.liveSessions.length, totalTrades: S.liveClosed.length,
+    session: liveSessionSummary(),
+  });
+});
+
+app.get('/api/live/portfolio/trades', function(req, res) {
+  var q = req.query;
+  var trades = S.liveClosed.slice().reverse().map(function(t) {
+    return { name: t.name, mint: t.mint, size: t.size, closedDate: t.closedDate, chain: 'solana',
+      src: t.platform === 'pumpfun' ? 'PUMP' : 'BONK', pnl: t.pnl, pnlPct: t.pnlPct, closeReason: t.closeReason };
+  });
+  if (q.date) trades = trades.filter(function(t) { return t.closedDate === q.date; });
+  if (q.token) { var tok = q.token.toUpperCase(); trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; }); }
+  if (q.src && q.src !== 'all') trades = trades.filter(function(t) { return t.src === q.src; });
+  if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl !== null && t.pnl > 0; });
+  if (q.result === 'loss') trades = trades.filter(function(t) { return t.pnl !== null && t.pnl <= 0; });
+  if (q.exit && q.exit !== 'all') trades = trades.filter(function(t) { return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0; });
+  var page = parseInt(q.page) || 0;
+  var limit = parseInt(q.limit) || 50;
+  if (limit > 99999) limit = trades.length || 1;
+  var total = trades.length;
+  trades = trades.slice(page * limit, (page + 1) * limit);
+  res.json({ trades: trades, total: total, page: page, pages: Math.ceil(total / limit) });
+});
+
 // -- API ROUTES ------------------------------------------------
 app.get('/api/state', function(req, res) {
   res.json({
@@ -2857,6 +2924,30 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         closedRec.fundAmount = null;
       }
       closedRec.fundAfterTrade = S.liveFund;
+
+      // Live portfolio history: all-time totals, best/worst trade and the
+      // current session, same rules as paper's portfolio (a win is above $0,
+      // anything else is a loss). Results that could not be read are left out.
+      var liveTradeFees = (closedRec.totalTipUsd !== null && closedRec.totalFeeUsd !== null) ? closedRec.totalTipUsd + closedRec.totalFeeUsd : null;
+      if (liveTradeFees !== null) {
+        S.liveAllTime.totalFees = parseFloat((S.liveAllTime.totalFees + liveTradeFees).toFixed(6));
+        if (S.liveSession) S.liveSession.fees = parseFloat((S.liveSession.fees + liveTradeFees).toFixed(6));
+      }
+      if (realPnl !== null) {
+        S.liveAllTime.t++;
+        S.liveAllTime.totalPnl = parseFloat((S.liveAllTime.totalPnl + realPnl).toFixed(4));
+        if (realPnl > 0) S.liveAllTime.w++; else S.liveAllTime.l++;
+        if (realPnl > S.liveAllTime.bestPnl) S.liveAllTime.bestPnl = realPnl;
+        if (realPnl < S.liveAllTime.worstPnl) S.liveAllTime.worstPnl = realPnl;
+        var livePortTrade = { name: closedRec.name || '?', entryPrice: closedRec.entryPrice, exitPrice: closedRec.exitPrice, size: closedRec.size, pnl: realPnl, pnlPct: closedRec.pnlPct, closeReason: closedRec.closeReason };
+        if (!S.liveBestTrade || realPnl > S.liveBestTrade.pnl) S.liveBestTrade = livePortTrade;
+        if (!S.liveWorstTrade || realPnl < S.liveWorstTrade.pnl) S.liveWorstTrade = livePortTrade;
+        if (S.liveSession) {
+          S.liveSession.t++;
+          if (realPnl > 0) S.liveSession.w++; else S.liveSession.l++;
+        }
+      }
+
       // Live's own cooldown, same lengths as paper (30 min after a loss, 5 min
       // after a win), kept separate so paper trades never block live entries.
       // A result that could not be read is treated like a loss, the safe side.
@@ -2986,7 +3077,9 @@ app.post('/api/settings', function(req, res) {
       S.liveDayStartFund = liveEffectiveFund();
       S.liveSessionHighFund = liveEffectiveFund();
       S.liveWindingDown = false;
+      S.liveSession = { startTime: Date.now(), startFund: liveEffectiveFund(), startSavings: S.liveSavings, t: 0, w: 0, l: 0, fees: 0, recorded: false };
     } else {
+      endLiveSession();
       // Same as paper's stopBot: auto fund protection turns off when a session ends.
       S.liveAutoLockEnabled = false;
     }
