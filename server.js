@@ -999,7 +999,7 @@ function handleSwap(t) {
     // tryEnterToken's own internal guard prevents this from double-firing
     // against the same mint the 500ms backup scanner might also be
     // checking at nearly the same moment.
-    if (poolTok && !S.open.find(function(t) { return t.mint === mint; })) {
+    if (poolTok) {
       tryEnterToken(poolTok, priceUsd, 'event');
     }
 
@@ -1715,10 +1715,48 @@ var scanIdx = 0;
 // freshPrice, falling back to the original cache-freshness check.
 var pendingEntryChecks = new Set();
 
+// Live entries are decided separately from paper. These are live's own
+// bookkeeping: mints with a real buy in flight (so the same token can't be
+// bought twice, and in-flight buys count against Max Open), and live's own
+// cooldowns (paper's cooldowns never block live, and the reverse).
+var livePendingBuys = new Set();
+var liveCooldowns = new Map();
+
+function paperSlotFree() {
+  return S.running && !S.windingDown && S.open.length < S.maxOpen;
+}
+
+function liveSlotFree() {
+  return S.liveTradingEnabled && !S.liveWindingDown && (S.liveOpen.length + livePendingBuys.size) < S.liveMaxOpen;
+}
+
+function liveWantsEntry(tok) {
+  if (!tok || !tok.mint) return false;
+  if (tok.src !== 'PUMP' && tok.src !== 'BONK') return false;
+  if (!liveSlotFree()) return false;
+  if (livePendingBuys.has(tok.mint)) return false;
+  if (S.liveOpen.find(function(p) { return p.mint === tok.mint; })) return false;
+  var lastLive = liveCooldowns.get(tok.mint);
+  if (lastLive && (Date.now() - lastLive) < CFG.COOLDOWN_MS) return false;
+  return true;
+}
+
+function startLiveEntry(tok) {
+  var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
+  var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
+  var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
+  livePendingBuys.add(tok.mint);
+  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
+    liveLog('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
+  }).then(function() {
+    livePendingBuys.delete(tok.mint);
+  });
+}
+
 async function tryEnterToken(tok, freshPrice, triggerSource) {
   if (!tok || !tok.mint) return;
   if (pendingEntryChecks.has(tok.mint)) return;
-  if (S.open.find(function(t) { return t.mint === tok.mint; })) return;
+  if (S.open.find(function(t) { return t.mint === tok.mint; }) && !liveWantsEntry(tok)) return;
   pendingEntryChecks.add(tok.mint);
   try {
     await tryEnterTokenInner(tok, freshPrice, triggerSource);
@@ -1728,11 +1766,16 @@ async function tryEnterToken(tok, freshPrice, triggerSource) {
 }
 
 async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
-  if (!S.running || S.tokens.size === 0) return;
-  if (S.windingDown) return;
-  if (S.fund < 1) { stopBot(); return; }
-  if (S.open.length >= S.maxOpen) return;
+  if (S.tokens.size === 0) return;
+  if (S.running && !S.windingDown && S.fund < 1) stopBot();
   if (!tok || !tok.mint) return;
+
+  // Paper and live each decide for themselves whether they want this token.
+  // The filters below are shared and unchanged; each side only acts if it
+  // wanted the token to begin with and still does after the last async check.
+  var paperOk = paperSlotFree() && !S.open.find(function(t) { return t.mint === tok.mint; });
+  var liveOk = liveWantsEntry(tok);
+  if (!paperOk && !liveOk) return;
 
   var diag = (S.scanCount % 200 === 0);
 
@@ -1774,14 +1817,15 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   var cooldownKey = tok.n + tok.mint;
   var lastCooldown = S.cooldowns.get(cooldownKey);
-  if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) { trackSkip('cooldown_active'); if(diag) log('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
-
-  if (S.open.find(function(t) { return t.mint === tok.mint; })) { trackSkip('already_open'); if(diag) log('DIAG '+tok.n+' | SKIP: already open', 'info'); return; }
+  if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) paperOk = false;
+  if (!paperOk && !liveOk) { trackSkip('cooldown_active'); if(diag) log('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
 
   if (tok.buys < 3) { trackSkip('buys_below_3'); if(diag) log('DIAG '+tok.n+' | SKIP: buys='+tok.buys+' (need 3)', 'info'); return; }
 
+  // Paper's size check applies to paper only; live sizes its own buy.
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
-  if (size < 0.50) { S.rejectCount++; trackSkip('position_too_small'); if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
+  if (paperOk && size < 0.50) paperOk = false;
+  if (!paperOk && !liveOk) { S.rejectCount++; trackSkip('position_too_small'); if(diag) log('DIAG '+tok.n+' | SKIP: size $'+size+' too small', 'info'); return; }
 
   if (tok.src === 'DSC') { trackSkip('dsc_disabled'); if(diag) log('DIAG '+tok.n+' | SKIP: DSC entries disabled - discovery only', 'info'); return; }
 
@@ -1824,10 +1868,15 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   // actually finishes), so the count needs to be verified again one more
   // time here, with nothing async between this check and the trade
   // actually being created, so nothing else can slip in between.
-  if (S.open.length >= S.maxOpen) {
+  if (paperOk && (!paperSlotFree() || S.open.find(function(t) { return t.mint === tok.mint; }))) {
+    paperOk = false;
     trackSkip('max_open_reached_race');
-    return;
   }
+  if (liveOk && !liveWantsEntry(tok)) {
+    liveOk = false;
+    trackSkip('live_max_open_reached_race');
+  }
+  if (!paperOk && !liveOk) return;
 
   // Same idea for the dev-sold filter: the early check at the top of this
   // function can pass, and then the dev's sell lands while the wallet
@@ -1841,7 +1890,12 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     return;
   }
 
-  var slip = parseFloat(
+  // Live buys first, the instant every check has passed, so real money is
+  // never waiting on paper's bookkeeping below. It runs in the background.
+  if (liveOk) startLiveEntry(tok);
+  if (!paperOk) return;
+
+  var slip =parseFloat(
     Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
   );
   var entrySlipCost = parseFloat((size * slip).toFixed(4));
@@ -1903,21 +1957,6 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   S.open.push(trade);
   log('ENTER ' + tok.n + ' [' + tok.src + '] | ' + tok.mint + ' | $' + size.toFixed(2) + ' | Entry $' + entryPrice.toFixed(8), 'entry');
-
-  if (S.liveTradingEnabled && (tok.src === 'PUMP' || tok.src === 'BONK')) {
-    if (S.liveOpen.length >= S.liveMaxOpen) {
-      liveLog('LIVE AUTO ENTRY skipped: max open (' + S.liveMaxOpen + ') reached', 'info');
-    } else if (S.liveWindingDown) {
-      liveLog('LIVE AUTO ENTRY skipped: live fund stop loss active, no new entries until it recovers', 'info');
-    } else {
-      var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
-      var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
-      var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
-      performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
-        liveLog('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
-      });
-    }
-  }
 }
 
 // -- MAIN SCANNER (now a thin backup pass) -----------------------
@@ -1926,10 +1965,9 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 // might have missed - but entry logic itself now lives in the shared
 // function above, not duplicated here.
 async function runScan() {
-  if (!S.running || S.tokens.size === 0) return;
-  if (S.windingDown) return;
-  if (S.fund < 1) { stopBot(); return; }
-  if (S.open.length >= S.maxOpen) return;
+  if (S.tokens.size === 0) return;
+  if (S.running && !S.windingDown && S.fund < 1) { stopBot(); }
+  if (!paperSlotFree() && !liveSlotFree()) return;
 
   var tokens = Array.from(S.tokens.values());
   if (tokens.length === 0) return;
@@ -1957,12 +1995,37 @@ function cleanPool() {
   S.cooldowns.forEach(function(ts, key) {
     if (now - ts > CFG.COOLDOWN_MS) S.cooldowns.delete(key);
   });
+  liveCooldowns.forEach(function(ts, key) {
+    if (now - ts > CFG.COOLDOWN_MS) liveCooldowns.delete(key);
+  });
   recheckExpiredBans();
   if (removed > 0) log('Pool cleaned: ' + removed + ' removed | Pool: ' + S.tokens.size, 'info');
 }
 
 // -- BOT CONTROL -----------------------------------------------
 var exitI = null, cleanI = null, priceI = null, dsI = null, solPriceI = null;
+
+// The data feed (Bitquery socket, entry scanner, pool cleanup, SOL price) is
+// shared by paper and live. Either one being on keeps it running; it only shuts
+// down when both are off. Safe to call repeatedly.
+function startFeed() {
+  connectBQ();
+  if (!scanI) scanI = setInterval(runScan, 500);
+  if (!cleanI) cleanI = setInterval(cleanPool, 3600000);
+  if (!solPriceI) solPriceI = setInterval(updateSolPrice, 600000);
+  updateSolPrice();
+}
+
+function stopFeed() {
+  if (scanI) { clearInterval(scanI); scanI = null; }
+  if (cleanI) { clearInterval(cleanI); cleanI = null; }
+  if (solPriceI) { clearInterval(solPriceI); solPriceI = null; }
+  if (pumpWs) {
+    bqDeliberateStop = true;
+    try { pumpWs.close(); } catch(e) {}
+    pumpWs = null;
+  }
+}
 
 function startBot() {
   if (S.running) return;
@@ -1985,16 +2048,12 @@ function startBot() {
   S.fund = S.sessionFund;
   S.sessionHighFund = S.sessionFund;
 
-  connectBQ();
+  startFeed();
   fetchDSTokens();
-  updateSolPrice();
 
-  scanI = setInterval(runScan, 500);
   exitI = setInterval(checkExitCriteria, 10000);
   priceI = setInterval(updateOpenTradePrices, 2000);
   dsI = setInterval(fetchDSTokens, CFG.DS_INTERVAL);
-  cleanI = setInterval(cleanPool, 3600000);
-  solPriceI = setInterval(updateSolPrice, 600000);
 
   log('BunkerBuster STARTED | Fund: $' + S.sessionFund + ' | SL: ' + S.stopLossPct + '% | Max: ' + S.maxOpen, 'info');
 }
@@ -2009,18 +2068,12 @@ function stopBot() {
   // off once a session ends, ready to be explicitly turned on again before
   // the next one - matching the user's confirmed intended workflow.
   S.autoLockEnabled = false;
-  if (scanI) clearInterval(scanI);
   if (exitI) clearInterval(exitI);
   if (priceI) clearInterval(priceI);
   if (dsI) clearInterval(dsI);
-  if (cleanI) clearInterval(cleanI);
   if (S.windDownCheckInterval) { clearInterval(S.windDownCheckInterval); S.windDownCheckInterval = null; }
-  if (solPriceI) clearInterval(solPriceI);
-  if (pumpWs) {
-    bqDeliberateStop = true;
-    try { pumpWs.close(); } catch(e) {}
-    pumpWs = null;
-  }
+  // Live may still need the feed -- only shut it down if live is off too.
+  if (!S.liveTradingEnabled) stopFeed();
 
   if (S.stats.t > 0) {
     var session = {
@@ -2804,6 +2857,10 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         closedRec.fundAmount = null;
       }
       closedRec.fundAfterTrade = S.liveFund;
+      // Live's own cooldown, same lengths as paper (30 min after a loss, 5 min
+      // after a win), kept separate so paper trades never block live entries.
+      // A result that could not be read is treated like a loss, the safe side.
+      liveCooldowns.set(pos.mint, (realPnl !== null && realPnl > 0) ? Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS) : Date.now());
       liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
     } else {
       pos.retryAfter = Date.now() + 1500;
@@ -2933,6 +2990,9 @@ app.post('/api/settings', function(req, res) {
       // Same as paper's stopBot: auto fund protection turns off when a session ends.
       S.liveAutoLockEnabled = false;
     }
+    // Live runs on its own: turning it on starts the shared feed even if paper
+    // is stopped, and turning it off shuts the feed down only if paper is off too.
+    if (S.liveTradingEnabled) startFeed(); else if (!S.running) stopFeed();
     log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
   }
   if (req.body.liveAutoLockEnabled !== undefined) {
