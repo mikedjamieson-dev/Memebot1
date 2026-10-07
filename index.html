@@ -602,6 +602,12 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="stat"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
     <div class="stat"><div class="stat-lbl">LIVE TRADING FUND</div><div class="stat-val" id="live-fund-display-main" style="color:var(--green);font-size:14px;">$0.0000</div></div>
   </div>
+  <div class="g4" style="margin-bottom:8px;">
+    <div class="stat"><div class="stat-lbl">WIN RATE</div><div class="stat-val" id="live-winrate" style="color:var(--green)">0%</div></div>
+    <div class="stat"><div class="stat-lbl">WINS</div><div class="stat-val" id="live-wins" style="color:var(--green)">0</div></div>
+    <div class="stat"><div class="stat-lbl">LOSSES</div><div class="stat-val" id="live-losses" style="color:var(--red)">0</div></div>
+    <div class="stat"><div class="stat-lbl">RUGS</div><div class="stat-val" id="live-rugs" style="color:var(--yellow)">0</div></div>
+  </div>
   <div class="g2">
     <div class="stat"><div class="stat-lbl">TIPS PAID</div><div class="stat-val" id="live-tips-paid" style="color:var(--yellow);font-size:14px;">$0.0000</div></div>
     <div class="stat"><div class="stat-lbl">NETWORK FEES</div><div class="stat-val" id="live-network-fees" style="color:var(--red);font-size:14px;">$0.0000</div></div>
@@ -636,6 +642,11 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       </div>
       <div id="live-log-list"><div style="font-size:13px;color:var(--dim)">Connecting...</div></div>
     </div>
+  </div>
+
+  <div id="live-closed-sec" class="card" style="display:none;">
+    <div class="card-lbl" style="margin-bottom:8px;">CLOSED TRADES</div>
+    <div id="live-closed-list"></div>
   </div>
 
   <div class="foot">BunkerBuster.io -- LIVE TRADING</div>
@@ -1610,6 +1621,49 @@ async function fetchState() {
         document.getElementById('closed-list').appendChild(d5);
       });
     } else { closedSec.style.display = 'none'; }
+
+    // Live win stats + closed trades -- separate from paper's, same layout
+    var ls = data.liveStats || { w: 0, l: 0, r: 0, t: 0 };
+    var lwr = ls.t > 0 ? ((ls.w / ls.t) * 100).toFixed(1) : '0.0';
+    var lwrEl = document.getElementById('live-winrate');
+    if (lwrEl) {
+      lwrEl.textContent = lwr + '%';
+      lwrEl.style.color = parseFloat(lwr) >= 50 ? 'var(--green)' : 'var(--red)';
+      document.getElementById('live-wins').textContent = ls.w;
+      document.getElementById('live-losses').textContent = ls.l;
+      document.getElementById('live-rugs').textContent = ls.r;
+    }
+    var liveClosedSec = document.getElementById('live-closed-sec');
+    if (liveClosedSec) {
+      var lct = data.liveClosedTrades || [];
+      if (lct.length > 0) {
+        liveClosedSec.style.display = 'block';
+        var lcList = document.getElementById('live-closed-list');
+        lcList.innerHTML = '';
+        lct.forEach(function(t) {
+          var known = t.pnl !== null && t.pnl !== undefined;
+          var pnlColor = !known ? 'var(--dim)' : t.pnl > 0 ? 'var(--green)' : 'var(--red)';
+          var pnlStr = known ? pSign(t.pnl) + '$' + f2(t.pnl) : 'N/A';
+          var pctStr = (t.pnlPct !== null && t.pnlPct !== undefined) ? pSign(t.pnlPct) + parseFloat(t.pnlPct).toFixed(2) + '%' : 'N/A';
+          var rawN = t.name || (t.mint ? t.mint.slice(0, 6) + '...' : '?');
+          var safeN = String(rawN).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+          var tipS = (t.totalTipUsd !== null && t.totalTipUsd !== undefined) ? '$' + parseFloat(t.totalTipUsd).toFixed(4) : '?';
+          var feeS = (t.totalFeeUsd !== null && t.totalFeeUsd !== undefined) ? '$' + parseFloat(t.totalFeeUsd).toFixed(4) : '?';
+          var dc = document.createElement('div');
+          dc.className = 'ctrade'; dc.style.borderLeft = '3px solid ' + pnlColor;
+          dc.innerHTML = '<div class="ctrade-header"><span class="ctrade-name">' + safeN + '</span><span class="ctrade-pnl" style="color:' + pnlColor + '">' + pnlStr + '</span></div>' +
+            '<div class="ctrade-g3"><div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val">$' + f2(t.size) + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.platform === 'pumpfun' ? 'PUMP' : 'BONK') + '</div></div></div>' +
+            '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.entryPrice) + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
+            '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">TIPS</div><div class="ctrade-val" style="font-size:11px">' + tipS + '</div></div>' +
+            '<div class="ctrade-cell"><div class="ctrade-lbl">NETWORK FEES</div><div class="ctrade-val" style="font-size:11px">' + feeS + '</div></div></div>' +
+            '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason || '?') + '</span><span>' + (t.openedAt || '') + (t.closedAt ? ' → ' + t.closedAt : '') + '</span></div>' + caRow(t.mint);
+          lcList.appendChild(dc);
+        });
+      } else { liveClosedSec.style.display = 'none'; }
+    }
 
     // Session stats
     var closed = data.closedTrades || [];

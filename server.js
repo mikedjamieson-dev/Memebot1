@@ -113,6 +113,7 @@ const S = {
   liveWindingDown: false,
   liveOpen: [],
   liveClosed: [],
+  liveStats: { w: 0, l: 0, r: 0, t: 0 },
   liveTipsPaidUsd: 0,
   liveNetworkFeesUsd: 0,
   liveLogs: [],
@@ -2094,6 +2095,8 @@ app.get('/api/state', function(req, res) {
     liveTakeProfitMode: S.liveTakeProfitMode,
     liveTakeProfitPct: S.liveTakeProfitPct,
     liveWindingDown: S.liveWindingDown,
+    liveStats: S.liveStats,
+    liveClosedTrades: S.liveClosed.slice(-15).reverse(),
     liveTipsPaidUsd: S.liveTipsPaidUsd,
     liveNetworkFeesUsd: S.liveNetworkFeesUsd,
     liveOpen: S.liveOpen,
@@ -2714,6 +2717,16 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         buySignature: pos.id, sellSignature: outcome.result.signature || ''
       });
       if (S.liveClosed.length > 1000) S.liveClosed.shift();
+
+      // Win/loss counters, same rule as paper: the trade's overall result above
+      // zero is a win, otherwise a loss. A trade whose real result could not be
+      // read is left out of both rather than guessed.
+      if (realPnl !== null) {
+        if (realPnl > 0) S.liveStats.w++; else S.liveStats.l++;
+        S.liveStats.t++;
+      } else {
+        liveLog(prefix + ': real result for this trade could not be read -- not counted as a win or a loss', 'warn');
+      }
       liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
     } else {
       pos.retryAfter = Date.now() + 1500;
