@@ -602,6 +602,7 @@ function connectBQ() {
       bqReconnectDelay = 3000;
       S.sources['BITQUERY'] = 'live:0';
       log('Bitquery LIVE - real time data connected', 'pump');
+      if (S.liveTradingEnabled || S.liveOpen.length > 0) liveLog('LIVE FEED: price feed connected -- real positions are being watched', 'info');
       sendBQConnectionInit();
       setTimeout(function() {
         if (!bqPairSubActive && pumpWs && pumpWs.readyState === WebSocket.OPEN) {
@@ -630,6 +631,7 @@ function connectBQ() {
       if (bqPingI) clearInterval(bqPingI);
       if (bqDeliberateStop) { bqDeliberateStop = false; return; }
       var delay = bqReconnectDelay;
+      if (S.liveTradingEnabled || S.liveOpen.length > 0) liveLog('LIVE FEED: price feed DISCONNECTED -- reconnecting in ' + (delay / 1000) + 's. Exits on real positions cannot trigger from live prices until it is back (the 60-second stale exit still runs)', 'warn');
       bqReconnectDelay = Math.min(bqReconnectDelay * 2, 30000);
       setTimeout(connectBQ, delay);
     });
@@ -1386,6 +1388,8 @@ function closeTradeReal(id, reason) {
   }
 
   S.stats.t++;
+  // A rug: the trade closed with the price at half its entry or worse.
+  if (tr.entryPrice > 0 && tr.currentPrice > 0 && tr.currentPrice / tr.entryPrice <= 0.5) S.stats.r++;
 
   if (S.autoLockEnabled && S.fund > S.sessionHighFund) {
     S.sessionHighFund = S.fund;
@@ -2967,6 +2971,18 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
   if (!mintStr) {
     return res.json({ ok: false, error: 'Provide the real token mint address you bought, in the request body as "mint"' });
   }
+  // If the bot is tracking an open real position in this token, sell it through
+  // the normal manual-sell path so it is recorded and removed from the open
+  // list. Anything the bot is not tracking is sold directly, as before.
+  var tracked = S.liveOpen.find(function(p) { return p.mint === mintStr; });
+  if (tracked) {
+    if (tracked.busy) return res.json({ ok: false, error: 'A real sell is already in progress for this position -- try again in a moment' });
+    var out = await manualSellLivePosition(tracked);
+    checkLiveFundStopLoss();
+    if (!out.closed) return res.json({ ok: false, error: 'The real sell did not confirm -- the position is still open, check the Live Activity Log' });
+    var rec = S.liveClosed[S.liveClosed.length - 1];
+    return res.json({ ok: true, result: { outcome: 'CONFIRMED', signature: (rec && rec.sellSignature) || '' }, soldAmount: out.soldAmount });
+  }
   var outcome = await performRealSell(mintStr, platformName, buildSellFn, 'LIVE TRADE TEST');
   checkLiveFundStopLoss();
   res.json(outcome);
@@ -3278,6 +3294,8 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // Win/loss counters, same rule as paper: the trade's overall result above
       // zero is a win, otherwise a loss. A trade whose real result could not be
       // read is left out of both rather than guessed.
+      // A rug: the trade closed with the price at half its entry or worse.
+      if (pos.entryPriceUsd > 0 && priceUsd > 0 && priceUsd / pos.entryPriceUsd <= 0.5) S.liveStats.r++;
       if (realPnl !== null) {
         if (realPnl > 0) S.liveStats.w++; else S.liveStats.l++;
         S.liveStats.t++;
@@ -3404,20 +3422,28 @@ app.post('/api/live/lock-fund', function(req, res) {
 // but for real money. Uses the exact same real-sell path as the automatic
 // exits (so the same busy lock, fund update, tip/fee tracking, and CSV record),
 // just with the reason "Manual close". Sells the full real balance.
-app.post('/api/live/sell/:id', async function(req, res) {
-  var pos = S.liveOpen.find(function(p) { return p.id === req.params.id; });
-  if (!pos) return res.json({ ok: false, error: 'No such real open position -- it may already be closed' });
-  if (pos.busy) return res.json({ ok: false, error: 'A real sell is already in progress for this position -- try again in a moment' });
-
+// One manual-sell routine for a tracked real position, shared by the Open
+// Positions SELL button and the Live Trade Test panel's sell buttons, so a
+// manual sale always goes through the same recording path as an automatic one
+// (closed-trades list, history, fund, savings) and always removes the position.
+async function manualSellLivePosition(pos) {
   var price = pos.currentPriceUsd;
   if (!price || price <= 0) {
     var fetched = await getRealTokenPriceUsd(pos.mint);
     price = (fetched && fetched > 0) ? fetched : pos.entryPriceUsd;
   }
   var pct = (price - pos.entryPriceUsd) / pos.entryPriceUsd;
+  var rawBefore = pos.tokenAmountRaw;
   await runLiveExit(pos, { kind: 'MANUAL', fraction: null }, price, pct);
-  var closed = S.liveOpen.indexOf(pos) === -1;
-  res.json({ ok: closed, closed: closed, error: closed ? undefined : 'The real sell did not confirm -- the position is still open, check the Live Activity Log' });
+  return { closed: S.liveOpen.indexOf(pos) === -1, soldAmount: rawBefore };
+}
+
+app.post('/api/live/sell/:id', async function(req, res) {
+  var pos = S.liveOpen.find(function(p) { return p.id === req.params.id; });
+  if (!pos) return res.json({ ok: false, error: 'No such real open position -- it may already be closed' });
+  if (pos.busy) return res.json({ ok: false, error: 'A real sell is already in progress for this position -- try again in a moment' });
+  var out = await manualSellLivePosition(pos);
+  res.json({ ok: out.closed, closed: out.closed, error: out.closed ? undefined : 'The real sell did not confirm -- the position is still open, check the Live Activity Log' });
 });
 
 app.post('/api/live/refresh-price', async function(req, res) {
@@ -3478,7 +3504,7 @@ app.post('/api/settings', function(req, res) {
     // Live runs on its own: turning it on starts the shared feed even if paper
     // is stopped, and turning it off shuts the feed down only if paper is off too.
     if (S.liveTradingEnabled) { startFeed(); warmLiveExecution(); } else if (!feedNeeded()) stopFeed();
-    log('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
+    liveLog('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
   }
   if (req.body.liveAutoLockEnabled !== undefined) {
     S.liveAutoLockEnabled = req.body.liveAutoLockEnabled === true || req.body.liveAutoLockEnabled === 'true';

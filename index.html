@@ -615,8 +615,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <!-- Real Live Stats -->
   <div class="g2">
-    <div class="stat"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
-    <div class="stat"><div class="stat-lbl">LIVE TRADING FUND</div><div class="stat-val" id="live-fund-display-main" style="color:var(--green);font-size:14px;">$0.0000</div></div>
+    <div class="stat" style="grid-column:1 / -1;"><div class="stat-lbl">TRADING WALLET BALANCE</div><div class="stat-val" id="live-trading-balance-main" style="color:var(--green);font-size:14px;">Checking...</div></div>
   </div>
   <div class="g2">
     <div class="card">
@@ -644,7 +643,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 
   <div class="card" style="margin-top:10px;background:rgba(255,80,80,0.08);border-color:var(--red);">
     <div style="color:var(--red);text-align:center;padding:10px;">
-      When ON, the bot buys for real, automatically, the instant a qualifying entry fires -- the exact same filters already proven in paper trading, including the wallet concentration check. Every open real position is watched automatically regardless: a 10% stop loss checks its real price every 10 seconds and sells for real if hit.
+      When ON, the bot buys for real, automatically, the instant a qualifying entry fires -- the exact same filters already proven in paper trading, including the wallet concentration check. Every open real position is watched automatically regardless, on the same live price feed paper uses: the stop loss, trailing stop and tiered profits all sell for real the moment they trigger, and a token whose price stops moving for 60 seconds is sold too.
     </div>
     <button class="main-btn btn-start" id="live-trading-toggle-btn" onclick="toggleLiveTrading()" style="margin-top:10px;">▶ TURN ON AUTOMATIC LIVE TRADING</button>
   </div>
@@ -659,6 +658,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   </div>
 
   <div class="logwrap" style="margin-top:10px;">
+    <div class="fbar" id="live-frozbar">LOG PAUSED — scroll to top to resume</div>
     <div class="logbox" id="live-logbox">
       <div class="log-header">
         <div class="log-header-lbl">LIVE ACTIVITY LOG</div>
@@ -829,6 +829,7 @@ var liveTradingOn = false;
 var logFilter = 'all';
 var allLogs = [];
 var frozen = false;
+var liveFrozen = false;
 var liveLogFilter = 'all';
 var liveAllLogs = [];
 var startTime = null;
@@ -848,6 +849,14 @@ document.addEventListener('DOMContentLoaded', function() {
     if (lb.scrollTop < 30 && frozen) { frozen = false; fb.style.display = 'none'; renderLog(); }
     else if (lb.scrollTop >= 30 && !frozen) { frozen = true; fb.style.display = 'block'; }
   }, { passive: true });
+  var llb = document.getElementById('live-logbox');
+  var lfb = document.getElementById('live-frozbar');
+  if (llb && lfb) {
+    llb.addEventListener('scroll', function() {
+      if (llb.scrollTop < 30 && liveFrozen) { liveFrozen = false; lfb.style.display = 'none'; renderLiveLog(); }
+      else if (llb.scrollTop >= 30 && !liveFrozen) { liveFrozen = true; lfb.style.display = 'block'; }
+    }, { passive: true });
+  }
   setInterval(fetchState, 2000);
   fetchState();
 });
@@ -1399,7 +1408,7 @@ function setLiveFilter(f) {
         b.classList.toggle('act', b.getAttribute('data-f') === f);
       });
     }
-    renderLiveLog();
+    if (!liveFrozen) renderLiveLog();
   } catch (e) { showJsError('setLiveFilter failed: ' + e.message); }
 }
 
@@ -1663,7 +1672,7 @@ async function fetchState() {
       liveAllLogs = data.liveLogs;
       var liveLogCntEl = document.getElementById('live-log-cnt');
       if (liveLogCntEl) liveLogCntEl.textContent = liveAllLogs.length + ' entries';
-      renderLiveLog();
+      if (!liveFrozen) renderLiveLog();
     }
 
     // Closed trades
@@ -1802,11 +1811,9 @@ async function fetchState() {
     }
 
     var liveFundEl = document.getElementById('live-fund-display');
-    var liveFundElMain = document.getElementById('live-fund-display-main');
     var lf = data.liveFund || 0;
     var lfColor = lf > 0 ? 'var(--green)' : 'var(--red)';
     if (liveFundEl) { liveFundEl.textContent = '$' + lf.toFixed(4); liveFundEl.style.color = lfColor; }
-    if (liveFundElMain) { liveFundElMain.textContent = '$' + lf.toFixed(4); liveFundElMain.style.color = lfColor; }
 
     var liveTipsEl = document.getElementById('live-tips-paid');
     if (liveTipsEl) liveTipsEl.textContent = '$' + (data.liveTipsPaidUsd || 0).toFixed(4);
