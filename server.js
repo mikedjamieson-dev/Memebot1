@@ -2593,6 +2593,74 @@ async function warmLiveExecution() {
 }
 setInterval(warmLiveExecution, 10000);
 
+// -- WEEKLY PUMP.FUN SDK VERSION CHECK -----------------------------
+// pump.fun has changed its on-chain accounts and fees before, and the official
+// SDK is updated to follow. Once at startup and then once a week, ask the npm
+// registry for the newest version of @pump-fun/pump-sdk and say in the live
+// log whether the installed one is behind. It only reports -- it never
+// installs or changes anything.
+var PUMP_SDK_PACKAGE = '@pump-fun/pump-sdk';
+var PUMP_SDK_CHECK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function compareVersions(a, b) {
+  var pa = String(a).split('-')[0].split('.').map(function(x) { return parseInt(x, 10) || 0; });
+  var pb = String(b).split('-')[0].split('.').map(function(x) { return parseInt(x, 10) || 0; });
+  for (var i = 0; i < 3; i++) {
+    var d = (pa[i] || 0) - (pb[i] || 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+// Reads the installed version straight from the package's own package.json.
+// Some packages block requiring that file directly, so if that fails the
+// folders above the package's entry file are searched for it instead.
+function readInstalledPackageVersion(name) {
+  try { return require(name + '/package.json').version; } catch (e) { /* try the folder search */ }
+  try {
+    var dir = path.dirname(require.resolve(name));
+    for (var i = 0; i < 6; i++) {
+      var file = path.join(dir, 'package.json');
+      if (fs.existsSync(file)) {
+        var pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (pkg.name === name) return pkg.version;
+      }
+      var up = path.dirname(dir);
+      if (up === dir) break;
+      dir = up;
+    }
+  } catch (e) { /* unreadable */ }
+  return null;
+}
+
+async function checkPumpSdkVersion() {
+  try {
+    var installed = readInstalledPackageVersion(PUMP_SDK_PACKAGE);
+    var ctl = new AbortController();
+    var timer = setTimeout(function() { ctl.abort(); }, 10000);
+    var res;
+    try {
+      res = await fetch('https://registry.npmjs.org/' + PUMP_SDK_PACKAGE.replace('/', '%2f') + '/latest', { signal: ctl.signal });
+    } finally { clearTimeout(timer); }
+    if (!res.ok) throw new Error('registry answered HTTP ' + res.status);
+    var latest = (await res.json()).version;
+    if (!latest) throw new Error('registry reply had no version');
+    if (!installed) {
+      liveLog('PUMP SDK CHECK: newest ' + PUMP_SDK_PACKAGE + ' is ' + latest + ' but the installed version could not be read -- check it manually', 'warn');
+    } else if (compareVersions(installed, latest) < 0) {
+      liveLog('PUMP SDK CHECK: a NEWER ' + PUMP_SDK_PACKAGE + ' is available -- installed ' + installed + ', newest ' + latest + '. Tell Claude so it can be reviewed and tested before updating', 'warn');
+    } else {
+      liveLog('PUMP SDK CHECK: ' + PUMP_SDK_PACKAGE + ' ' + installed + ' is the newest version', 'info');
+    }
+    return { installed: installed, latest: latest };
+  } catch (e) {
+    liveLog('PUMP SDK CHECK: could not check for a newer ' + PUMP_SDK_PACKAGE + ' (' + e.message + ') -- will try again next week', 'info');
+    return null;
+  }
+}
+setTimeout(checkPumpSdkVersion, 30000);
+setInterval(checkPumpSdkVersion, PUMP_SDK_CHECK_MS);
+
 // -- AUTOMATIC SAVINGS TRANSFER ----------------------------------
 // Every winning trade sets aside 20% of its profit as savings (bookkeeping,
 // above). Once $20 of it has built up, the real SOL is sent from the trading
