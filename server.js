@@ -1759,7 +1759,11 @@ function startLiveEntry(tok) {
   var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
   var buildBuyFn = tok.src === 'PUMP' ? require('./pumpfun').buildBuyInstructions : require('./letsbonk').buildBuyInstructions;
   livePendingBuys.add(tok.mint);
-  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').catch(function(e) {
+  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY').then(function(r) {
+    // A token skipped for thin liquidity is left alone for the same cooldown
+    // as any other live exit, instead of being re-checked on every tick.
+    if (r && r.skipped) liveCooldowns.set(tok.mint, Date.now());
+  }).catch(function(e) {
     liveLog('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
   }).then(function() {
     livePendingBuys.delete(tok.mint);
@@ -2736,6 +2740,10 @@ function describeRealCosts(c) {
 // Shared real-buy core -- used by both the manual Live Trade Test
 // button and the automatic entry trigger below. One real
 // implementation, so the two can never behave differently.
+// A real buy is refused if it would move the pool price by more than this
+// (a sign the pool is too thin to get in and out of cleanly).
+var LIVE_MAX_BUY_IMPACT_PCT = 5;
+
 async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
@@ -2758,7 +2766,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
 
     var buyT0 = Date.now();
     liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
-    var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
+    var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15, LIVE_MAX_BUY_IMPACT_PCT);
     var buyBuiltMs = Date.now() - buyT0;
 
     var tx = new Transaction();
@@ -2849,6 +2857,11 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
 
     return { ok: true, result: result, liveFund: S.liveFund };
   } catch (e) {
+    if (e.code === 'THIN_LIQUIDITY') {
+      // Nothing was sent. Not a failure of the lookups, so the remembered settings stay.
+      liveLog(logPrefix + ' (' + platformName + ' buy) SKIPPED for ' + mintStr + ': ' + e.message, 'warn');
+      return { ok: false, skipped: true, error: e.message };
+    }
     liveLog(logPrefix + ' (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
     invalidateBuilderCaches();
     return { ok: false, error: e.message };

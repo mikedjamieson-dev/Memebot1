@@ -85,7 +85,21 @@ async function warmCaches(connection) {
   return refreshConfigs(new OnlinePumpSdk(connection));
 }
 
-async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent) {
+// Liquidity guard. For a constant-product pool, buying solIn moves the price
+// by about solIn / (quote-side reserves). If that is more than maxImpactPct the
+// pool is too thin for this buy and the buy is refused BEFORE anything is
+// built or sent. Uses reserves the buy already reads, so it adds no lookup.
+function checkBuyImpact(quoteReservesBN, solInBN, maxImpactPct) {
+  if (!maxImpactPct || !quoteReservesBN || quoteReservesBN.isZero()) return;
+  var impactPct = solInBN.muln(10000).div(quoteReservesBN).toNumber() / 100;
+  if (impactPct > maxImpactPct) {
+    var err = new Error('thin liquidity: this buy would move the price about ' + impactPct.toFixed(2) + '% (limit ' + maxImpactPct + '%) -- the pool holds about ' + (Number(quoteReservesBN.toString()) / 1e9).toFixed(2) + ' SOL');
+    err.code = 'THIN_LIQUIDITY';
+    throw err;
+  }
+}
+
+async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent, maxImpactPct) {
   var sdk = new OnlinePumpSdk(connection);
 
   // The lookups below do not depend on each other, so they run at the
@@ -108,6 +122,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
   }
 
   var solAmountBN = new BN(solAmountLamports.toString());
+  checkBuyImpact(bc.virtualQuoteReserves, solAmountBN, maxImpactPct);
   var amount;
   try {
     amount = quoteTokensForSol(bc, solAmountBN);
@@ -229,6 +244,7 @@ module.exports = {
   buildSellInstructions,
   quoteTokensForSol,
   quoteSolForTokens,
+  checkBuyImpact,
   isGraduated,
   warmCaches,
   clearCaches,

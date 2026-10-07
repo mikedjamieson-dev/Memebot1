@@ -143,7 +143,24 @@ async function gatherContext(raydium, mintA, mintB, programId) {
   return { poolId: poolId, poolInfo: poolInfo, platformInfo: platformInfo, mintInfo: mintInfo, mintBInfo: mintBInfo, epochInfo: epochInfo };
 }
 
-async function buildBuyInstructions(connection, mint, userPublicKey, solAmountLamports, slippageBps) {
+// Liquidity guard, same rule as pumpfun.js: refuse the buy, before anything is
+// built or sent, if it would move the pool price by more than maxImpactPct.
+// Uses the pool's own quote-side reserves (virtualB) already fetched for the
+// buy. If the pool does not expose that number the check is skipped, never
+// guessed.
+function checkBuyImpact(poolInfo, buyAmountBN, maxImpactPct) {
+  if (!maxImpactPct || !poolInfo || !poolInfo.virtualB || typeof poolInfo.virtualB.toString !== 'function') return;
+  var reserves = new BN(poolInfo.virtualB.toString());
+  if (reserves.isZero()) return;
+  var impactPct = buyAmountBN.muln(10000).div(reserves).toNumber() / 100;
+  if (impactPct > maxImpactPct) {
+    var err = new Error('thin liquidity: this buy would move the price about ' + impactPct.toFixed(2) + '% (limit ' + maxImpactPct + '%) -- the pool holds about ' + (Number(reserves.toString()) / 1e9).toFixed(2) + ' SOL');
+    err.code = 'THIN_LIQUIDITY';
+    throw err;
+  }
+}
+
+async function buildBuyInstructions(connection, mint, userPublicKey, solAmountLamports, slippageBps, maxImpactPct) {
   var raydium;
   try {
     raydium = await Raydium.load({ connection: connection, owner: userPublicKey, disableFeatureCheck: true, disableLoadToken: true });
@@ -161,6 +178,7 @@ async function buildBuyInstructions(connection, mint, userPublicKey, solAmountLa
   }
 
   var buyAmountBN = new BN(solAmountLamports.toString());
+  checkBuyImpact(ctx.poolInfo, buyAmountBN, maxImpactPct);
   var slippageBN = new BN(slippageBps);
 
   var result;
@@ -277,6 +295,7 @@ async function isGraduated(connection, mint, userPublicKey) {
 module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
+  checkBuyImpact,
   isGraduated,
   clearCaches,
 };
