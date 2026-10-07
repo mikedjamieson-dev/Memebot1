@@ -2891,7 +2891,6 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         fundAfterTrade: S.liveFund,
         buySignature: pos.id, sellSignature: outcome.result.signature || ''
       });
-      if (S.liveClosed.length > 1000) S.liveClosed.shift();
       var closedRec = S.liveClosed[S.liveClosed.length - 1];
 
       // Win/loss counters, same rule as paper: the trade's overall result above
