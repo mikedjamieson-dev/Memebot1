@@ -1366,6 +1366,17 @@ async function toggleLiveTrading() {
   try { await apiPost({ liveTradingEnabled: !liveTradingOn }); } catch(e) {}
 }
 
+var liveSelling = {};
+async function sellLiveTrade(id) {
+  liveSelling[id] = true;
+  try {
+    var res = await fetch(BASE + '/api/live/sell/' + id, { method: 'POST' });
+    var out = await res.json();
+    if (!out.ok) alert(out.error || 'Sell failed -- check the Live Activity Log');
+  } catch (e) { alert('Sell request failed: ' + e.message); }
+  delete liveSelling[id];
+}
+
 async function sellTrade(id) {
   try { await fetch(BASE + '/api/sell/' + id, { method: 'POST' }); } catch(e) {}
 }
@@ -1672,7 +1683,9 @@ async function fetchState() {
       } else {
         liveOpenEl.innerHTML = lo.map(function(p) {
           var ageSec = Math.floor((Date.now() - p.openedAt) / 1000);
-          return '<div style="margin-bottom:6px;padding:6px;background:rgba(0,0,0,0.2);border-radius:4px;">' +
+          var sellingNow = !!liveSelling[p.id];
+          return '<div style="margin-bottom:6px;padding:6px;background:rgba(0,0,0,0.2);border-radius:4px;overflow:hidden;">' +
+            '<button class="sell-btn" style="float:right;margin-left:8px;"' + (sellingNow ? ' disabled' : '') + ' onclick="sellLiveTrade(\'' + p.id + '\')">' + (sellingNow ? 'SELLING...' : 'SELL') + '</button>' +
             p.mint.slice(0,8) + '... (' + p.platform + ') -- entry $' + p.entryPriceUsd.toFixed(10) + ' -- size $' + p.sizeUsd.toFixed(2) + ' -- tip $' + ((p.buyTipUsd !== null && p.buyTipUsd !== undefined) ? p.buyTipUsd.toFixed(4) : '?') + ' -- ' + ageSec + 's ago</div>';
         }).join('');
       }

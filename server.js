@@ -2646,6 +2646,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     else if (action.kind === 'TRAIL') { prefix = 'LIVE TRAIL EXIT'; kindText = 'TRAIL EXIT | Peak +' + (action.peakGain * 100).toFixed(1) + '% | Pullback -' + (action.pullback * 100).toFixed(1) + '%'; logType = 'win'; }
     else if (action.kind === 'FIXED') { prefix = 'LIVE TAKE PROFIT'; kindText = 'TP HIT'; logType = 'win'; }
     else if (action.kind === 'TIER1') { prefix = 'LIVE TIER 1'; kindText = 'TIER 1 (+100%) -- selling 50% of the position'; logType = 'win'; }
+    else if (action.kind === 'MANUAL') { prefix = 'LIVE MANUAL SELL'; kindText = 'MANUAL SELL requested'; logType = 'info'; }
     else { prefix = 'LIVE TIER 2'; kindText = 'TIER 2 (+500%) -- selling half of what is left'; logType = 'win'; }
 
     liveLog(prefix + ': ' + kindText + ' | ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> $' + priceUsd.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', logType);
@@ -2685,7 +2686,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // fees and tips -- blank if any of those real numbers could not be read.
       var realKnown = pos.buyImpactUsd !== null && pos.buyImpactUsd !== undefined && pos.sellImpactKnown !== false;
       var realPnl = realKnown ? parseFloat((pos.buyImpactUsd + pos.sellImpactUsd).toFixed(4)) : null;
-      var closeReason = action.kind === 'SL' ? 'Stop loss hit' : action.kind === 'TRAIL' ? 'Trail exit' : 'Take profit hit';
+      var closeReason = action.kind === 'SL' ? 'Stop loss hit' : action.kind === 'TRAIL' ? 'Trail exit' : action.kind === 'MANUAL' ? 'Manual close' : 'Take profit hit';
       S.liveClosed.push({
         name: pos.name || '', mint: pos.mint, platform: pos.platform,
         size: pos.sizeUsd, entryPrice: pos.entryPriceUsd, exitPrice: priceUsd,
@@ -2751,6 +2752,26 @@ app.get('/api/live/export', function(req, res) {
 // rather than waiting on the passive background cycle. Used when the
 // Live tab opens, so the number shown is actually current at that
 // moment, not whatever the last background check happened to find.
+// Manual sell for a real open position -- same job paper's /api/sell/:id does,
+// but for real money. Uses the exact same real-sell path as the automatic
+// exits (so the same busy lock, fund update, tip/fee tracking, and CSV record),
+// just with the reason "Manual close". Sells the full real balance.
+app.post('/api/live/sell/:id', async function(req, res) {
+  var pos = S.liveOpen.find(function(p) { return p.id === req.params.id; });
+  if (!pos) return res.json({ ok: false, error: 'No such real open position -- it may already be closed' });
+  if (pos.busy) return res.json({ ok: false, error: 'A real sell is already in progress for this position -- try again in a moment' });
+
+  var price = pos.currentPriceUsd;
+  if (!price || price <= 0) {
+    var fetched = await getRealTokenPriceUsd(pos.mint);
+    price = (fetched && fetched > 0) ? fetched : pos.entryPriceUsd;
+  }
+  var pct = (price - pos.entryPriceUsd) / pos.entryPriceUsd;
+  await runLiveExit(pos, { kind: 'MANUAL', fraction: null }, price, pct);
+  var closed = S.liveOpen.indexOf(pos) === -1;
+  res.json({ ok: closed, closed: closed, error: closed ? undefined : 'The real sell did not confirm -- the position is still open, check the Live Activity Log' });
+});
+
 app.post('/api/live/refresh-price', async function(req, res) {
   await updateSolPrice();
   res.json({ ok: true, solPriceUsd: SOL_PRICE_USD, solPriceFresh: isSolPriceFresh() });
