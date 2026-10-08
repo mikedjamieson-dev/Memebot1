@@ -1387,8 +1387,29 @@ function linkifyMint(msg) {
   });
 }
 
+// True while the person has text highlighted inside this log. Redrawing the
+// log replaces its text and wipes the highlight, so the redraw waits.
+var logRedrawWaiting = false;
+function logSelectionActive(el) {
+  try {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    return !!(el && el.contains(sel.getRangeAt(0).commonAncestorContainer));
+  } catch (e) { return false; }
+}
+document.addEventListener('selectionchange', function() {
+  if (!logRedrawWaiting) return;
+  var a = document.getElementById('log-list');
+  var b = document.getElementById('live-log-list');
+  if (logSelectionActive(a) || logSelectionActive(b)) return;
+  logRedrawWaiting = false;
+  if (!frozen) renderLog();
+  if (!liveFrozen) renderLiveLog();
+});
+
 function renderLog() {
   var el = document.getElementById('log-list');
+  if (logSelectionActive(el)) { logRedrawWaiting = true; return; }
   var fl = logFilter === 'all' ? allLogs : allLogs.filter(function(e) { return e.type === logFilter; });
   el.innerHTML = '';
   fl.slice(0, 150).forEach(function(e) {
@@ -1415,6 +1436,7 @@ function setLiveFilter(f) {
 function renderLiveLog() {
   var el = document.getElementById('live-log-list');
   if (!el) return;
+  if (logSelectionActive(el)) { logRedrawWaiting = true; return; }
   var fl = liveLogFilter === 'all' ? liveAllLogs : liveAllLogs.filter(function(e) {
     // PUMP on the live log = every real-trade line on pump.fun (paper's PUMP shows feed status lines instead)
     if (liveLogFilter === 'pump') return String(e.msg || '').toLowerCase().indexOf('pump.fun') >= 0;

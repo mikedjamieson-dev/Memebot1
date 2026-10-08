@@ -2839,6 +2839,25 @@ function describeRealCosts(c) {
 // (a sign the pool is too thin to get in and out of cleanly).
 var LIVE_MAX_BUY_IMPACT_PCT = 5;
 
+// Lists every account each trade instruction uses (skipping plain SOL
+// transfers, compute settings and token-account setup), so a rejected
+// transaction can be compared with one that worked. Logging only -- a failure
+// here is swallowed and never affects a trade.
+function describeIxAccounts(instructions) {
+  try {
+    var skip = ['11111111111111111111111111111111', 'ComputeBudget111111111111111111111111111111', 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'];
+    var out = [];
+    instructions.forEach(function(ix, n) {
+      var pid = ix.programId.toBase58();
+      if (skip.indexOf(pid) !== -1) return;
+      out.push('step ' + (n + 1) + ' program ' + pid + ' accounts: ' + ix.keys.map(function(k, i) {
+        return '#' + (i + 1) + ' ' + k.pubkey.toBase58() + (k.isWritable ? '(w)' : '');
+      }).join(' '));
+    });
+    return out.join(' || ');
+  } catch (e) { return 'could not list accounts: ' + e.message; }
+}
+
 async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
@@ -2863,6 +2882,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
     liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
     var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15, LIVE_MAX_BUY_IMPACT_PCT);
     var buyBuiltMs = Date.now() - buyT0;
+    liveLog(logPrefix + ' (' + platformName + ' buy) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
@@ -3048,6 +3068,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     var sellBuildT0 = Date.now();
     var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, 15);
     var sellBuildMs = Date.now() - sellBuildT0;
+    liveLog(logPrefix + ' (' + platformName + ' sell) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
