@@ -210,6 +210,13 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
       solAmount: solAmount,
       slippage: slippagePercent,
       tokenProgram: tokenProgram,
+      // The SDK's sell (unlike its buy) does NOT read these from the bonding
+      // curve itself -- they must be passed in. A mayhem-mode coin has to use
+      // the reserved fee recipients, and a cashback coin needs its volume
+      // accumulator account; leaving them out makes the program reject the
+      // sell ("not authorized", error 6000).
+      mayhemMode: !!bc.isMayhemMode,
+      cashback: !!bc.isCashbackCoin,
     });
   } catch (e) {
     throw new Error(
