@@ -2688,6 +2688,53 @@ async function checkPumpSdkVersion() {
 setTimeout(checkPumpSdkVersion, 30000);
 setInterval(checkPumpSdkVersion, PUMP_SDK_CHECK_MS);
 
+// -- SDK PROBE (read-only, nothing is traded) ---------------------
+// SDK 3.2.0 is installed under the separate name "pump-sdk-next" and is NEVER
+// used for trading -- all real buys and sells still use @pump-fun/pump-sdk
+// exactly as before. This page only prints what the newer SDK contains, so its
+// real sell-building code can be read before any upgrade is written.
+//   /api/sdk-probe                      -> version, export names, method names + sizes
+//   /api/sdk-probe?fn=sellInstructions  -> that function's source (part 1)
+//   /api/sdk-probe?fn=NAME&part=2       -> the next 12000 characters
+app.get('/api/sdk-probe', function(req, res) {
+  res.type('text/plain');
+  try {
+    var PART = 12000;
+    var next = require('pump-sdk-next');
+    var nextVersion = readInstalledPackageVersion('pump-sdk-next');
+    var holders = [['export', next], ['PumpSdk.prototype', next.PumpSdk && next.PumpSdk.prototype], ['OnlinePumpSdk.prototype', next.OnlinePumpSdk && next.OnlinePumpSdk.prototype]];
+    var fnName = req.query && req.query.fn ? String(req.query.fn) : '';
+    if (fnName) {
+      var found = null, where = '';
+      holders.forEach(function(h) {
+        if (found || !h[1]) return;
+        var f = h[1][fnName];
+        if (typeof f === 'function') { found = f; where = h[0]; }
+      });
+      if (!found) return res.send('No function named "' + fnName + '" in pump-sdk-next ' + nextVersion + '. Open /api/sdk-probe to see the names.');
+      var src = Function.prototype.toString.call(found);
+      var part = Math.max(parseInt(req.query.part, 10) || 1, 1);
+      var chunk = src.slice((part - 1) * PART, part * PART);
+      var parts = Math.ceil(src.length / PART);
+      return res.send('pump-sdk-next ' + nextVersion + ' | ' + where + '.' + fnName + ' | ' + src.length + ' characters | part ' + part + ' of ' + parts + '\n\n' + (chunk || '(no more text -- that was the last part)'));
+    }
+    var out = ['pump-sdk-next version: ' + nextVersion, 'Version trading uses: ' + readInstalledPackageVersion(PUMP_SDK_PACKAGE), ''];
+    holders.forEach(function(h) {
+      if (!h[1]) { out.push(h[0] + ': not present', ''); return; }
+      var names = h[0] === 'export' ? Object.keys(h[1]) : Object.getOwnPropertyNames(h[1]);
+      out.push(h[0] + ' (' + names.length + '):');
+      names.forEach(function(n) {
+        var v; try { v = h[1][n]; } catch (e) { return; }
+        out.push('  ' + n + (typeof v === 'function' ? ' [function, ' + Function.prototype.toString.call(v).length + ' chars]' : ' [' + typeof v + ']'));
+      });
+      out.push('');
+    });
+    res.send(out.join('\n'));
+  } catch (e) {
+    res.send('SDK probe failed: ' + e.message);
+  }
+});
+
 // -- AUTOMATIC SAVINGS TRANSFER ----------------------------------
 // Every winning trade sets aside 20% of its profit as savings (bookkeeping,
 // above). Once $20 of it has built up, the real SOL is sent from the trading
