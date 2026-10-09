@@ -2998,11 +2998,13 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             tpl: S.liveTakeProfitMode,
             tpPct: S.liveTakeProfitPct,
             peakPriceUsd: entryPriceUsd,
+            currentPriceUsd: entryPriceUsd,
             tier1Done: false,
             tier2Done: false,
             busy: false,
             retryAfter: 0,
           });
+          syncOnchainPrices();
           liveLog('LIVE ENTER ' + (S.tokens.get(mintStr) ? S.tokens.get(mintStr).n : mintStr.slice(0, 6) + '...') + ' [' + platformName + '] | ' + mintStr + ' | $' + sizeUsd.toFixed(2) + ' | Entry $' + entryPriceUsd.toFixed(10) + ' | ' + tokensHeld + ' tokens held', 'entry');
           liveLog('LIVE BUY TIMING: build ' + buyBuiltMs + 'ms | submit to landed ' + buySendMs + 'ms | reads before position was watched ' + (Date.now() - postBuyT0) + 'ms | total ' + (Date.now() - buyT0) + 'ms', 'info');
         } else {
@@ -3173,16 +3175,24 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
 // The check itself is synchronous and cheap; the real sell runs in the
 // background so the feed is never held up. pos.busy stops two sells
 // ever running on the same position at once.
-function handleLiveTick(mint, priceUsd) {
+function handleLiveTick(mint, priceUsd, fromChain) {
   if (!S.liveOpen || S.liveOpen.length === 0) return;
   for (var i = 0; i < S.liveOpen.length; i++) {
     var pos = S.liveOpen[i];
     if (pos.mint !== mint) continue;
     if (!pos.entryPriceUsd || pos.entryPriceUsd <= 0) continue;
 
+    // While the on-chain price is delivering for this coin it is the price
+    // source; the trade feed's price for the same coin is ignored so the two
+    // can never disagree. The moment the chain feed is not delivering (socket
+    // down, switched off for this coin, coin graduated) the trade feed is used
+    // again automatically.
+    if (!fromChain && onchainWatcher && onchainWatcher.isLive(mint)) continue;
+
     // Same guard paper has: a single-tick crash of more than 90% is
-    // treated as a bad tick, not a real price.
-    if (pos.currentPriceUsd && pos.currentPriceUsd > 0) {
+    // treated as a bad tick, not a real price. It is for the trade feed only;
+    // an on-chain price is the pool's real state, not a tick that can be bad.
+    if (!fromChain && pos.currentPriceUsd && pos.currentPriceUsd > 0) {
       var drop = (pos.currentPriceUsd - priceUsd) / pos.currentPriceUsd;
       if (drop > 0.90) {
         liveLog('LIVE PRICE SANITY REJECT ' + mint.slice(0, 8) + '... | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
@@ -3253,6 +3263,42 @@ function checkLiveStale() {
   });
 }
 setInterval(checkLiveStale, 1000);
+
+// -- LIVE ON-CHAIN PRICE ------------------------------------------------
+// Real-time price for every open live position straight from the coin's own
+// pool on the blockchain (see onchainprice.js). Each price goes through the
+// exact same handleLiveTick as before, so every exit rule is unchanged. If
+// anything about this fails the old trade-feed price keeps working.
+var onchainWatcher = null;
+function getOnchainWatcher() {
+  if (onchainWatcher) return onchainWatcher;
+  try {
+    onchainWatcher = require('./onchainprice').createWatcher({
+      getRpcUrl: function() {
+        var env = (liveWalletModule && liveWalletModule.LIVE_RPC_ENV) || 'LIVE_RPC_URL';
+        return process.env[env];
+      },
+      getSolPrice: function() { return isSolPriceFresh() ? SOL_PRICE_USD : null; },
+      getConnection: function() { return liveWalletModule.getConnection(); },
+      onPrice: function(mint, priceUsd) { handleLiveTick(mint, priceUsd, true); },
+      log: function(msg, type) { liveLog(msg, type || 'info'); },
+    });
+  } catch (e) {
+    liveLog('ONCHAIN price feed could not start: ' + e.message + ' -- the old price feed is used', 'warn');
+    onchainWatcher = null;
+  }
+  return onchainWatcher;
+}
+function syncOnchainPrices() {
+  try {
+    if ((!S.liveOpen || S.liveOpen.length === 0) && !onchainWatcher) return;
+    var w = getOnchainWatcher();
+    if (w) w.sync(S.liveOpen || []);
+  } catch (e) {
+    liveLog('ONCHAIN sync error: ' + e.message, 'warn');
+  }
+}
+setInterval(syncOnchainPrices, 1000);
 
 // The shared data feed has to stay up for as long as anything needs it:
 // paper running, automatic live trading on, or a real position still open
