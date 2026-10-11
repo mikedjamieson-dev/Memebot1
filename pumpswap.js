@@ -20,6 +20,7 @@
 // adjusting -- real detail, not another guess.
 
 const { PumpAmmSdk, OnlinePumpAmmSdk, Direction } = require('@pump-fun/pump-swap-sdk');
+const BN = require('bn.js');
 
 function describe(label, value) {
   if (value === undefined) return label + '=undefined';
@@ -56,7 +57,7 @@ async function buildSellInstructions(connection, mint, userPublicKey, tokenAmoun
     var instructions = await offlineSdk.swapInstructions(
       pool,
       Direction.BaseToQuote,
-      tokenAmount,
+      new BN(tokenAmount.toString()),
       slippagePercent,
       userPublicKey
     );

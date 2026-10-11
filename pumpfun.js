@@ -186,6 +186,12 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     throw new Error('bondingCurve is missing expected reserve fields -- ' + describe('bondingCurve', bc));
   }
 
+  if (bc.complete) {
+    var gradErr = new Error('token has graduated off the bonding curve to PumpSwap');
+    gradErr.code = 'GRADUATED';
+    throw gradErr;
+  }
+
   var tokenAmountBN = new BN(tokenAmount.toString());
   var solAmount;
   try {
