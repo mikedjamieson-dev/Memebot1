@@ -154,6 +154,11 @@ function log(msg, type) {
 
 // Separate from the paper log above -- real trading's own activity,
 // its own array, never mixed with paper's.
+// How many live log lines are kept in memory. The dashboard still only gets the
+// newest LIVE_LOG_DASHBOARD of them (see /api/state), so it stays fast; the full
+// history is read from /api/live-log.
+var LIVE_LOG_MAX = 20000;
+var LIVE_LOG_DASHBOARD = 500;
 function liveLog(msg, type) {
   type = type || 'info';
   var entry = {
@@ -162,7 +167,7 @@ function liveLog(msg, type) {
     time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
   };
   S.liveLogs.unshift(entry);
-  if (S.liveLogs.length > 500) S.liveLogs.pop();
+  if (S.liveLogs.length > LIVE_LOG_MAX) S.liveLogs.pop();
   console.log('[LIVE-' + type.toUpperCase() + '] ' + msg);
 }
 
@@ -2200,6 +2205,33 @@ app.get('/api/live/portfolio/trades', function(req, res) {
 });
 
 // -- API ROUTES ------------------------------------------------
+// Read-only: the full live activity log as plain text, oldest line first.
+//   ?q=ONCHAIN|wallet impact   only lines containing any of these (| = or, not case sensitive)
+//   ?type=warn                 only lines of this type (info, warn, win, loss, entry ...)
+//   ?limit=300                 only the newest N matching lines (default: all)
+app.get('/api/live-log', function(req, res) {
+  try {
+    var q = String(req.query.q || '').toLowerCase().split('|').map(function(t) { return t.trim(); }).filter(Boolean);
+    var type = String(req.query.type || '').toLowerCase();
+    var limit = parseInt(req.query.limit, 10);
+    var lines = S.liveLogs.filter(function(e) {
+      if (type && String(e.type).toLowerCase() !== type) return false;
+      if (q.length === 0) return true;
+      var m = String(e.msg).toLowerCase();
+      for (var i = 0; i < q.length; i++) { if (m.indexOf(q[i]) !== -1) return true; }
+      return false;
+    });
+    var matched = lines.length;
+    if (limit > 0 && lines.length > limit) lines = lines.slice(0, limit);
+    lines = lines.slice().reverse();
+    var oldest = S.liveLogs.length ? S.liveLogs[S.liveLogs.length - 1].time : 'none';
+    var head = 'LIVE LOG | kept ' + S.liveLogs.length + ' of max ' + LIVE_LOG_MAX + ' | oldest kept ' + oldest + ' | matching ' + matched + ' | showing ' + lines.length + '\n';
+    res.type('text/plain').send(head + lines.map(function(e) { return e.time + ' [' + e.type + '] ' + e.msg; }).join('\n') + '\n');
+  } catch (e) {
+    res.status(500).type('text/plain').send('live-log error: ' + e.message);
+  }
+});
+
 app.get('/api/state', function(req, res) {
   res.json({
     fund: S.fund,
@@ -2267,7 +2299,7 @@ app.get('/api/state', function(req, res) {
     liveTipsPaidUsd: S.liveTipsPaidUsd,
     liveNetworkFeesUsd: S.liveNetworkFeesUsd,
     liveOpen: S.liveOpen,
-    liveLogs: S.liveLogs,
+    liveLogs: S.liveLogs.slice(0, LIVE_LOG_DASHBOARD),
     solPriceUsd: SOL_PRICE_USD,
     solPriceFresh: isSolPriceFresh(),
   });
