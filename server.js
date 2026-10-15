@@ -3264,7 +3264,7 @@ async function settleConfirmedRealSell(connection, result, logPrefix, platformNa
 // the same sale actually landed without the bot hearing about it, the wallet
 // already shows the reduced balance and the sale is recognised as done instead
 // of being sold a second time.
-async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw) {
+async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -3306,7 +3306,11 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
 
     liveLog(logPrefix + ' (' + platformName + ' sell): building sell for ' + sellAmount + ' of real balance ' + balance.amount + '...', 'info');
     var sellBuildT0 = Date.now();
-    var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, 15);
+    // Normal sells accept up to 15% slippage. An exit that must get out (stop loss,
+    // trail, stale, manual) passes a much wider limit so the chain cannot reject it
+    // for the price moving while it is in flight (error 6003 in the 11 PM test).
+    var sellSlippage = (typeof slippageOverride === 'number') ? slippageOverride : 15;
+    var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, sellSlippage);
     var sellBuildMs = Date.now() - sellBuildT0;
     liveLog(logPrefix + ' (' + platformName + ' sell) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
 
@@ -3546,8 +3550,10 @@ function feedNeeded() {
 function noteLiveSellFailure(pos, zeroBalance) {
   pos.sellFails = (pos.sellFails || 0) + 1;
   pos.zeroFails = zeroBalance ? (pos.zeroFails || 0) + 1 : 0;
+  // The first 3 failures retry almost at once (a falling coin cannot wait),
+  // then 1.5s up to 10 failures, then 10s.
   if (zeroBalance) pos.retryAfter = Date.now() + 5000;
-  else pos.retryAfter = Date.now() + (pos.sellFails <= 10 ? 1500 : 10000);
+  else pos.retryAfter = Date.now() + (pos.sellFails <= 3 ? 250 : (pos.sellFails <= 10 ? 1500 : 10000));
   if (!pos.stuck && pos.sellFails >= 30) {
     pos.stuck = true;
     liveLog('LIVE STUCK POSITION ' + (pos.name || pos.mint) + ' | ' + pos.mint + ' -- ' + pos.sellFails + ' real sell attempts in a row have failed. Automatic selling has STOPPED for this position so it is not retried forever. It needs your attention: use its SELL button to try again, or check the token in your wallet.', 'warn');
@@ -3779,7 +3785,12 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 
     liveLog(prefix + ': ' + kindText + ' | ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> $' + priceUsd.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', logType);
 
-    if (!outcome) outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw);
+    // Exits that must get out accept any price on pump.fun (95% slippage). Tier and
+    // fixed take-profit sells keep the normal 15%. LetsBonk keeps its existing value:
+    // its slippage unit is not verified, so it is not changed here.
+    var urgentExit = (action.kind === 'SL' || action.kind === 'TRAIL' || action.kind === 'STALE' || action.kind === 'MANUAL');
+    var exitSlippage = (urgentExit && pos.platform === 'pumpfun') ? 95 : undefined;
+    if (!outcome) outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage);
     var confirmed = !!(outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED');
     var nowEst = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
 
@@ -3925,6 +3936,13 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     } else {
       noteLiveSellFailure(pos, outcome.zeroBalance === true);
       liveLog(prefix + ': real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, attempt ' + pos.sellFails + (pos.stuck ? ', now flagged STUCK' : ', will retry'), 'warn');
+      // Do not wait for the next price update to retry a fast first failure: re-check
+      // at the current price as soon as the retry delay has passed.
+      if (!pos.stuck && !outcome.zeroBalance && pos.sellFails <= 3) {
+        setTimeout(function() {
+          if (S.liveOpen.indexOf(pos) !== -1 && pos.currentPriceUsd > 0) dispatchLiveDecision(pos, pos.currentPriceUsd, pos.currentPriceUsd);
+        }, 300);
+      }
       if (pos.zeroFails >= 3) closeLiveOutsideBot(pos, priceUsd, prefix);
     }
 
