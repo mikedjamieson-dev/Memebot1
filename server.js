@@ -157,6 +157,7 @@ const S = {
   liveSession: null,
   liveRejectReasons: {},
   liveSessionBest: null,
+  liveRentReclaimedUsd: 0,
   liveLastStopTime: null,
   liveSavings: 0,
   livePendingSavings: 0,
@@ -2435,6 +2436,7 @@ app.get('/api/state', function(req, res) {
       c.tickCount = p.priceUpdates || 0;
       return c;
     }),
+    liveRentReclaimedUsd: S.liveRentReclaimedUsd,
     liveRejectCount: Object.keys(S.liveRejectReasons).reduce(function(n, k) { return n + S.liveRejectReasons[k]; }, 0),
     liveRejectReasons: S.liveRejectReasons,
     liveSessionStart: (S.liveTradingEnabled && S.liveSession) ? S.liveSession.startTime : null,
@@ -3276,6 +3278,19 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     var mint = new PublicKey(mintStr);
 
     var sellT0 = Date.now();
+    // Exits that must get out (stop loss, trail, stale, manual: the ones that pass a
+    // slippage override) already know how many tokens were bought. They start building
+    // the sell for that amount at the same moment the wallet balance is read, instead of
+    // waiting for the read first. If the read shows a different amount, the sell is
+    // simply built again with the real one, exactly as before.
+    var fastBuildPromise = null;
+    if (typeof slippageOverride === 'number' && (fraction === undefined || fraction === null) &&
+        expectedRaw && /^[0-9]+$/.test(String(expectedRaw)) && BigInt(String(expectedRaw)) > BigInt(0)) {
+      var fastBuildT0 = Date.now();
+      fastBuildPromise = Promise.resolve().then(function() {
+        return buildSellFn(connection, mint, liveWalletKeypair.publicKey, String(expectedRaw), slippageOverride);
+      }).then(function(v) { return { value: v, ms: Date.now() - fastBuildT0 }; }, function(e) { return { error: e }; });
+    }
     liveLog(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
     var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
     var sellBalanceMs = Date.now() - sellT0;
@@ -3310,8 +3325,17 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
     // trail, stale, manual) passes a much wider limit so the chain cannot reject it
     // for the price moving while it is in flight (error 6003 in the 11 PM test).
     var sellSlippage = (typeof slippageOverride === 'number') ? slippageOverride : 15;
-    var instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, sellSlippage);
-    var sellBuildMs = Date.now() - sellBuildT0;
+    var instructions;
+    var sellBuildMs;
+    if (fastBuildPromise && String(balance.amount) === String(expectedRaw)) {
+      var fastBuilt = await fastBuildPromise;
+      if (fastBuilt.error) throw fastBuilt.error;
+      instructions = fastBuilt.value;
+      sellBuildMs = fastBuilt.ms;
+    } else {
+      instructions = await buildSellFn(connection, mint, liveWalletKeypair.publicKey, sellAmount, sellSlippage);
+      sellBuildMs = Date.now() - sellBuildT0;
+    }
     liveLog(logPrefix + ' (' + platformName + ' sell) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
 
     var tx = new Transaction();
@@ -3567,6 +3591,7 @@ function noteLiveSellFailure(pos, zeroBalance) {
 // known, so it is recorded with a blank P&L and left out of the win/loss
 // counts, never guessed.
 function closeLiveOutsideBot(pos, priceUsd, prefix) {
+  rentSweep.dirty = true;
   var idx = S.liveOpen.indexOf(pos);
   if (idx !== -1) S.liveOpen.splice(idx, 1);
   S.liveClosed.push({
@@ -3731,6 +3756,96 @@ function liveCloseExtras(pos) {
     hasDevWalletData: sn.hasDevWalletData || 'No',
   };
 }
+
+// -- EMPTY TOKEN ACCOUNT CLEANUP -----------------------------------
+// Every coin bought opens a token account in the wallet, which costs a refundable
+// deposit (about 0.0015 SOL, seen on a real buy transaction). Selling does not close
+// the account, so the deposit stays locked. This closes empty accounts in their own
+// transactions (never inside a sell, so a failed close can never block an exit) and
+// puts the SOL that comes back into the Live Fund, which is where it was taken from.
+// failed: token accounts that would not close (address -> details). leftover: accounts that still
+// hold tokens but belong to no tracked position (address -> details), refreshed on every scan.
+var rentSweep = { busy: false, dirty: true, lastRun: 0, failed: new Map(), leftover: new Map() };
+
+async function sweepEmptyTokenAccounts() {
+  if (rentSweep.busy || !liveWalletKeypair) return;
+  if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) return;
+  if (S.liveOpen.some(function(p) { return p.busy; })) return;
+  rentSweep.busy = true;
+  try {
+    var web3 = require('@solana/web3.js');
+    var spl = require('@solana/spl-token');
+    var connection = liveWalletModule.getConnection();
+    var owner = liveWalletKeypair.publicKey;
+    var skipMints = new Set(S.liveOpen.map(function(p) { return p.mint; }));
+    livePendingBuys.forEach(function(m) { skipMints.add(m); });
+    var WSOL = 'So11111111111111111111111111111111111111112';
+    var candidates = [];
+    var leftoverNow = new Map();
+    var programs = [spl.TOKEN_PROGRAM_ID, spl.TOKEN_2022_PROGRAM_ID];
+    for (var pi = 0; pi < programs.length; pi++) {
+      var res = await connection.getParsedTokenAccountsByOwner(owner, { programId: programs[pi] });
+      res.value.forEach(function(a) {
+        var info = a.account.data && a.account.data.parsed && a.account.data.parsed.info;
+        if (!info || !info.tokenAmount) return;
+        if (info.mint !== WSOL && !skipMints.has(info.mint) && info.tokenAmount.amount !== '0') {
+          leftoverNow.set(a.pubkey.toString(), { mint: info.mint, amount: info.tokenAmount.amount, lamports: a.account.lamports });
+        }
+        if (info.tokenAmount.amount !== '0') return;
+        if (info.mint === WSOL || skipMints.has(info.mint) || info.state === 'frozen') return;
+        if (rentSweep.failed.has(a.pubkey.toString())) return;
+        candidates.push({ pubkey: a.pubkey, mint: info.mint, lamports: a.account.lamports, program: programs[pi] });
+      });
+    }
+    rentSweep.lastRun = Date.now();
+    rentSweep.leftover = leftoverNow;
+    if (candidates.length === 0) { rentSweep.dirty = false; return; }
+
+    var closed = 0, netLamports = 0, failedNow = 0;
+    var sendClose = async function(group) {
+      var tx = new web3.Transaction();
+      group.forEach(function(c) { tx.add(spl.createCloseAccountInstruction(c.pubkey, owner, owner, [], c.program)); });
+      var sig = await web3.sendAndConfirmTransaction(connection, tx, [liveWalletKeypair], { commitment: 'confirmed' });
+      var change = null;
+      try { change = await liveWalletModule.getRealBalanceChange(connection, sig, owner); }
+      catch (e1) {
+        try { await new Promise(function(r) { setTimeout(r, 1500); }); change = await liveWalletModule.getRealBalanceChange(connection, sig, owner); } catch (e2) {}
+      }
+      if (change === null) change = group.reduce(function(n, c) { return n + c.lamports; }, 0) - 5000;
+      closed += group.length;
+      netLamports += change;
+    };
+    for (var i = 0; i < candidates.length; i += 8) {
+      var batch = candidates.slice(i, i + 8);
+      try {
+        await sendClose(batch);
+      } catch (eb) {
+        // One bad account fails the whole batch, so try them one at a time and
+        // remember the ones that cannot be closed so they are not retried forever.
+        for (var j = 0; j < batch.length; j++) {
+          try { await sendClose([batch[j]]); }
+          catch (es) { rentSweep.failed.set(batch[j].pubkey.toString(), { mint: batch[j].mint, lamports: batch[j].lamports, reason: String(es.message).slice(0, 80) }); failedNow++; liveLog('LIVE RENT: could not close token account ' + batch[j].pubkey.toString().slice(0, 8) + '... (' + es.message.slice(0, 80) + ') -- left alone', 'warn'); }
+        }
+      }
+    }
+    if (closed > 0) {
+      var usd = (netLamports / 1000000000) * SOL_PRICE_USD;
+      S.liveFund = parseFloat((S.liveFund + usd).toFixed(4));
+      S.liveRentReclaimedUsd = parseFloat((S.liveRentReclaimedUsd + usd).toFixed(4));
+      liveLog('LIVE RENT: closed ' + closed + ' empty token account' + (closed === 1 ? '' : 's') + ', got back ' + (netLamports / 1000000000).toFixed(6) + ' SOL ($' + usd.toFixed(4) + ' after network fees) -- added to the Live Fund (now $' + S.liveFund.toFixed(4) + ')', 'win');
+    }
+    rentSweep.dirty = false;
+  } catch (e) {
+    liveLog('LIVE RENT: cleanup could not run (' + e.message.slice(0, 120) + ') -- will try again', 'warn');
+  } finally {
+    rentSweep.busy = false;
+  }
+}
+// Checked once a minute; only scans the wallet when a position has closed since the
+// last scan (or just after the bot starts, to collect deposits from earlier sessions).
+setInterval(function() {
+  if (rentSweep.dirty && Date.now() - rentSweep.lastRun > 60000) sweepEmptyTokenAccounts().catch(function() {});
+}, 60000);
 
 async function runLiveExit(pos, action, priceUsd, pct) {
   pos.busy = true;
@@ -3926,6 +4041,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // A result that could not be read is treated like a loss, the safe side.
       liveCooldowns.set(pos.mint, (realPnl !== null && realPnl > 0) ? Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS) : Date.now());
       liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
+      rentSweep.dirty = true;
       saveLiveHistory();
     } else if (outcome.ok && outcome.result && outcome.result.outcome === 'PENDING') {
       // Submitted but not yet known to have landed or expired. Remember the
@@ -3991,6 +4107,25 @@ app.get('/api/live/export', function(req, res) {
       csvSafe(t.priceHistory || ''), t.entryLiquidityUsd, t.tier1RealizedPnl, csvSafe(t.entryTrigger || ''), csvSafe(t.windingDownAtClose || ''),
       t.secondsSinceDiscovery, csvSafe(t.entryDevBought || ''), csvSafe(t.entryDevSold || ''), csvSafe(t.hasDevWalletData || ''), t.tier2RealizedPnl
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
+  });
+  // Things that still need attention are added as marked rows at the bottom (every other
+  // column left empty, so nothing above is affected): positions the bot cannot sell,
+  // token accounts that would not close, and tokens still sitting in the wallet.
+  var extraRow = function(f) {
+    return cols.map(function(c) { var v = f[c]; return (v === undefined || v === null) ? '' : v; }).join(',');
+  };
+  S.liveOpen.forEach(function(p) {
+    if (!p.stuck) return;
+    rows.push(extraRow({ Name: csvSafe('STUCK OPEN POSITION: ' + (p.name || '')), Mint: p.mint, Platform: p.platform, Size: p.sizeUsd,
+      CloseReason: csvSafe('CANNOT SELL - ' + (p.sellFails || 0) + ' sell attempts failed, still open'), OpenedAt: csvSafe(new Date(p.openedAt).toLocaleString('en-US', { timeZone: 'America/New_York' })) }));
+  });
+  rentSweep.failed.forEach(function(d, addr) {
+    rows.push(extraRow({ Name: csvSafe('TOKEN ACCOUNT NOT CLOSED'), Mint: d.mint,
+      CloseReason: csvSafe('WOULD NOT CLOSE (' + (d.lamports / 1000000000).toFixed(6) + ' SOL deposit still locked) account ' + addr + ' - ' + d.reason) }));
+  });
+  rentSweep.leftover.forEach(function(d, addr) {
+    rows.push(extraRow({ Name: csvSafe('TOKENS LEFT IN WALLET'), Mint: d.mint,
+      CloseReason: csvSafe('NOT SOLD - ' + d.amount + ' raw token units in account ' + addr + ', no tracked position') }));
   });
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_live_trades_' + Date.now() + '.csv"');
