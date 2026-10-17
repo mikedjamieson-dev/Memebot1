@@ -683,6 +683,11 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div id="live-open-positions" style="margin-top:8px;color:var(--dim);">None open right now.</div>
   </div>
 
+  <div class="card" id="live-tier-sales-sec" style="margin-top:10px;display:none;">
+    <div class="card-lbl">RECENT TIER SALES (real, newest first)</div>
+    <div id="live-tier-sales-list" style="margin-top:8px;font-size:12px;"></div>
+  </div>
+
   <div class="card" style="margin-top:10px;">
     <a href="/api/live/export" download style="display:block;width:100%;padding:10px;border-radius:6px;border:1px solid var(--green);background:rgba(0,255,136,0.08);color:var(--green);cursor:pointer;font-size:13px;font-family:'Share Tech Mono',monospace;letter-spacing:2px;text-align:center;text-decoration:none;box-sizing:border-box;">⬇ EXPORT LIVE TRADES (CSV)</a>
   </div>
@@ -1938,7 +1943,21 @@ async function fetchState() {
           var sellingNow = !!liveSelling[p.id];
           var hasPrice = p.currentPriceUsd && p.currentPriceUsd > 0 && p.entryPriceUsd > 0;
           var pct = hasPrice ? (p.currentPriceUsd - p.entryPriceUsd) / p.entryPriceUsd : 0;
-          var pnl = hasPrice ? p.sizeUsd * pct : 0;
+          // After a tier sale only part of the position is still held, and the profit from the
+          // part already sold is banked. P&L here = banked + the part still held.
+          var t1Done = !!p.tier1Done, t2Done = !!p.tier2Done;
+          var heldFrac = 1 - (t1Done ? 0.5 : 0) - (t2Done ? 0.25 : 0);
+          var t1Known = typeof p.tier1RealizedPnl === 'number', t2Known = typeof p.tier2RealizedPnl === 'number';
+          var banked = (t1Done && t1Known ? p.tier1RealizedPnl : 0) + (t2Done && t2Known ? p.tier2RealizedPnl : 0);
+          var bankedRow = '';
+          if (t1Done) {
+            bankedRow = '<div style="margin:6px 0;padding:6px 8px;border:1px solid var(--green);border-radius:6px;color:var(--green);font-size:12px;">' +
+              '✓ TIER 1 SOLD at ' + pSign(p.tier1RealizedPct || 0) + (p.tier1RealizedPct || 0).toFixed(1) + '% — ' +
+              ((t1Known) ? 'banked ' + pSign(p.tier1RealizedPnl) + '$' + f2(Math.abs(p.tier1RealizedPnl)) : 'banked amount unknown') +
+              (t2Done ? '<br>✓ TIER 2 SOLD at ' + pSign(p.tier2RealizedPct || 0) + (p.tier2RealizedPct || 0).toFixed(1) + '% — ' + (t2Known ? 'banked ' + pSign(p.tier2RealizedPnl) + '$' + f2(Math.abs(p.tier2RealizedPnl)) : 'banked amount unknown') : '') +
+              '<br>Still holding ' + Math.round(heldFrac * 100) + '% of the position</div>';
+          }
+          var pnl = hasPrice ? banked + p.sizeUsd * heldFrac * pct : 0;
           var pnlColor = !hasPrice ? 'var(--dim)' : pnl >= 0 ? 'var(--green)' : 'var(--red)';
           var pnlDisplay = hasPrice ? pSign(pnl) + '$' + f2(Math.abs(pnl)) : 'WAITING...';
           var pctDisplay = hasPrice ? pSign(pct) + (pct * 100).toFixed(1) + '%' : '---';
@@ -1953,10 +1972,30 @@ async function fetchState() {
             '<div class="trade-meta">$' + f2(p.sizeUsd) + ' · ' + ageSec + 's · ' + platLabel + ' · ' + tpDisplay + '</div>' +
             (p.stuck ? '<div style="margin:6px 0;padding:6px 8px;border:1px solid var(--red);border-radius:6px;color:var(--red);font-size:12px;">⚠ STUCK — ' + (p.sellFails || 0) + ' sell attempts failed. Automatic selling stopped. Press SELL to try again.</div>' : '') +
             (p.hasPendingSell ? '<div style="margin:6px 0;font-size:12px;color:var(--dim);">⏳ A sell was submitted and is still being confirmed — it will not be sold twice.</div>' : '') +
+            bankedRow +
             '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (p.slPct || data.liveStopLossPct || 10) + '%</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
             '<div class="pnl-item"><div class="pnl-lbl">%</div><div class="pnl-val" style="color:' + pnlColor + '">' + pctDisplay + '</div></div></div>' +
             '<div class="entry-price">ENTRY: $' + f8(p.entryPriceUsd) + (hasPrice ? ' · NOW: $' + f8(p.currentPriceUsd) : '') + ' · TIP: ' + tipTxt + '</div>' + caRow(p.mint) + '</div>';
+        }).join('');
+      }
+    }
+
+    // Recent tier sales: kept here so they stay visible after the activity log has scrolled past them.
+    var tierSec = document.getElementById('live-tier-sales-sec');
+    if (tierSec) {
+      var tsList = data.liveTierSales || [];
+      if (tsList.length === 0) { tierSec.style.display = 'none'; }
+      else {
+        tierSec.style.display = 'block';
+        document.getElementById('live-tier-sales-list').innerHTML = tsList.slice(0, 10).map(function(t) {
+          var known = typeof t.pnl === 'number';
+          var col = !known ? 'var(--dim)' : t.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+          var nm = String(t.name || (t.mint ? t.mint.slice(0, 6) + '...' : '?')).replace(/[&<>"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; });
+          return '<div style="padding:4px 0;border-bottom:1px solid var(--border,rgba(255,255,255,0.08));">' +
+            '<span style="color:var(--dim)">' + (t.time || '') + '</span> · <b>' + nm + '</b> · ' + (t.tier || '') +
+            ' · sold ' + (t.soldPct || 0) + '% at ' + pSign(t.gainPct || 0) + (t.gainPct || 0).toFixed(1) + '% · <span style="color:' + col + '">' +
+            (known ? 'banked ' + pSign(t.pnl) + '$' + f2(Math.abs(t.pnl)) : 'result unknown') + '</span></div>';
         }).join('');
       }
     }

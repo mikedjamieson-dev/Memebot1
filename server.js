@@ -158,6 +158,7 @@ const S = {
   liveRejectReasons: {},
   liveSessionBest: null,
   liveRentReclaimedUsd: 0,
+  liveTierSales: [],
   liveLastStopTime: null,
   liveSavings: 0,
   livePendingSavings: 0,
@@ -2437,6 +2438,7 @@ app.get('/api/state', function(req, res) {
       return c;
     }),
     liveRentReclaimedUsd: S.liveRentReclaimedUsd,
+    liveTierSales: S.liveTierSales,
     liveRejectCount: Object.keys(S.liveRejectReasons).reduce(function(n, k) { return n + S.liveRejectReasons[k]; }, 0),
     liveRejectReasons: S.liveRejectReasons,
     liveSessionStart: (S.liveTradingEnabled && S.liveSession) ? S.liveSession.startTime : null,
@@ -3767,6 +3769,17 @@ function liveCloseExtras(pos) {
 // hold tokens but belong to no tracked position (address -> details), refreshed on every scan.
 var rentSweep = { busy: false, dirty: true, lastRun: 0, failed: new Map(), leftover: new Map() };
 
+// Errors that say nothing about the account itself -- the RPC node was busy, behind, or
+// did not know the recent blockhash yet. These are tried again instead of being given up on.
+var RENT_MAX_TRIES = 5;
+function isTemporaryRentError(msg) {
+  return /blockhash not found|overloaded|try again|rate limit|too many requests|429|502|503|504|fetch failed|timed out|timeout|econn|etimedout|socket hang up|node is behind|block height exceeded|was not confirmed/i.test(String(msg || ''));
+}
+// Errors raised before anything was sent, so one more immediate attempt can never double-close.
+function isUnsentRentError(msg) {
+  return /blockhash not found|overloaded|rate limit|too many requests|429|502|503|fetch failed/i.test(String(msg || ''));
+}
+
 async function sweepEmptyTokenAccounts() {
   if (rentSweep.busy || !liveWalletKeypair) return;
   if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) return;
@@ -3782,10 +3795,12 @@ async function sweepEmptyTokenAccounts() {
     var WSOL = 'So11111111111111111111111111111111111111112';
     var candidates = [];
     var leftoverNow = new Map();
+    var seenAddrs = new Set();
     var programs = [spl.TOKEN_PROGRAM_ID, spl.TOKEN_2022_PROGRAM_ID];
     for (var pi = 0; pi < programs.length; pi++) {
       var res = await connection.getParsedTokenAccountsByOwner(owner, { programId: programs[pi] });
       res.value.forEach(function(a) {
+        seenAddrs.add(a.pubkey.toString());
         var info = a.account.data && a.account.data.parsed && a.account.data.parsed.info;
         if (!info || !info.tokenAmount) return;
         if (info.mint !== WSOL && !skipMints.has(info.mint) && info.tokenAmount.amount !== '0') {
@@ -3793,19 +3808,36 @@ async function sweepEmptyTokenAccounts() {
         }
         if (info.tokenAmount.amount !== '0') return;
         if (info.mint === WSOL || skipMints.has(info.mint) || info.state === 'frozen') return;
-        if (rentSweep.failed.has(a.pubkey.toString())) return;
+        // Given up on for good only if it failed for a real reason; a temporary failure is retried.
+        var prevFail = rentSweep.failed.get(a.pubkey.toString());
+        if (prevFail && !prevFail.retry) return;
         candidates.push({ pubkey: a.pubkey, mint: info.mint, lamports: a.account.lamports, program: programs[pi] });
       });
     }
+    // An account that no longer exists has been closed, so it is no longer "not closed".
+    rentSweep.failed.forEach(function(d, addr) { if (!seenAddrs.has(addr)) rentSweep.failed.delete(addr); });
     rentSweep.lastRun = Date.now();
     rentSweep.leftover = leftoverNow;
     if (candidates.length === 0) { rentSweep.dirty = false; return; }
 
-    var closed = 0, netLamports = 0, failedNow = 0;
-    var sendClose = async function(group) {
+    var closed = 0, netLamports = 0, failedNow = 0, retryLater = 0;
+    var sendOnce = async function(group) {
       var tx = new web3.Transaction();
       group.forEach(function(c) { tx.add(spl.createCloseAccountInstruction(c.pubkey, owner, owner, [], c.program)); });
-      var sig = await web3.sendAndConfirmTransaction(connection, tx, [liveWalletKeypair], { commitment: 'confirmed' });
+      return web3.sendAndConfirmTransaction(connection, tx, [liveWalletKeypair], { commitment: 'confirmed' });
+    };
+    var sendClose = async function(group) {
+      var sig;
+      try {
+        sig = await sendOnce(group);
+      } catch (e0) {
+        // A busy or lagging RPC node ("blockhash not found") says nothing about the account.
+        // Wait a moment and try once more with a fresh blockhash, only when nothing was sent.
+        if (!isUnsentRentError(e0.message)) throw e0;
+        await new Promise(function(r) { setTimeout(r, 1500); });
+        sig = await sendOnce(group);
+      }
+      group.forEach(function(c) { rentSweep.failed.delete(c.pubkey.toString()); });
       var change = null;
       try { change = await liveWalletModule.getRealBalanceChange(connection, sig, owner); }
       catch (e1) {
@@ -3824,7 +3856,20 @@ async function sweepEmptyTokenAccounts() {
         // remember the ones that cannot be closed so they are not retried forever.
         for (var j = 0; j < batch.length; j++) {
           try { await sendClose([batch[j]]); }
-          catch (es) { rentSweep.failed.set(batch[j].pubkey.toString(), { mint: batch[j].mint, lamports: batch[j].lamports, reason: String(es.message).slice(0, 80) }); failedNow++; liveLog('LIVE RENT: could not close token account ' + batch[j].pubkey.toString().slice(0, 8) + '... (' + es.message.slice(0, 80) + ') -- left alone', 'warn'); }
+          catch (es) {
+            var addrJ = batch[j].pubkey.toString();
+            var prevJ = rentSweep.failed.get(addrJ);
+            var triesJ = (prevJ && prevJ.tries ? prevJ.tries : 0) + 1;
+            if (isTemporaryRentError(es.message) && triesJ < RENT_MAX_TRIES) {
+              rentSweep.failed.set(addrJ, { mint: batch[j].mint, lamports: batch[j].lamports, reason: String(es.message).slice(0, 80), retry: true, tries: triesJ });
+              retryLater++;
+              liveLog('LIVE RENT: token account ' + addrJ.slice(0, 8) + '... not closed yet, the network was busy (' + String(es.message).slice(0, 80) + ') -- will try again, attempt ' + triesJ + ' of ' + RENT_MAX_TRIES, 'warn');
+            } else {
+              rentSweep.failed.set(addrJ, { mint: batch[j].mint, lamports: batch[j].lamports, reason: String(es.message).slice(0, 80), retry: false, tries: triesJ });
+              failedNow++;
+              liveLog('LIVE RENT: could not close token account ' + addrJ.slice(0, 8) + '... (' + String(es.message).slice(0, 80) + ') -- left alone', 'warn');
+            }
+          }
         }
       }
     }
@@ -3834,7 +3879,9 @@ async function sweepEmptyTokenAccounts() {
       S.liveRentReclaimedUsd = parseFloat((S.liveRentReclaimedUsd + usd).toFixed(4));
       liveLog('LIVE RENT: closed ' + closed + ' empty token account' + (closed === 1 ? '' : 's') + ', got back ' + (netLamports / 1000000000).toFixed(6) + ' SOL ($' + usd.toFixed(4) + ' after network fees) -- added to the Live Fund (now $' + S.liveFund.toFixed(4) + ')', 'win');
     }
-    rentSweep.dirty = false;
+    // Accounts that hit a temporary error keep the scan marked dirty so the next
+    // one-minute check tries them again.
+    rentSweep.dirty = retryLater > 0;
   } catch (e) {
     liveLog('LIVE RENT: cleanup could not run (' + e.message.slice(0, 120) + ') -- will try again', 'warn');
   } finally {
@@ -3938,7 +3985,15 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       }
       bookLiveSavings(pos, tierLegPnl, prefix, action.kind === 'TIER1' ? 'tier 1 sale' : 'tier 2 sale');
       partialResult = { partial: true };
-      liveLog(prefix + ': partial sell confirmed -- position stays open, remaining raw amount ' + pos.tokenAmountRaw + ' -- ' + pos.mint, 'win');
+      // Plain-words result of this tier sale, also kept in a short list the dashboard
+      // always shows (the main log scrolls past it within a minute when trading is busy).
+      var tierLabel = action.kind === 'TIER1' ? 'TIER 1' : 'TIER 2';
+      var tierSoldPct = Math.round(action.fraction * 100);
+      var tierPctNow = parseFloat((pct * 100).toFixed(1));
+      var tierPnlText = tierLegPnl === null ? 'result could not be read' : (tierLegPnl >= 0 ? '+$' : '-$') + Math.abs(tierLegPnl).toFixed(2) + ' banked';
+      liveLog(prefix + ': ' + tierLabel + ' SALE DONE -- ' + (pos.name || pos.mint) + ' | sold ' + tierSoldPct + '% of what was held at +' + tierPctNow + '% | ' + tierPnlText + ' | the rest stays open (remaining raw amount ' + pos.tokenAmountRaw + ') -- ' + pos.mint, 'win');
+      S.liveTierSales.unshift({ time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }), name: pos.name || '', mint: pos.mint, tier: tierLabel, soldPct: tierSoldPct, gainPct: tierPctNow, pnl: tierLegPnl });
+      if (S.liveTierSales.length > 30) S.liveTierSales.pop();
     } else if (confirmed) {
       var idx = S.liveOpen.indexOf(pos);
       if (idx !== -1) S.liveOpen.splice(idx, 1);
@@ -4040,7 +4095,16 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // after a win), kept separate so paper trades never block live entries.
       // A result that could not be read is treated like a loss, the safe side.
       liveCooldowns.set(pos.mint, (realPnl !== null && realPnl > 0) ? Date.now() - (CFG.COOLDOWN_MS - CFG.WIN_COOLDOWN_MS) : Date.now());
-      liveLog(prefix + ': position closed for real, removed from tracking -- ' + pos.mint, 'win');
+      var closeResultText = '';
+      if (realPnl !== null) {
+        closeResultText = ' | trade result ' + (realPnl >= 0 ? '+$' : '-$') + Math.abs(realPnl).toFixed(2);
+        if (pos.tier1Done) {
+          closeResultText += ' (tier 1 ' + (typeof pos.tier1RealizedPnl === 'number' ? (pos.tier1RealizedPnl >= 0 ? '+$' : '-$') + Math.abs(pos.tier1RealizedPnl).toFixed(2) : 'n/a') + ' already banked'
+            + (pos.tier2Done ? ' + tier 2 ' + (typeof pos.tier2RealizedPnl === 'number' ? (pos.tier2RealizedPnl >= 0 ? '+$' : '-$') + Math.abs(pos.tier2RealizedPnl).toFixed(2) : 'n/a') : '')
+            + ' + final sale ' + (finalLegPnl !== null ? (finalLegPnl >= 0 ? '+$' : '-$') + Math.abs(finalLegPnl).toFixed(2) : 'n/a') + ')';
+        }
+      }
+      liveLog(prefix + ': position closed for real, removed from tracking' + closeResultText + ' -- ' + pos.mint, 'win');
       rentSweep.dirty = true;
       saveLiveHistory();
     } else if (outcome.ok && outcome.result && outcome.result.outcome === 'PENDING') {
@@ -4121,7 +4185,7 @@ app.get('/api/live/export', function(req, res) {
   });
   rentSweep.failed.forEach(function(d, addr) {
     rows.push(extraRow({ Name: csvSafe('TOKEN ACCOUNT NOT CLOSED'), Mint: d.mint,
-      CloseReason: csvSafe('WOULD NOT CLOSE (' + (d.lamports / 1000000000).toFixed(6) + ' SOL deposit still locked) account ' + addr + ' - ' + d.reason) }));
+      CloseReason: csvSafe('WOULD NOT CLOSE (' + (d.lamports / 1000000000).toFixed(6) + ' SOL deposit still locked) account ' + addr + ' - ' + d.reason + (d.retry ? ' - network was busy, bot will try again (attempt ' + (d.tries || 1) + ' of ' + RENT_MAX_TRIES + ')' : '')) }));
   });
   rentSweep.leftover.forEach(function(d, addr) {
     rows.push(extraRow({ Name: csvSafe('TOKENS LEFT IN WALLET'), Mint: d.mint,
