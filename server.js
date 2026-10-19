@@ -3123,6 +3123,51 @@ async function recoverSentBuy(connection, mint, logPrefix, platformName, why) {
   return false;
 }
 
+// Reads how many tokens a buy that has already CONFIRMED delivered. A balance read made
+// right after a buy can come back empty or fail because the RPC node answering is a moment
+// behind -- the tokens are there. That used to make the bot think it held nothing, record no
+// position, and buy the same coin a second time. So: the read is repeated for up to about
+// 3 seconds, and if it still fails the amount is taken from the buy transaction's own record.
+// Returns { value: {amount, decimals} } or { error }, like the single read it replaces.
+async function readHeldAfterBuy(connection, mint, mintStr, signature, logPrefix, platformName) {
+  var owner = liveWalletKeypair.publicKey;
+  var lastErr = null;
+  var sawZero = false;
+  for (var i = 0; i < 8; i++) {
+    if (i > 0) await new Promise(function(resolve) { setTimeout(resolve, 400); });
+    try {
+      var bal = await liveWalletModule.getTokenBalance(connection, mint, owner);
+      if (bal && parseFloat(bal.amount) > 0) {
+        if (i > 0) liveLog(logPrefix + ' (' + platformName + ' buy): the token balance showed up after ' + i + ' re-read' + (i > 1 ? 's' : '') + ' -- the first read was behind', 'info');
+        return { value: bal };
+      }
+      sawZero = true;
+    } catch (e) { lastErr = e; }
+    if (i === 0) liveLog(logPrefix + ' (' + platformName + ' buy): the buy confirmed but the first token balance read came back empty or failed -- re-reading before deciding anything', 'warn');
+  }
+  if (signature && !/^recovered-/.test(String(signature))) {
+    var txSaysZero = false;
+    for (var j = 0; j < 3; j++) {
+      if (j > 0) await new Promise(function(resolve) { setTimeout(resolve, 700); });
+      try {
+        var fromTx = await liveWalletModule.getTokensFromTx(connection, signature, owner, mintStr);
+        if (fromTx && parseFloat(fromTx.amount) > 0) {
+          liveLog(logPrefix + ' (' + platformName + ' buy): balance reads kept failing, so the amount was taken from the buy transaction\'s own record: ' + fromTx.amount + ' raw units', 'warn');
+          return { value: fromTx };
+        }
+        txSaysZero = true;
+        break;
+      } catch (e2) { lastErr = e2; }
+    }
+    if (txSaysZero) {
+      liveLog(logPrefix + ' (' + platformName + ' buy): the buy transaction\'s own record shows NO tokens delivered to the wallet for this coin', 'warn');
+      return { value: { amount: '0', decimals: 0 } };
+    }
+  }
+  if (sawZero && !lastErr) return { value: { amount: '0', decimals: 0 } };
+  return { error: lastErr || new Error('token balance could not be read after the buy') };
+}
+
 async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
@@ -3176,6 +3221,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
     if (result.outcome === 'PENDING' || result.outcome === 'UNKNOWN') {
       var landed = await recoverSentBuy(connection, mint, logPrefix, platformName,
         result.outcome === 'PENDING' ? 'the buy was sent but never seen to confirm' : 'the buy may have been sent');
+      if (!landed) liveCooldowns.set(mintStr, Date.now());
       if (landed) {
         result = { outcome: 'CONFIRMED', signature: result.signature || ('recovered-' + Date.now()), tipLamports: result.tipLamports, recovered: true };
       }
@@ -3191,8 +3237,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
       var balanceChangePromise = liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey).then(
         function(v) { return { value: v }; }, function(e) { return { error: e }; });
       var costsPromise = readRealTxCosts(connection, result);
-      var heldPromise = liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey).then(
-        function(v) { return { value: v }; }, function(e) { return { error: e }; });
+      var heldPromise = readHeldAfterBuy(connection, mint, mintStr, result.signature, logPrefix, platformName);
       var postBuy = await Promise.all([balanceChangePromise, costsPromise, heldPromise]);
 
       if (postBuy[0].error) {
@@ -3266,9 +3311,12 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
           liveLog('LIVE BUY TIMING: build ' + buyBuiltMs + 'ms | submit to landed ' + buySendMs + 'ms | reads before position was watched ' + (Date.now() - postBuyT0) + 'ms | total ' + (Date.now() - buyT0) + 'ms', 'info');
         } else {
           liveLog(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
+          // The bot must never buy this coin a second time because it lost track of the first.
+          liveCooldowns.set(mintStr, Date.now());
         }
       } catch (posErr) {
         liveLog(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
+        liveCooldowns.set(mintStr, Date.now());
       }
 
       // Fund stop loss is checked only now, after the new position is on the

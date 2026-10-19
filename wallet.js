@@ -179,6 +179,28 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
   }
 }
 
+// Reads, from a confirmed transaction's own record, how many tokens of one mint the
+// wallet held AFTER that transaction. This is exact for that transaction and does not
+// depend on which RPC node answers a balance question a moment after the trade.
+// Returns { amount, decimals, fromTx: true }. If the transaction is found but lists no
+// balance for this mint, the answer is a real zero (nothing was delivered). Throws if the
+// transaction cannot be read yet.
+async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr) {
+  var tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  if (!tx || !tx.meta) {
+    var err = new Error('Could not read the transaction record yet -- it may not be indexed');
+    err.code = 'TX_NOT_FOUND';
+    throw err;
+  }
+  var owner = ownerPublicKey.toString();
+  var post = (tx.meta.postTokenBalances || []).filter(function(b) {
+    return b && b.mint === mintStr && b.owner === owner;
+  });
+  if (post.length === 0) return { amount: '0', decimals: 0, fromTx: true };
+  var amt = post[0].uiTokenAmount || {};
+  return { amount: String(amt.amount || '0'), decimals: amt.decimals || 0, fromTx: true };
+}
+
 // Determines which token standard a specific mint actually uses --
 // the original Token Program, or the newer Token-2022 -- by reading
 // its real on-chain owner field rather than assuming. Confirmed
@@ -253,6 +275,7 @@ module.exports = {
   getSavingsAddress,
   getTradingWalletBalance,
   getTokenBalance,
+  getTokensFromTx,
   getTokenProgramId,
   getRealTransactionFee,
   getRealBalanceChange,
