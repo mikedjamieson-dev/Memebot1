@@ -130,6 +130,9 @@ async function getConfigs(sdk) {
 // Called on a timer while live trading is on, so the settings are already
 // in memory when a real buy or sell needs them.
 async function warmCaches(connection) {
+  // Called every 10 seconds; the settings are only fetched again once they are 15 seconds old
+  // (they are good for 30), which halves these background requests.
+  if (configCache.global && configCache.feeConfig && (Date.now() - configCache.at) < 15000) return configCache;
   return refreshConfigs(new legacySdk.OnlinePumpSdk(connection));
 }
 

@@ -126,6 +126,14 @@ function getConnection() {
     err.code = 'RPC_NOT_CONFIGURED';
     throw err;
   }
+  // Every request goes through the rate gate (counted, kept under the plan limit,
+  // sells first). If the gate file is missing the connection works exactly as before.
+  var gate = null;
+  // Setting RPC_GATE to off on Render turns the gate off without touching the code.
+  if (String(process.env.RPC_GATE || '').toLowerCase() !== 'off') {
+    try { gate = require('./rpcgate'); } catch (e) { gate = null; }
+  }
+  if (gate) return new Connection(rpcUrl.trim(), { commitment: 'confirmed', fetch: gate.gatedFetch });
   return new Connection(rpcUrl.trim(), 'confirmed');
 }
 
@@ -179,6 +187,29 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
   }
 }
 
+// The same transaction used to be fetched separately for the fee, for the balance change and
+// for the tokens delivered -- three requests for one answer. They now share one request, kept
+// for a minute. A transaction that is not found yet (or a failed read) is never kept, so the
+// next attempt asks again.
+var txShared = new Map();
+function readTransactionShared(connection, signature) {
+  var hit = txShared.get(signature);
+  if (hit && (Date.now() - hit.at) < 60000) return hit.promise;
+  var promise = connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  var entry = { promise: promise, at: Date.now() };
+  txShared.set(signature, entry);
+  promise.then(function(tx) {
+    if ((!tx || !tx.meta) && txShared.get(signature) === entry) txShared.delete(signature);
+  }, function() {
+    if (txShared.get(signature) === entry) txShared.delete(signature);
+  });
+  if (txShared.size > 100) {
+    var oldest = txShared.keys().next().value;
+    txShared.delete(oldest);
+  }
+  return promise;
+}
+
 // Reads, from a confirmed transaction's own record, how many tokens of one mint the
 // wallet held AFTER that transaction. This is exact for that transaction and does not
 // depend on which RPC node answers a balance question a moment after the trade.
@@ -186,7 +217,7 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
 // balance for this mint, the answer is a real zero (nothing was delivered). Throws if the
 // transaction cannot be read yet.
 async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr) {
-  var tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  var tx = await readTransactionShared(connection, signature);
   if (!tx || !tx.meta) {
     var err = new Error('Could not read the transaction record yet -- it may not be indexed');
     err.code = 'TX_NOT_FOUND';
@@ -237,7 +268,7 @@ async function getTokenProgramId(connection, mint) {
 // the fee in lamports. Throws if the transaction can't be found
 // (e.g. called too soon after confirmation, before it's indexed).
 async function getRealTransactionFee(connection, signature) {
-  var tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  var tx = await readTransactionShared(connection, signature);
   if (!tx || !tx.meta || tx.meta.fee === undefined) {
     var err = new Error('Could not read the real fee for this transaction -- it may not be indexed yet');
     err.code = 'FEE_NOT_FOUND';
@@ -254,7 +285,7 @@ async function getRealTransactionFee(connection, signature) {
 // movements out of the same wallet -- more accurate than summing
 // separate estimated pieces by hand. Returns lamports.
 async function getRealBalanceChange(connection, signature, publicKey) {
-  var tx = await connection.getTransaction(signature, { maxSupportedTransactionVersion: 0 });
+  var tx = await readTransactionShared(connection, signature);
   if (!tx || !tx.meta || !tx.meta.preBalances || !tx.meta.postBalances) {
     var err = new Error('Could not read the real balance change for this transaction -- it may not be indexed yet');
     err.code = 'BALANCE_CHANGE_NOT_FOUND';

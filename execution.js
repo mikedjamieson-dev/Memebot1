@@ -165,78 +165,192 @@ async function readBlockHeightShared(connection) {
   return heightShared.inflight;
 }
 
-// The shared confirm-polling core. Identical logic regardless of how
-// the transaction was actually submitted -- a signature is a
-// signature, checked the same honest way either time.
+// The request gate (counts requests, keeps them under the plan limit, puts sells first).
+// If the file is missing everything still works, just without those protections.
+var gateModule;
+function gate() {
+  if (gateModule === undefined) {
+    try { gateModule = require('./rpcgate'); } catch (e) { gateModule = null; }
+  }
+  return gateModule;
+}
+
+// Runs fn tagged with a priority (0 = a sell is waiting on this answer). fn gets an object
+// whose maxWait is how long the request waited in line.
+function runWithGate(prio, fn) {
+  var g = gate();
+  if (g && prio !== null && prio !== undefined) return g.runTracked(prio, fn);
+  return fn({ maxWait: 0 });
+}
+
+// -- THE SHARED CONFIRM CHECKER ------------------------------------
+// Every transaction being waited on is registered here, and ONE request per tick asks
+// the node about all of them together (getSignatureStatuses takes a list). Before this,
+// each trade asked for itself about 2.5 times a second, so four trades in flight used
+// the whole Free-plan allowance of 10 requests a second on confirming alone.
 //
-// A temporary problem reading the chain (for example a 429 "Too Many Requests"
-// from the RPC provider) used to throw out of this function and lose the
-// signature of a transaction that had already been sent -- the bot then
-// believed nothing had happened even if the trade landed. Now a failed
-// check is simply tried again; the signature is always kept. If the checks
-// keep failing until the time limit, the honest answer is PENDING (sent,
-// not known), never a thrown error.
-async function pollForOutcome(signature, connection, latest, options) {
-  var pollIntervalMs = options.pollIntervalMs || 400;
-  var maxPollMs = options.maxPollMs || 30000;
-  var startTime = Date.now();
+// The rules for each transaction are unchanged: a landed transaction is CONFIRMED, a
+// failed one is FAILED, one past its block-height window is EXPIRED, and one that is not
+// known by the time limit is PENDING (sent, outcome unknown) -- never a thrown error, and
+// the signature is always kept.
+var watchers = new Map();      // signature -> [watcher, ...]
+var pollerRunning = false;
+var STATUS_CHUNK = 200;
+
+function allWatchers() {
+  var out = [];
+  watchers.forEach(function(list) { list.forEach(function(w) { out.push(w); }); });
+  return out;
+}
+
+function finishWatcher(w, result) {
+  if (w.done) return;
+  w.done = true;
+  var list = watchers.get(w.signature);
+  if (list) {
+    var i = list.indexOf(w);
+    if (i !== -1) list.splice(i, 1);
+    if (list.length === 0) watchers.delete(w.signature);
+  }
+  result.checks = w.checks;
+  result.pollWaitMs = w.waitMs;
+  w.resolve(result);
+}
+
+// One batched request (or a few, if there are very many) for a list of signatures.
+async function readStatuses(connection, signatures, prio, tickInfo) {
+  var map = {};
+  for (var i = 0; i < signatures.length; i += STATUS_CHUNK) {
+    var chunk = signatures.slice(i, i + STATUS_CHUNK);
+    var res = await runWithGate(prio, function(track) {
+      return connection.getSignatureStatuses(chunk).then(function(r) {
+        if (tickInfo && track && track.maxWait > tickInfo.maxWait) tickInfo.maxWait = track.maxWait;
+        return r;
+      });
+    });
+    var values = (res && res.value) || [];
+    for (var k = 0; k < chunk.length; k++) map[chunk[k]] = values[k] || null;
+  }
+  return map;
+}
+
+function judgeStatus(w, status) {
+  if (status) {
+    if (isSuccessStatus(status)) { finishWatcher(w, { outcome: 'CONFIRMED', signature: w.signature }); return true; }
+    if (status.err) { finishWatcher(w, { outcome: 'FAILED', signature: w.signature, error: JSON.stringify(status.err) }); return true; }
+  }
+  return false;
+}
+
+async function runPoller() {
   var lastHeightCheck = 0;
-  var readErrors = 0;
-  var lastReadError = null;
+  while (watchers.size > 0) {
+    var all = allWatchers();
+    if (all.length === 0) break;
+    var connection = all[0].connection;
+    var now = Date.now();
+    var interval = Infinity, prio = null;
+    all.forEach(function(w) {
+      var each = (now - w.startTime) < 3000 ? w.pollIntervalMs : w.pollIntervalMs * 2;
+      if (each < interval) interval = each;
+      var p = (w.prio === null || w.prio === undefined) ? 1 : w.prio;
+      if (prio === null || p < prio) prio = p;
+    });
+    var waitMs = interval;
+    var tickErr = null;
+    var tickInfo = { maxWait: 0 };
 
-  while (true) {
-    var waitMs = (Date.now() - startTime) < 3000 ? pollIntervalMs : pollIntervalMs * 2;
     try {
-      var statuses = await connection.getSignatureStatuses([signature]);
-      var status = statuses && statuses.value && statuses.value[0];
+      var signatures = [];
+      var seen = {};
+      all.forEach(function(w) { if (!seen[w.signature]) { seen[w.signature] = true; signatures.push(w.signature); } });
+      var statusMap = await readStatuses(connection, signatures, prio, tickInfo);
+      all.forEach(function(w) {
+        if (w.done) return;
+        w.checks++;
+        if (tickInfo.maxWait > w.waitMs) w.waitMs = tickInfo.maxWait;
+        judgeStatus(w, statusMap[w.signature]);
+      });
 
-      if (status) {
-        if (isSuccessStatus(status)) {
-          return { outcome: 'CONFIRMED', signature: signature };
-        }
-        if (status.err) {
-          return { outcome: 'FAILED', signature: signature, error: JSON.stringify(status.err) };
-        }
-      }
-
-      // The status is checked often so a landed transaction is noticed
-      // quickly; the (slower-changing) block height only needs checking
-      // every couple of seconds.
-      if (Date.now() - lastHeightCheck >= 2000) {
+      // The status is checked often so a landed transaction is noticed quickly; the
+      // (slower-changing) block height only needs checking every couple of seconds.
+      if (Date.now() - lastHeightCheck >= 2000 && allWatchers().length > 0) {
         lastHeightCheck = Date.now();
-        var currentBlockHeight = await readBlockHeightShared(connection);
-        if (currentBlockHeight > latest.lastValidBlockHeight) {
-          var finalStatuses = await connection.getSignatureStatuses([signature]);
-          var finalStatus = finalStatuses && finalStatuses.value && finalStatuses.value[0];
-          if (isSuccessStatus(finalStatus)) {
-            return { outcome: 'CONFIRMED', signature: signature };
-          }
-          if (finalStatus && finalStatus.err) {
-            return { outcome: 'FAILED', signature: signature, error: JSON.stringify(finalStatus.err) };
-          }
-          return { outcome: 'EXPIRED', signature: signature };
+        var currentBlockHeight = await runWithGate(prio, function() { return readBlockHeightShared(connection); });
+        var overdue = allWatchers().filter(function(w) { return currentBlockHeight > w.latest.lastValidBlockHeight; });
+        if (overdue.length > 0) {
+          var overdueSigs = [];
+          var seenOverdue = {};
+          overdue.forEach(function(w) { if (!seenOverdue[w.signature]) { seenOverdue[w.signature] = true; overdueSigs.push(w.signature); } });
+          var finalMap = await readStatuses(connection, overdueSigs, prio, tickInfo);
+          overdue.forEach(function(w) {
+            if (w.done) return;
+            if (!judgeStatus(w, finalMap[w.signature])) finishWatcher(w, { outcome: 'EXPIRED', signature: w.signature });
+          });
         }
       }
     } catch (readErr) {
-      // Could not read the chain this time. The transaction is already sent, so keep the
-      // signature and look again after a short pause.
-      readErrors++;
-      lastReadError = readErr;
+      // Could not read the chain this time. The transactions are already sent, so every
+      // signature is kept and looked at again after a short pause.
+      tickErr = readErr;
       waitMs = Math.max(waitMs, 800);
       lastHeightCheck = 0;
+      allWatchers().forEach(function(w) { w.readErrors++; w.lastReadError = readErr; });
     }
 
-    if (Date.now() - startTime > maxPollMs) {
-      var pending = { outcome: 'PENDING', signature: signature, lastValidBlockHeight: latest.lastValidBlockHeight };
-      if (readErrors > 0) {
-        pending.readErrors = readErrors;
-        pending.lastReadError = String((lastReadError && lastReadError.message) || lastReadError);
+    // Anything not settled by its time limit is PENDING.
+    var after = Date.now();
+    allWatchers().forEach(function(w) {
+      if (after - w.startTime > w.maxPollMs) {
+        var pending = { outcome: 'PENDING', signature: w.signature, lastValidBlockHeight: w.latest.lastValidBlockHeight };
+        if (w.readErrors > 0) {
+          pending.readErrors = w.readErrors;
+          pending.lastReadError = String((w.lastReadError && w.lastReadError.message) || w.lastReadError);
+        }
+        finishWatcher(w, pending);
       }
-      return pending;
-    }
+    });
 
+    if (watchers.size === 0) break;
     await new Promise(function(resolve) { setTimeout(resolve, waitMs); });
   }
+}
+
+function startPoller() {
+  if (pollerRunning) return;
+  pollerRunning = true;
+  // Started a moment later so transactions registered at the same instant share the first request.
+  Promise.resolve().then(function() { return runPoller(); }).catch(function(e) {
+    // A bug here must never leave a transaction without an answer: everything still
+    // being watched is settled as PENDING (sent, outcome unknown) with its signature.
+    allWatchers().forEach(function(w) {
+      finishWatcher(w, { outcome: 'PENDING', signature: w.signature, lastValidBlockHeight: w.latest.lastValidBlockHeight, readErrors: w.readErrors + 1, lastReadError: 'confirm checker error: ' + String((e && e.message) || e) });
+    });
+  }).then(function() {
+    pollerRunning = false;
+    if (watchers.size > 0) startPoller();
+  });
+}
+
+// Same contract as always: returns { outcome, signature, ... }. The only difference is
+// that waiting for the answer is shared with every other transaction in flight.
+function pollForOutcome(signature, connection, latest, options) {
+  options = options || {};
+  return new Promise(function(resolve) {
+    var g = gate();
+    var w = {
+      signature: signature, connection: connection, latest: latest, resolve: resolve, done: false,
+      startTime: Date.now(),
+      pollIntervalMs: options.pollIntervalMs || 400,
+      maxPollMs: options.maxPollMs || 30000,
+      readErrors: 0, lastReadError: null, checks: 0, waitMs: 0,
+      prio: g ? g.currentPriority() : null,
+    };
+    var list = watchers.get(signature);
+    if (!list) { list = []; watchers.set(signature, list); }
+    list.push(w);
+    startPoller();
+  });
 }
 
 // Normal path: send through the regular connection, same as before.

@@ -223,6 +223,15 @@ function feedLog(msg, type) {
 // pumpfun.js writes its own notices (v3 in use, fallback to 3.2.0, switch-back) into the live log.
 try { require('./pumpfun').setLogger(function(m, t) { liveLog(m, t || 'info'); }); } catch (e) { /* logging only */ }
 
+// The request gate: every request to the Helius node is counted, kept under the plan limit,
+// and sells go first. If the file cannot load the bot works exactly as it did before.
+var rpcgate = null;
+try {
+  rpcgate = require('./rpcgate');
+  rpcgate.setLogger(function(m, t) { liveLog(m, t || 'info'); });
+  liveLog('RPC GATE on: at most ' + rpcgate.LIMIT_PER_SEC + ' requests per second to the node, sells first, new buys pause while the node is slow (a read over ' + (rpcgate.SLOW_MS / 1000) + 's counts as slow)', 'info');
+} catch (e) { rpcgate = null; }
+
 // -- LIVE WALLET -------------------------------------------------
 // liveWalletState holds everything the dashboard's Settings panel
 // needs to show, refreshed on its own schedule below. Every field
@@ -2022,6 +2031,15 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     liveOk = false;
     trackSkip('live_max_open_reached_race');
   }
+  // While the node is running slow, a real buy waits: the exit could not be sent in time
+  // either. Paper is not affected. Open positions and sells are never held back by this.
+  if (liveOk && rpcgate && rpcgate.entryPaused()) {
+    liveOk = false;
+    trackSkip('rpc_slow_paused');
+    if (rpcgate.noteSkippedEntry(tok.n || tok.mint.slice(0, 8))) {
+      liveLog('LIVE ENTRY SKIPPED for ' + (tok.n || tok.mint) + ': the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), 'warn');
+    }
+  }
   if (!paperOk && !liveOk) return;
 
   // Same idea for the dev-sold filter: the early check at the top of this
@@ -3168,7 +3186,22 @@ async function readHeldAfterBuy(connection, mint, mintStr, signature, logPrefix,
   return { error: lastErr || new Error('token balance could not be read after the buy') };
 }
 
+// Everything a real buy asks of the node is tagged as second in line (sells come first), and
+// the longest it waited in line is written onto the new position for the CSV.
 async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot) {
+  if (!rpcgate) return performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot);
+  return rpcgate.runTracked(1, async function(track) {
+    var out = await performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot);
+    try {
+      var sigNow = out && out.result && out.result.signature;
+      var opened = sigNow ? S.liveOpen.find(function(p) { return p.id === sigNow; }) : null;
+      if (opened) opened.buyQueueWaitMs = Math.max(track.maxWait, (out.result && out.result.pollWaitMs) || 0);
+    } catch (e) { /* the CSV number is optional */ }
+    return out;
+  });
+}
+
+async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -3290,6 +3323,12 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
             // Fixed when the position opens, like paper's trade.sl: changing the
             // Stop Loss setting later only affects trades opened after it.
             slPct: S.liveStopLossPct,
+            // Timing facts for the CSV: when the node-request count for this trade starts, how long the
+            // buy took to build and to land, and how many confirm checks it was part of.
+            rpcFrom: buyT0,
+            buyBuildMs: buyBuiltMs,
+            buyLandMs: buySendMs,
+            buyConfirmChecks: (typeof result.checks === 'number') ? result.checks : null,
             peakPriceUsd: entryPriceUsd,
             currentPriceUsd: entryPriceUsd,
             tier1Done: false,
@@ -3378,7 +3417,18 @@ async function settleConfirmedRealSell(connection, result, logPrefix, platformNa
 // the same sale actually landed without the bot hearing about it, the wallet
 // already shows the reduced balance and the sale is recognised as done instead
 // of being sold a second time.
+// Everything a real sell asks of the node is tagged first in line, and the longest it waited
+// in line is returned for the CSV.
 async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride) {
+  if (!rpcgate) return performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride);
+  return rpcgate.runTracked(0, async function(track) {
+    var out = await performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride);
+    if (out && typeof out === 'object') out.queueWaitMs = Math.max(track.maxWait, (out.result && out.result.pollWaitMs) || 0);
+    return out;
+  });
+}
+
+async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -3468,7 +3518,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
       settled = await settleConfirmedRealSell(connection, result, logPrefix, platformName);
     }
 
-    return { ok: true, result: result, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
+    return { ok: true, result: result, sendMs: Date.now() - sellSendT0, confirmChecks: (typeof result.checks === 'number') ? result.checks : 0, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     invalidateBuilderCaches();
@@ -3742,6 +3792,11 @@ function closeLiveOutsideBot(pos, priceUsd, prefix) {
 // If the lookup keeps failing for 5 minutes it stops waiting; the real wallet
 // balance check in performRealSell is still there to prevent a double sale.
 async function resolvePendingSell(pos, platformName) {
+  if (!rpcgate) return resolvePendingSellInner(pos, platformName);
+  return rpcgate.runWithPriority(0, function() { return resolvePendingSellInner(pos, platformName); });
+}
+
+async function resolvePendingSellInner(pos, platformName) {
   var ps = pos.pendingSell;
   var prefix = 'LIVE PENDING SELL CHECK';
   try {
@@ -3820,6 +3875,28 @@ function bookLiveSavings(pos, legPnl, prefix, label) {
   liveLog(prefix + ': ' + label + ' +$' + legPnl.toFixed(4) + ' -- $' + amt.toFixed(4) + ' to Savings, $' + (legPnl - amt).toFixed(4) + ' stays in the Live Fund | $' + S.livePendingSavings.toFixed(2) + ' waiting to be sent (sent automatically at $' + SAVINGS_SEND_THRESHOLD_USD + ')', 'win');
   maybeSendSavings().catch(function() {});
   return amt;
+}
+
+// What the request gate saw while this trade was open, and the timing facts recorded on the
+// position, for the Live CSV. Blank when a number is not known.
+function liveRpcExtras(pos) {
+  var st = rpcgate ? rpcgate.statsBetween(pos.rpcFrom || pos.openedAt, Date.now()) : null;
+  var nz = function(v) { return (v === undefined) ? null : v; };
+  return {
+    rpcPeakPerSec: st ? st.peak : null,
+    rpcRequestsInTrade: st ? st.requests : null,
+    rpcSlowInTrade: st ? ((st.slow > 0 || st.n429 > 0) ? 'Yes' : 'No') : '',
+    rpcSlowestMs: st ? st.slowestMs : null,
+    rpc429s: st ? st.n429 : null,
+    buyBuildMs: nz(pos.buyBuildMs),
+    buyLandMs: nz(pos.buyLandMs),
+    buyConfirmChecks: nz(pos.buyConfirmChecks),
+    buyQueueWaitMs: nz(pos.buyQueueWaitMs),
+    sellLandMs: nz(pos.sellLandMs),
+    sellConfirmChecks: nz(pos.sellConfirmChecks),
+    sellQueueWaitMs: nz(pos.sellQueueWaitMs),
+    sellAttempts: pos.sellAttemptsTotal || 0,
+  };
 }
 
 // The paper-CSV facts for a real position, read from its entry snapshot and its
@@ -4063,13 +4140,19 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     // its slippage unit is not verified, so it is not changed here.
     var urgentExit = (action.kind === 'SL' || action.kind === 'TRAIL' || action.kind === 'STALE' || action.kind === 'MANUAL');
     var exitSlippage = (urgentExit && pos.platform === 'pumpfun') ? 95 : undefined;
-    if (!outcome) outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage);
+    if (!outcome) {
+      pos.sellAttemptsTotal = (pos.sellAttemptsTotal || 0) + 1;
+      outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage);
+    }
     var confirmed = !!(outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED');
     var nowEst = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
 
     // Real wallet change from this sale, added to the position's running total.
     if (confirmed) {
       pos.sellFails = 0; pos.zeroFails = 0; pos.stuck = false;
+      pos.sellLandMs = Math.max(pos.sellLandMs || 0, outcome.sendMs || 0);
+      pos.sellConfirmChecks = (pos.sellConfirmChecks || 0) + (outcome.confirmChecks || 0);
+      pos.sellQueueWaitMs = Math.max(pos.sellQueueWaitMs || 0, outcome.queueWaitMs || 0);
       if (typeof outcome.realImpactUsd === 'number') pos.sellImpactUsd = (pos.sellImpactUsd || 0) + outcome.realImpactUsd;
       else pos.sellImpactKnown = false;
       if (typeof outcome.tipUsd === 'number') pos.sellTipUsd = (pos.sellTipUsd || 0) + outcome.tipUsd;
@@ -4145,6 +4228,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       lastClosedRec = closedRec;
       // The paper-CSV facts: entry snapshot, per-tick tracking, close-time state.
       Object.assign(closedRec, liveCloseExtras(pos));
+      Object.assign(closedRec, liveRpcExtras(pos));
       closedRec.fees = (closedRec.totalTipUsd !== null && closedRec.totalFeeUsd !== null) ? parseFloat((closedRec.totalTipUsd + closedRec.totalFeeUsd).toFixed(6)) : null;
 
       // Win/loss counters, same rule as paper: the trade's overall result above
@@ -4258,13 +4342,28 @@ async function runLiveExit(pos, action, priceUsd, pct) {
   }
 }
 
+// What the request gate sees right now: requests per second, what they are for, slow-node
+// pauses. Readable from a link, so the rate can be checked without waiting for a CSV.
+app.get('/api/rpc-stats', function(req, res) {
+  if (!rpcgate) return res.json({ ok: false, error: 'the request gate file did not load' });
+  var now = Date.now();
+  res.json({
+    ok: true,
+    gate: rpcgate.status(),
+    last60s: rpcgate.statsBetween(now - 60000, now),
+    last10min: rpcgate.statsBetween(now - 600000, now),
+    pauses: rpcgate.episodesSince(0).slice(-20),
+  });
+});
+
 // Live CSV: real closed trades only, built from S.liveClosed. PnL is the
 // real wallet result (buy cost + sale proceeds, including fees and tips).
 app.get('/api/live/export', function(req, res) {
   // The first 39 columns are the original live columns, in their original order.
   // The rest are paper's columns that live did not have, added at the end.
   var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','BuyTipUsd','SellTipUsd','TotalTipUsd','BuyNetworkFeeUsd','SellNetworkFeeUsd','TotalNetworkFeeUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAmount','SavingsAmount','FundAfterTrade','BuySignature','SellSignature',
-    'Chain','Source','TickCount','SecToFirstUpdate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','Tier1RealizedPnl','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','Tier2RealizedPnl'];
+    'Chain','Source','TickCount','SecToFirstUpdate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','Tier1RealizedPnl','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','Tier2RealizedPnl',
+    'PeakRpcPerSec','RpcRequestsInTrade','SlowRpcInTrade','SlowestReadMs','Rpc429s','BuyBuildMs','BuyLandMs','BuyConfirmChecks','BuyQueueWaitMs','SellLandMs','SellConfirmChecks','SellQueueWaitMs','SellAttempts'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4280,7 +4379,9 @@ app.get('/api/live/export', function(req, res) {
       t.poolSizeAtEntry, t.scanCountAtEntry, t.triggerTickJumpPct, t.entryUniqueBuyers, t.entryUniqueSellers, t.entryDustSwaps, t.entryRealSwaps,
       t.entryPreVolatilityPct, t.entryPreVolTickCount, t.fundSLTriggerAt, csvSafe(t.autoLockStatus || ''), t.trailTriggerTickJumpPct, t.lowestPricePct,
       csvSafe(t.priceHistory || ''), t.entryLiquidityUsd, t.tier1RealizedPnl, csvSafe(t.entryTrigger || ''), csvSafe(t.windingDownAtClose || ''),
-      t.secondsSinceDiscovery, csvSafe(t.entryDevBought || ''), csvSafe(t.entryDevSold || ''), csvSafe(t.hasDevWalletData || ''), t.tier2RealizedPnl
+      t.secondsSinceDiscovery, csvSafe(t.entryDevBought || ''), csvSafe(t.entryDevSold || ''), csvSafe(t.hasDevWalletData || ''), t.tier2RealizedPnl,
+      t.rpcPeakPerSec, t.rpcRequestsInTrade, csvSafe(t.rpcSlowInTrade || ''), t.rpcSlowestMs, t.rpc429s, t.buyBuildMs, t.buyLandMs, t.buyConfirmChecks, t.buyQueueWaitMs,
+      t.sellLandMs, t.sellConfirmChecks, t.sellQueueWaitMs, t.sellAttempts
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -4302,6 +4403,27 @@ app.get('/api/live/export', function(req, res) {
     rows.push(extraRow({ Name: csvSafe('TOKENS LEFT IN WALLET'), Mint: d.mint,
       CloseReason: csvSafe('NOT SOLD - ' + d.amount + ' raw token units in account ' + addr + ', no tracked position') }));
   });
+  // How hard the bot leaned on the node during this live session, and every time new buys were
+  // held back because the node was slow. Added as marked rows at the bottom, like the rows above.
+  if (rpcgate) {
+    var rpcFrom = S.liveSession ? S.liveSession.startTime : 0;
+    var rpcAll = rpcgate.statsBetween(rpcFrom, Date.now());
+    var kindsText = Object.keys(rpcAll.byKind).sort(function(a, b) { return rpcAll.byKind[b] - rpcAll.byKind[a]; }).slice(0, 8)
+      .map(function(m) { return m + ' ' + rpcAll.byKind[m]; }).join(', ');
+    var rpcEps = rpcgate.episodesSince(rpcFrom);
+    var skippedTotal = rpcEps.reduce(function(n, e) { return n + e.skipped.length; }, 0);
+    rows.push(extraRow({ Name: csvSafe('RPC SUMMARY'),
+      CloseReason: csvSafe('Highest requests in one second ' + rpcAll.peak + ' (gate limit ' + rpcgate.LIMIT_PER_SEC + ', Free plan 10) | total requests ' + rpcAll.requests +
+        ' | refused as too many (429) ' + rpcAll.n429 + ' | slow reads (over ' + (rpcgate.SLOW_MS / 1000) + 's) ' + rpcAll.slow + ' | slowest read ' + rpcAll.slowestMs + 'ms | longest wait in line ' + rpcAll.maxWaitMs +
+        'ms | most-used: ' + kindsText + ' | slow-node pauses ' + rpcEps.length + ' | buys skipped because of them ' + skippedTotal) }));
+    rpcEps.forEach(function(e) {
+      var endMs = e.end || Date.now();
+      rows.push(extraRow({ Name: csvSafe('SLOW NODE PAUSE'), HoldTimeSec: Math.round((endMs - e.start) / 1000),
+        OpenedAt: csvSafe(new Date(e.start).toLocaleString('en-US', { timeZone: 'America/New_York' })),
+        ClosedAt: csvSafe(e.end ? new Date(e.end).toLocaleString('en-US', { timeZone: 'America/New_York' }) : 'still paused'),
+        CloseReason: csvSafe('New buys paused: ' + e.reason + ' | buys skipped ' + e.skipped.length + (e.skipped.length ? ' (' + e.skipped.join(', ') + ')' : '')) }));
+    });
+  }
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_live_trades_' + Date.now() + '.csv"');
   res.send(rows.join('\n'));
