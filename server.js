@@ -220,6 +220,9 @@ function feedLog(msg, type) {
   if (S.liveTradingEnabled || (S.liveOpen && S.liveOpen.length > 0)) liveLog(msg, type);
 }
 
+// pumpfun.js writes its own notices (v3 in use, fallback to 3.2.0, switch-back) into the live log.
+try { require('./pumpfun').setLogger(function(m, t) { liveLog(m, t || 'info'); }); } catch (e) { /* logging only */ }
+
 // -- LIVE WALLET -------------------------------------------------
 // liveWalletState holds everything the dashboard's Settings panel
 // needs to show, refreshed on its own schedule below. Every field
@@ -2789,6 +2792,12 @@ function invalidateBuilderCaches() {
   try { require('./letsbonk').clearCaches(); } catch (e) {}
 }
 
+// Tells pumpfun.js what the chain said about a trade it built, so a rejected v3 trade can
+// switch the bot back to the proven 3.2.0 builders (only trades built with v3 count).
+function notePumpTradeResult(instructions, result) {
+  try { require('./pumpfun').noteTradeResult(instructions, result && result.outcome, result && result.error); } catch (e) { /* never affects a trade */ }
+}
+
 // While automatic live trading is on (or a real position is still open), keep
 // the things a real buy or sell needs already in memory -- the current tip
 // number and pump.fun's settings -- so none of them is waited on at the
@@ -2825,7 +2834,7 @@ function compareVersions(a, b) {
 // Reads the installed version straight from the package's own package.json.
 // Some packages block requiring that file directly, so if that fails the
 // folders above the package's entry file are searched for it instead.
-function readInstalledPackageVersion(name) {
+function readInstalledPackageVersion(name, pkgName) {
   try { return require(name + '/package.json').version; } catch (e) { /* try the folder search */ }
   try {
     var dir = path.dirname(require.resolve(name));
@@ -2833,7 +2842,7 @@ function readInstalledPackageVersion(name) {
       var file = path.join(dir, 'package.json');
       if (fs.existsSync(file)) {
         var pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (pkg.name === name) return pkg.version;
+        if (pkg.name === (pkgName || name)) return pkg.version;
       }
       var up = path.dirname(dir);
       if (up === dir) break;
@@ -2868,14 +2877,19 @@ async function checkPumpSdkVersion() {
     return null;
   }
 }
+setTimeout(function() {
+  try {
+    var st = require('./pumpfun').getStatus();
+    liveLog('PUMP SDK: buys and sells use ' + (st.v3Enabled ? 'v3' : 'the proven 3.2.0 builders') + ' from ' + PUMP_SDK_PACKAGE + ' ' + readInstalledPackageVersion(PUMP_SDK_PACKAGE) + ', backup ' + (st.hasBackupSdk ? readInstalledPackageVersion('pump-sdk-legacy', '@pump-fun/pump-sdk') + ' ready' : 'NOT installed'), st.hasBackupSdk ? 'info' : 'warn');
+  } catch (e) { /* status line only */ }
+}, 6000);
 setTimeout(checkPumpSdkVersion, 30000);
 setInterval(checkPumpSdkVersion, PUMP_SDK_CHECK_MS);
 
 // -- SDK PROBE (read-only, nothing is traded) ---------------------
-// SDK 3.2.0 is installed under the separate name "pump-sdk-next" and is NEVER
-// used for trading -- all real buys and sells still use @pump-fun/pump-sdk
-// exactly as before. This page only prints what the newer SDK contains, so its
-// real sell-building code can be read before any upgrade is written.
+// Trading uses @pump-fun/pump-sdk (4.1.0, v3 instructions); the older 3.2.0 copy
+// is installed as "pump-sdk-legacy" and is the automatic backup. This page only
+// prints what the main SDK contains and which versions are installed.
 //   /api/sdk-probe                      -> version, export names, method names + sizes
 //   /api/sdk-probe?fn=sellInstructions  -> that function's source (part 1)
 //   /api/sdk-probe?fn=NAME&part=2       -> the next 12000 characters
@@ -2883,8 +2897,9 @@ app.get('/api/sdk-probe', function(req, res) {
   res.type('text/plain');
   try {
     var PART = 12000;
-    var next = require('pump-sdk-next');
-    var nextVersion = readInstalledPackageVersion('pump-sdk-next');
+    var next = require(PUMP_SDK_PACKAGE);
+    var nextVersion = readInstalledPackageVersion(PUMP_SDK_PACKAGE);
+    var backupVersion = readInstalledPackageVersion('pump-sdk-legacy', '@pump-fun/pump-sdk');
     var holders = [['export', next], ['PumpSdk.prototype', next.PumpSdk && next.PumpSdk.prototype], ['OnlinePumpSdk.prototype', next.OnlinePumpSdk && next.OnlinePumpSdk.prototype]];
     var fnName = req.query && req.query.fn ? String(req.query.fn) : '';
     if (fnName) {
@@ -2894,14 +2909,14 @@ app.get('/api/sdk-probe', function(req, res) {
         var f = h[1][fnName];
         if (typeof f === 'function') { found = f; where = h[0]; }
       });
-      if (!found) return res.send('No function named "' + fnName + '" in pump-sdk-next ' + nextVersion + '. Open /api/sdk-probe to see the names.');
+      if (!found) return res.send('No function named "' + fnName + '" in ' + PUMP_SDK_PACKAGE + ' ' + nextVersion + '. Open /api/sdk-probe to see the names.');
       var src = Function.prototype.toString.call(found);
       var part = Math.max(parseInt(req.query.part, 10) || 1, 1);
       var chunk = src.slice((part - 1) * PART, part * PART);
       var parts = Math.ceil(src.length / PART);
-      return res.send('pump-sdk-next ' + nextVersion + ' | ' + where + '.' + fnName + ' | ' + src.length + ' characters | part ' + part + ' of ' + parts + '\n\n' + (chunk || '(no more text -- that was the last part)'));
+      return res.send(PUMP_SDK_PACKAGE + ' ' + nextVersion + ' | ' + where + '.' + fnName + ' | ' + src.length + ' characters | part ' + part + ' of ' + parts + '\n\n' + (chunk || '(no more text -- that was the last part)'));
     }
-    var out = ['pump-sdk-next version: ' + nextVersion, 'Version trading uses: ' + readInstalledPackageVersion(PUMP_SDK_PACKAGE), ''];
+    var out = ['Main SDK version (trading uses this): ' + nextVersion, 'Backup SDK version (automatic fallback): ' + backupVersion, 'Pump trade status: ' + JSON.stringify(require('./pumpfun').getStatus()), ''];
     holders.forEach(function(h) {
       if (!h[1]) { out.push(h[0] + ': not present', ''); return; }
       var names = h[0] === 'export' ? Object.keys(h[1]) : Object.getOwnPropertyNames(h[1]);
@@ -3124,6 +3139,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
 
     liveLog(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    notePumpTradeResult(instructions, result);
     if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     if (result.outcome === 'CONFIRMED') {
@@ -3216,7 +3232,7 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
 
     return { ok: true, result: result, liveFund: S.liveFund };
   } catch (e) {
-    if (e.code === 'THIN_LIQUIDITY') {
+    if (e.code === 'THIN_LIQUIDITY' || e.code === 'UNSUPPORTED_QUOTE') {
       // Nothing was sent. Not a failure of the lookups, so the remembered settings stay.
       liveLog(logPrefix + ' (' + platformName + ' buy) SKIPPED for ' + mintStr + ': ' + e.message, 'warn');
       return { ok: false, skipped: true, error: e.message };
@@ -3350,6 +3366,7 @@ async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fr
 
     liveLog(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
+    notePumpTradeResult(instructions, result);
     if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     var settled = null;
