@@ -146,52 +146,96 @@ function isSuccessStatus(status) {
     (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized');
 }
 
+// The block height is only used to tell when a transaction's window has closed,
+// so it is read at most about once every 1.5 seconds and shared by every trade
+// being watched at the same time, instead of one read per trade every 2 seconds.
+var heightShared = { at: 0, value: null, inflight: null };
+async function readBlockHeightShared(connection) {
+  if (heightShared.value !== null && (Date.now() - heightShared.at) < 1500) return heightShared.value;
+  if (heightShared.inflight) return heightShared.inflight;
+  heightShared.inflight = connection.getBlockHeight().then(function(h) {
+    heightShared.value = h;
+    heightShared.at = Date.now();
+    heightShared.inflight = null;
+    return h;
+  }, function(e) {
+    heightShared.inflight = null;
+    throw e;
+  });
+  return heightShared.inflight;
+}
+
 // The shared confirm-polling core. Identical logic regardless of how
 // the transaction was actually submitted -- a signature is a
 // signature, checked the same honest way either time.
+//
+// A temporary problem reading the chain (for example a 429 "Too Many Requests"
+// from the RPC provider) used to throw out of this function and lose the
+// signature of a transaction that had already been sent -- the bot then
+// believed nothing had happened even if the trade landed. Now a failed
+// check is simply tried again; the signature is always kept. If the checks
+// keep failing until the time limit, the honest answer is PENDING (sent,
+// not known), never a thrown error.
 async function pollForOutcome(signature, connection, latest, options) {
   var pollIntervalMs = options.pollIntervalMs || 400;
   var maxPollMs = options.maxPollMs || 30000;
   var startTime = Date.now();
   var lastHeightCheck = 0;
+  var readErrors = 0;
+  var lastReadError = null;
 
   while (true) {
-    var statuses = await connection.getSignatureStatuses([signature]);
-    var status = statuses && statuses.value && statuses.value[0];
+    var waitMs = (Date.now() - startTime) < 3000 ? pollIntervalMs : pollIntervalMs * 2;
+    try {
+      var statuses = await connection.getSignatureStatuses([signature]);
+      var status = statuses && statuses.value && statuses.value[0];
 
-    if (status) {
-      if (isSuccessStatus(status)) {
-        return { outcome: 'CONFIRMED', signature: signature };
-      }
-      if (status.err) {
-        return { outcome: 'FAILED', signature: signature, error: JSON.stringify(status.err) };
-      }
-    }
-
-    // The status is checked about 2.5 times a second so a landed transaction
-    // is noticed quickly; the (slower-changing) block height only needs
-    // checking every couple of seconds.
-    if (Date.now() - lastHeightCheck >= 2000) {
-      lastHeightCheck = Date.now();
-      var currentBlockHeight = await connection.getBlockHeight();
-      if (currentBlockHeight > latest.lastValidBlockHeight) {
-        var finalStatuses = await connection.getSignatureStatuses([signature]);
-        var finalStatus = finalStatuses && finalStatuses.value && finalStatuses.value[0];
-        if (isSuccessStatus(finalStatus)) {
+      if (status) {
+        if (isSuccessStatus(status)) {
           return { outcome: 'CONFIRMED', signature: signature };
         }
-        if (finalStatus && finalStatus.err) {
-          return { outcome: 'FAILED', signature: signature, error: JSON.stringify(finalStatus.err) };
+        if (status.err) {
+          return { outcome: 'FAILED', signature: signature, error: JSON.stringify(status.err) };
         }
-        return { outcome: 'EXPIRED', signature: signature };
       }
+
+      // The status is checked often so a landed transaction is noticed
+      // quickly; the (slower-changing) block height only needs checking
+      // every couple of seconds.
+      if (Date.now() - lastHeightCheck >= 2000) {
+        lastHeightCheck = Date.now();
+        var currentBlockHeight = await readBlockHeightShared(connection);
+        if (currentBlockHeight > latest.lastValidBlockHeight) {
+          var finalStatuses = await connection.getSignatureStatuses([signature]);
+          var finalStatus = finalStatuses && finalStatuses.value && finalStatuses.value[0];
+          if (isSuccessStatus(finalStatus)) {
+            return { outcome: 'CONFIRMED', signature: signature };
+          }
+          if (finalStatus && finalStatus.err) {
+            return { outcome: 'FAILED', signature: signature, error: JSON.stringify(finalStatus.err) };
+          }
+          return { outcome: 'EXPIRED', signature: signature };
+        }
+      }
+    } catch (readErr) {
+      // Could not read the chain this time. The transaction is already sent, so keep the
+      // signature and look again after a short pause.
+      readErrors++;
+      lastReadError = readErr;
+      waitMs = Math.max(waitMs, 800);
+      lastHeightCheck = 0;
     }
 
     if (Date.now() - startTime > maxPollMs) {
-      return { outcome: 'PENDING', signature: signature, lastValidBlockHeight: latest.lastValidBlockHeight };
+      var pending = { outcome: 'PENDING', signature: signature, lastValidBlockHeight: latest.lastValidBlockHeight };
+      if (readErrors > 0) {
+        pending.readErrors = readErrors;
+        pending.lastReadError = String((lastReadError && lastReadError.message) || lastReadError);
+      }
+      return pending;
     }
 
-    await new Promise(function(resolve) { setTimeout(resolve, pollIntervalMs); });
+    await new Promise(function(resolve) { setTimeout(resolve, waitMs); });
   }
 }
 
@@ -262,12 +306,21 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     method: 'sendTransaction',
     params: [serialized.toString('base64'), { encoding: 'base64', skipPreflight: true }],
   };
-  var res = await fetchWithTimeout(senderUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  }, 10000);
-  var json = await res.json();
+  // From here on the transaction may already be on its way. A timeout or a broken reply does
+  // NOT prove it was not received, so such errors are marked (mayHaveSent) and the caller
+  // checks the wallet before treating the trade as not having happened.
+  var json;
+  try {
+    var res = await fetchWithTimeout(senderUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, 10000);
+    json = await res.json();
+  } catch (sendErr) {
+    sendErr.mayHaveSent = true;
+    throw sendErr;
+  }
   if (json.error) {
     var err = new Error('Sender rejected the submission: ' + JSON.stringify(json.error));
     err.code = 'SENDER_REJECTED';
@@ -279,6 +332,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
       'Sender did not return a usable signature -- full response: ' + JSON.stringify(json)
     );
     err2.code = 'SENDER_NO_SIGNATURE';
+    err2.mayHaveSent = true;
     throw err2;
   }
   var outcome = await pollForOutcome(signature, connection, latest, options);

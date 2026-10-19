@@ -3103,6 +3103,26 @@ function describeIxAccounts(instructions) {
   } catch (e) { return 'could not list accounts: ' + e.message; }
 }
 
+// After a buy that was sent but never seen to land, looks in the wallet for the tokens.
+// Returns true if they are there (the buy landed). Waits up to about 10 seconds, because a
+// transaction can land a moment after the bot stopped watching for it.
+async function recoverSentBuy(connection, mint, logPrefix, platformName, why) {
+  liveLog(logPrefix + ' (' + platformName + ' buy): ' + why + ' -- checking the wallet for the tokens before giving up on this buy', 'warn');
+  var lastErr = null;
+  for (var i = 0; i < 6; i++) {
+    if (i > 0) await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+    try {
+      var bal = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+      if (bal && parseFloat(bal.amount) > 0) {
+        liveLog(logPrefix + ' (' + platformName + ' buy): the tokens ARE in the wallet -- the buy landed, recording the position now', 'win');
+        return true;
+      }
+    } catch (e) { lastErr = e; }
+  }
+  liveLog(logPrefix + ' (' + platformName + ' buy): no tokens found in the wallet after 6 checks' + (lastErr ? ' (last check error: ' + lastErr.message + ')' : '') + ' -- treating the buy as not landed. If it lands later, the left-in-wallet check will list the tokens', 'warn');
+  return false;
+}
+
 async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
@@ -3134,12 +3154,32 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
 
     liveLog(logPrefix + ' (' + platformName + ' buy): submitting real transaction...', 'info');
     var buySendT0 = Date.now();
-    var result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+    var result;
+    try {
+      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+    } catch (sendErr) {
+      // Nothing is known about the trade only if it was never sent. If it may have been sent,
+      // the wallet is checked below before the buy is given up on.
+      if (!sendErr.mayHaveSent) throw sendErr;
+      liveLog(logPrefix + ' (' + platformName + ' buy) ERROR: ' + sendErr.message + ' -- the buy may have been sent', 'warn');
+      result = { outcome: 'UNKNOWN', signature: null, error: sendErr.message };
+    }
     var buySendMs = Date.now() - buySendT0;
 
     liveLog(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
     notePumpTradeResult(instructions, result);
+
+    // PENDING (sent, never seen to land) and UNKNOWN (the reply was lost) do not prove the
+    // buy failed. The wallet is checked; if the tokens are there the buy landed and is
+    // tracked like any other. FAILED and EXPIRED are definite: nothing was bought.
+    if (result.outcome === 'PENDING' || result.outcome === 'UNKNOWN') {
+      var landed = await recoverSentBuy(connection, mint, logPrefix, platformName,
+        result.outcome === 'PENDING' ? 'the buy was sent but never seen to confirm' : 'the buy may have been sent');
+      if (landed) {
+        result = { outcome: 'CONFIRMED', signature: result.signature || ('recovered-' + Date.now()), tipLamports: result.tipLamports, recovered: true };
+      }
+    }
     if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     if (result.outcome === 'CONFIRMED') {
@@ -3157,6 +3197,12 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
 
       if (postBuy[0].error) {
         liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + postBuy[0].error.message, 'warn');
+        if (result.recovered) {
+          // The exact cost of a recovered buy is not readable, so the Live Fund is lowered by the
+          // buy size as an estimate (the real cost is slightly more) rather than not at all.
+          S.liveFund = parseFloat((S.liveFund - sizeUsd).toFixed(4));
+          liveLog(logPrefix + ' (' + platformName + ' buy): Live Fund lowered by the buy size $' + sizeUsd.toFixed(2) + ' as an ESTIMATE -- now $' + S.liveFund.toFixed(4), 'warn');
+        }
       } else {
         var changeLamports = postBuy[0].value;
         var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
