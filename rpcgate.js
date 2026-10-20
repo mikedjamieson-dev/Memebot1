@@ -111,6 +111,20 @@ function currentPriority() {
   const s = als.getStore();
   return s && typeof s.prio === 'number' ? s.prio : null;
 }
+// FAST LANE for a buy. Between the buy being approved and the transaction being sent, every
+// request the buy makes (the coin's accounts, the blockhash) goes ahead of all other buy and
+// background requests. Sells (priority 0) still go first of all, and the per-second cap is
+// the same as before, so this cannot cause more 429s -- it only decides who waits.
+// setCurrentPriority changes the tag for the rest of the current job; it returns the previous
+// tag so the caller can put it back once the transaction is sent.
+const FAST_LANE = 0.5;
+function setCurrentPriority(p) {
+  const s = als.getStore();
+  if (!s || typeof s.prio !== 'number') return null;
+  const before = s.prio;
+  if (before > 0) s.prio = p;     // never lowers a sell's priority 0
+  return before;
+}
 
 // -- the fetch that goes between the library and the node ---------------------
 const METHOD_RE = /"method"\s*:\s*"([A-Za-z0-9_]+)"/g;
@@ -293,6 +307,8 @@ module.exports = {
   runTracked,
   runWithPriority,
   currentPriority,
+  setCurrentPriority,
+  FAST_LANE,
   entryPaused,
   pauseReason,
   noteSkippedEntry,

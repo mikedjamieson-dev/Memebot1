@@ -2012,19 +2012,54 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   if (!entryPrice || entryPrice <= 0) { S.rejectCount++; trackSkip('no_price'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
 
+  var liveStartedEarly = false;
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
     if (pendingConcentrationChecks.has(tok.mint)) return;
     pendingConcentrationChecks.add(tok.mint);
     var concT0 = Date.now();
-    var concCheck = await checkWalletConcentration(tok.mint);
-    concentrationMs = Date.now() - concT0;
-    pendingConcentrationChecks.delete(tok.mint);
+    var liveSnap = null;
+    // The wallet-concentration check starts now and runs while a real buy is being built. The real
+    // buy is built at the same time but is NOT SENT until this check has said the coin is safe, so
+    // nothing is bought that the check would have refused. Paper still waits for the check, as before.
+    var concPromise = checkWalletConcentration(tok.mint).then(function(r) { return r; }, function() {
+      return { safe: true, reason: 'check errored, allowing through' };
+    }).then(function(r) {
+      concentrationMs = Date.now() - concT0;
+      if (liveSnap) liveSnap.concentrationMs = concentrationMs;
+      pendingConcentrationChecks.delete(tok.mint);
+      return r;
+    });
+    if (liveOk) {
+      // The same last-moment checks the real buy always had, run now (nothing async between them and the start).
+      if (!liveWantsEntry(tok)) {
+        liveOk = false;
+        trackSkip('live_max_open_reached_race');
+      } else if (rpcgate && rpcgate.entryPaused()) {
+        liveOk = false;
+        trackSkip('rpc_slow_paused');
+        if (rpcgate.noteSkippedEntry(tok.n || tok.mint.slice(0, 8))) {
+          liveLog('LIVE ENTRY SKIPPED for ' + (tok.n || tok.mint) + ': the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), 'warn');
+        }
+      } else if (tok.devSold) {
+        liveOk = false;
+        trackSkip('dev_wallet_sold_race');
+      } else {
+        liveSnap = buildLiveEntrySnapshot(tok, triggerSource, { signalPrice: entryPrice, signalAt: entryCheckStartedAt });
+        liveSnap.concGate = concPromise;
+        startLiveEntry(tok, liveSnap);
+        liveStartedEarly = true;
+      }
+    }
+    if (!paperOk && !liveStartedEarly) return;   // nothing left that wants this coin (the check finishes on its own)
+    var concCheck = await concPromise;
     if (!concCheck.safe) {
       S.rejectCount++;
       trackSkip('wallet_concentration');
       if(diag) feedLog('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
       return;
     }
+    // The real buy has already been handed over above, so the late checks below are for paper only.
+    if (liveStartedEarly) liveOk = false;
   }
 
   // Final re-check, right before anything commits - closes the race
@@ -3238,18 +3273,48 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
 
     var buyT0 = Date.now();
     liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
-    var instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15, LIVE_MAX_BUY_IMPACT_PCT);
+    // FAST LANE: from here until the transaction is sent, this buy's node requests go ahead of all
+    // other buy and background requests (sells still go first). The blockhash and tip are read at the
+    // same time as the coin's accounts instead of after them. The lane is put back once the send is made.
+    var laneBefore = (rpcgate && rpcgate.setCurrentPriority) ? rpcgate.setCurrentPriority(rpcgate.FAST_LANE) : null;
+    var prefetched = null;
+    try {
+      prefetched = execution.prefetchSendParts ? execution.prefetchSendParts(connection, 'SWQOS_ONLY') : null;
+    } catch (pfErr) { prefetched = null; }
+    var instructions;
+    try {
+      instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15, LIVE_MAX_BUY_IMPACT_PCT);
+    } catch (buildErr) {
+      if (laneBefore !== null && rpcgate) rpcgate.setCurrentPriority(laneBefore);
+      throw buildErr;
+    }
     var buyBuiltMs = Date.now() - buyT0;
     liveLog(logPrefix + ' (' + platformName + ' buy) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
 
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
+    // The wallet-concentration check runs alongside the build above. The transaction is not sent
+    // until it says the coin is safe; if it says the coin is NOT safe, nothing is sent.
+    var gateWaitMs = 0;
+    if (entrySnapshot && entrySnapshot.concGate) {
+      var gateT0 = Date.now();
+      var gateRes = null;
+      try { gateRes = await entrySnapshot.concGate; } catch (gErr) { gateRes = null; }
+      gateWaitMs = Date.now() - gateT0;
+      entrySnapshot.concGate = null;
+      if (gateRes && gateRes.safe === false) {
+        if (laneBefore !== null && rpcgate) rpcgate.setCurrentPriority(laneBefore);
+        liveLog(logPrefix + ' (' + platformName + ' buy) SKIPPED for ' + mintStr + ': ' + gateRes.reason + ' -- nothing was sent', 'warn');
+        return { ok: false, skipped: true, error: gateRes.reason };
+      }
+    }
+
     liveLog(logPrefix + ' (' + platformName + ' buy): submitting real transaction...', 'info');
     var buySendT0 = Date.now();
     var result;
     try {
-      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', prefetched: prefetched, onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
     } catch (sendErr) {
       // Nothing is known about the trade only if it was never sent. If it may have been sent,
       // the wallet is checked below before the buy is given up on.
@@ -3258,6 +3323,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
       result = { outcome: 'UNKNOWN', signature: null, error: sendErr.message };
     }
     var buySendMs = Date.now() - buySendT0;
+    if (laneBefore !== null && rpcgate) rpcgate.setCurrentPriority(laneBefore);
 
     liveLog(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
@@ -3370,6 +3436,9 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             rpcFrom: buyT0,
             buyBuildMs: buyBuiltMs,
             buyLandMs: buySendMs,
+            buyGateWaitMs: gateWaitMs,
+            buyPreSendMs: buySendT0 - buyT0,
+            sendStartedAt: buySendT0,
             buyConfirmChecks: (typeof result.checks === 'number') ? result.checks : null,
             peakPriceUsd: entryPriceUsd,
             currentPriceUsd: entryPriceUsd,
@@ -3952,6 +4021,9 @@ function liveSignalExtras(pos) {
     landPrice: land > 0 ? land : null,
     signalToFillMs: (pos.signalAt && pos.landedAt) ? pos.landedAt - pos.signalAt : null,
     concentrationMs: (pos.concentrationMs !== undefined) ? pos.concentrationMs : null,
+    signalToSendMs: (pos.signalAt && pos.sendStartedAt) ? pos.sendStartedAt - pos.signalAt : null,
+    buyPreSendMs: (typeof pos.buyPreSendMs === 'number') ? pos.buyPreSendMs : null,
+    buyGateWaitMs: (typeof pos.buyGateWaitMs === 'number') ? pos.buyGateWaitMs : null,
     marketMovePct: pct(land, sig),
     fillVsSignalPct: pct(fill, sig),
     feeImpactPct: pct(fill, land),
@@ -4526,7 +4598,8 @@ app.get('/api/live/export', function(req, res) {
   var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','BuyTipUsd','SellTipUsd','TotalTipUsd','BuyNetworkFeeUsd','SellNetworkFeeUsd','TotalNetworkFeeUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAmount','SavingsAmount','FundAfterTrade','BuySignature','SellSignature',
     'Chain','Source','TickCount','SecToFirstUpdate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','Tier1RealizedPnl','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','Tier2RealizedPnl',
     'PeakRpcPerSec','RpcRequestsInTrade','SlowRpcInTrade','SlowestReadMs','Rpc429s','BuyBuildMs','BuyLandMs','BuyConfirmChecks','BuyQueueWaitMs','SellLandMs','SellConfirmChecks','SellQueueWaitMs','SellAttempts',
-    'RentPaidUsd','RentRefundUsd','RentRefundSec','SignalPrice','MarketPriceAtLanding','SignalToFillMs','ConcentrationCheckMs','MarketMoveDuringDelayPct','FillVsSignalPct','FeeAndImpactPct'];
+    'RentPaidUsd','RentRefundUsd','RentRefundSec','SignalPrice','MarketPriceAtLanding','SignalToFillMs','ConcentrationCheckMs','MarketMoveDuringDelayPct','FillVsSignalPct','FeeAndImpactPct',
+    'SignalToSendMs','BuyPreSendMs','BuyGateWaitMs'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4546,7 +4619,8 @@ app.get('/api/live/export', function(req, res) {
       t.rpcPeakPerSec, t.rpcRequestsInTrade, csvSafe(t.rpcSlowInTrade || ''), t.rpcSlowestMs, t.rpc429s, t.buyBuildMs, t.buyLandMs, t.buyConfirmChecks, t.buyQueueWaitMs,
       t.sellLandMs, t.sellConfirmChecks, t.sellQueueWaitMs, t.sellAttempts,
       t.rentPaidUsd, t.rentRefundUsd, (typeof t.rentRefundMs === 'number') ? parseFloat((t.rentRefundMs / 1000).toFixed(1)) : '',
-      t.signalPrice, t.landPrice, t.signalToFillMs, t.concentrationMs, t.marketMovePct, t.fillVsSignalPct, t.feeImpactPct
+      t.signalPrice, t.landPrice, t.signalToFillMs, t.concentrationMs, t.marketMovePct, t.fillVsSignalPct, t.feeImpactPct,
+      t.signalToSendMs, t.buyPreSendMs, t.buyGateWaitMs
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other

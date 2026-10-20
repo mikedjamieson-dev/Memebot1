@@ -384,7 +384,14 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
 
   // The tip number and the latest blockhash do not depend on each other, so
   // they are fetched at the same time.
-  var tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), connection.getLatestBlockhash()]);
+  // If the caller already started these two reads (while the transaction was still being built),
+  // their answers are used. If that did not work out, they are simply read again here.
+  var tipAndHash = null;
+  if (options.prefetched) {
+    try { tipAndHash = await options.prefetched; } catch (e) { tipAndHash = null; }
+    if (!tipAndHash || !tipAndHash[1] || !tipAndHash[1].blockhash) tipAndHash = null;
+  }
+  if (!tipAndHash) tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), connection.getLatestBlockhash()]);
   var tipLamports = tipAndHash[0];
   var latest = tipAndHash[1];
 
@@ -480,9 +487,19 @@ async function testSelfTransferViaSender(keypair, connection, rpcUrl) {
   return sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
 }
 
+// Starts the two reads a send needs (the tip number and the latest blockhash) right now, so the
+// caller can run them while the transaction is still being built. Pass the returned promise to
+// sendAndConfirmViaSender as options.prefetched. Never rejects (a failed read is read again at send time).
+function prefetchSendParts(connection, tierName) {
+  var tier = SENDER_TIERS[tierName || 'SWQOS_ONLY'];
+  if (!tier) return Promise.resolve(null);
+  return Promise.all([fetchCurrentTipLamports(tier), connection.getLatestBlockhash()]).catch(function() { return null; });
+}
+
 module.exports = {
   sendAndConfirm,
   sendAndConfirmViaSender,
+  prefetchSendParts,
   testSelfTransfer,
   testSelfTransferViaSender,
   fetchCurrentTipLamports,
