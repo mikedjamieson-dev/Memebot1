@@ -158,6 +158,9 @@ const S = {
   liveRejectReasons: {},
   liveSessionBest: null,
   liveRentReclaimedUsd: 0,
+  // Deposits (rent) currently locked in token accounts of coins the bot bought, not yet closed.
+  // Counted as part of the fund, because they come back when the accounts are closed.
+  liveRentLockedUsd: 0,
   liveTierSales: [],
   liveLastStopTime: null,
   liveSavings: 0,
@@ -1870,8 +1873,12 @@ function liveWantsEntry(tok) {
 // Everything paper records about a token at the moment it enters, read from the
 // same pool token at the same moment, so a real position carries the same entry
 // facts as a paper one. Passed to performRealBuy and stored on the position.
-function buildLiveEntrySnapshot(tok, triggerSource) {
+function buildLiveEntrySnapshot(tok, triggerSource, timing) {
+  timing = timing || {};
   return {
+    signalPrice: timing.signalPrice || null,
+    signalAt: timing.signalAt || null,
+    concentrationMs: (timing.concentrationMs !== undefined) ? timing.concentrationMs : null,
     entryMcap: tok.mcap || 0,
     entryBuys: tok.buys || 0,
     entrySells: tok.sells || 0,
@@ -1921,6 +1928,8 @@ async function tryEnterToken(tok, freshPrice, triggerSource) {
 }
 
 async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
+  var entryCheckStartedAt = Date.now();   // when this entry decision began (the 'signal' moment)
+  var concentrationMs = null;
   if (S.tokens.size === 0) return;
   if (S.running && !S.windingDown && S.fund < 1) stopBot();
   if (!tok || !tok.mint) return;
@@ -2006,7 +2015,9 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
     if (pendingConcentrationChecks.has(tok.mint)) return;
     pendingConcentrationChecks.add(tok.mint);
+    var concT0 = Date.now();
     var concCheck = await checkWalletConcentration(tok.mint);
+    concentrationMs = Date.now() - concT0;
     pendingConcentrationChecks.delete(tok.mint);
     if (!concCheck.safe) {
       S.rejectCount++;
@@ -2056,7 +2067,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   // Live buys first, the instant every check has passed, so real money is
   // never waiting on paper's bookkeeping below. It runs in the background.
-  if (liveOk) startLiveEntry(tok, buildLiveEntrySnapshot(tok, triggerSource));
+  if (liveOk) startLiveEntry(tok, buildLiveEntrySnapshot(tok, triggerSource, { signalPrice: entryPrice, signalAt: entryCheckStartedAt, concentrationMs: concentrationMs }));
   if (!paperOk) return;
 
   var slip =parseFloat(
@@ -2459,6 +2470,7 @@ app.get('/api/state', function(req, res) {
       return c;
     }),
     liveRentReclaimedUsd: S.liveRentReclaimedUsd,
+    liveRentLockedUsd: S.liveRentLockedUsd,
     liveTierSales: S.liveTierSales,
     liveRejectCount: Object.keys(S.liveRejectReasons).reduce(function(n, k) { return n + S.liveRejectReasons[k]; }, 0),
     liveRejectReasons: S.liveRejectReasons,
@@ -2717,9 +2729,12 @@ function liveDeployedUsd() {
   return total;
 }
 
-// The fund as paper measures it: cash plus capital deployed in open positions.
+// The fund as paper measures it: cash plus capital deployed in open positions. The deposits
+// (rent) sitting in token accounts that are not closed yet are counted too: they are the
+// bot's own money and come back when the accounts are closed, so they must never make the
+// fund look smaller or trip the fund stop loss.
 function liveEffectiveFund() {
-  return S.liveFund + liveDeployedUsd();
+  return S.liveFund + liveDeployedUsd() + (S.liveRentLockedUsd || 0);
 }
 
 // Checks real fund drawdown against the configured live fund stop
@@ -3267,11 +3282,19 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
       // together. The position cannot be watched for exits until all three are
       // in, so every millisecond here is a millisecond without a stop loss.
       var postBuyT0 = Date.now();
+      // The market price the bot last saw for this coin at the moment the buy landed (for the
+      // signal-vs-fill measurement), taken before anything else is read.
+      var landedAt = Date.now();
+      var landSnap = pumpPrices[mintStr] && pumpPrices[mintStr].price > 0 ? { price: pumpPrices[mintStr].price, ageMs: landedAt - pumpPrices[mintStr].ts } : null;
       var balanceChangePromise = liveWalletModule.getRealBalanceChange(connection, result.signature, liveWalletKeypair.publicKey).then(
         function(v) { return { value: v }; }, function(e) { return { error: e }; });
       var costsPromise = readRealTxCosts(connection, result);
       var heldPromise = readHeldAfterBuy(connection, mint, mintStr, result.signature, logPrefix, platformName);
-      var postBuy = await Promise.all([balanceChangePromise, costsPromise, heldPromise]);
+      // How much of the buy was the refundable deposit for the coin's token account, read from
+      // the same transaction record as the balance change (no extra request).
+      var rentPromise = liveWalletModule.getRentFromTx(connection, result.signature, liveWalletKeypair.publicKey, mintStr).then(
+        function(v) { return { value: v }; }, function(e) { return { error: e }; });
+      var postBuy = await Promise.all([balanceChangePromise, costsPromise, heldPromise, rentPromise]);
 
       if (postBuy[0].error) {
         liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + postBuy[0].error.message, 'warn');
@@ -3289,6 +3312,15 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
           ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
       }
 
+      // The deposit is the bot's own money, locked until the account is closed. It is kept out of
+      // this trade's result (it is not a cost) and counted in the fund as locked rent instead.
+      var rentLamports = 0, rentUsd = 0;
+      if (!postBuy[0].error && !postBuy[3].error && postBuy[3].value > 0) {
+        rentLamports = postBuy[3].value;
+        rentUsd = (rentLamports / 1000000000) * SOL_PRICE_USD;
+        S.liveRentLockedUsd = parseFloat(((S.liveRentLockedUsd || 0) + rentUsd).toFixed(4));
+        liveLog(logPrefix + ' (' + platformName + ' buy): $' + rentUsd.toFixed(4) + ' of this buy is the refundable token-account deposit -- it is not counted as a trading cost and comes back when the account is closed after the sale', 'info');
+      }
       var buyCosts = postBuy[1];
       liveLog(logPrefix + ' (' + platformName + ' buy): ' + describeRealCosts(buyCosts), 'info');
 
@@ -3309,7 +3341,9 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
             name: ((S.tokens && S.tokens.get(mintStr)) || {}).n || '',
-            buyImpactUsd: (typeof changeUsd === 'number') ? changeUsd : null,
+            buyImpactUsd: (typeof changeUsd === 'number') ? changeUsd + rentUsd : null,
+            rentUsd: rentUsd,
+            rentLamports: rentLamports,
             sellImpactUsd: 0,
             sellImpactKnown: true,
             buyTipUsd: buyCosts.tipUsd,
@@ -3325,6 +3359,14 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             slPct: S.liveStopLossPct,
             // Timing facts for the CSV: when the node-request count for this trade starts, how long the
             // buy took to build and to land, and how many confirm checks it was part of.
+            // Signal-versus-fill facts: the price the bot decided on, when, how long the wallet-concentration
+            // check took, and the market price at the moment the buy landed.
+            signalPriceUsd: (entrySnapshot && entrySnapshot.signalPrice) || null,
+            signalAt: (entrySnapshot && entrySnapshot.signalAt) || null,
+            concentrationMs: (entrySnapshot && entrySnapshot.concentrationMs !== undefined) ? entrySnapshot.concentrationMs : null,
+            landPriceUsd: landSnap ? landSnap.price : null,
+            landPriceAgeMs: landSnap ? landSnap.ageMs : null,
+            landedAt: landedAt,
             rpcFrom: buyT0,
             buyBuildMs: buyBuiltMs,
             buyLandMs: buySendMs,
@@ -3899,6 +3941,23 @@ function liveRpcExtras(pos) {
   };
 }
 
+// Signal versus fill, for the Live CSV: the price the bot decided on, the market price at the
+// moment the buy landed, and the price it actually got. The move between the first two is what
+// the delay cost (or gave); the gap between the last two is the fee and the bot's own price impact.
+function liveSignalExtras(pos) {
+  var sig = pos.signalPriceUsd, land = pos.landPriceUsd, fill = pos.entryPriceUsd;
+  var pct = function(a, b) { return (a > 0 && b > 0) ? parseFloat(((a / b - 1) * 100).toFixed(2)) : null; };
+  return {
+    signalPrice: sig > 0 ? sig : null,
+    landPrice: land > 0 ? land : null,
+    signalToFillMs: (pos.signalAt && pos.landedAt) ? pos.landedAt - pos.signalAt : null,
+    concentrationMs: (pos.concentrationMs !== undefined) ? pos.concentrationMs : null,
+    marketMovePct: pct(land, sig),
+    fillVsSignalPct: pct(fill, sig),
+    feeImpactPct: pct(fill, land),
+  };
+}
+
 // The paper-CSV facts for a real position, read from its entry snapshot and its
 // per-tick tracking. Shared by a normal close and a "Closed outside bot" record.
 function liveCloseExtras(pos) {
@@ -3955,7 +4014,7 @@ function liveCloseExtras(pos) {
 // puts the SOL that comes back into the Live Fund, which is where it was taken from.
 // failed: token accounts that would not close (address -> details). leftover: accounts that still
 // hold tokens but belong to no tracked position (address -> details), refreshed on every scan.
-var rentSweep = { busy: false, dirty: true, lastRun: 0, failed: new Map(), leftover: new Map() };
+var rentSweep = { busy: false, dirty: true, lastRun: 0, failed: new Map(), leftover: new Map(), closing: new Set() };
 
 // Errors that say nothing about the account itself -- the RPC node was busy, behind, or
 // did not know the recent blockhash yet. These are tried again instead of being given up on.
@@ -3966,6 +4025,102 @@ function isTemporaryRentError(msg) {
 // Errors raised before anything was sent, so one more immediate attempt can never double-close.
 function isUnsentRentError(msg) {
   return /blockhash not found|overloaded|rate limit|too many requests|429|502|503|fetch failed/i.test(String(msg || ''));
+}
+
+// -- CLOSE THE TOKEN ACCOUNT RIGHT AFTER THE SALE --------------------
+// The deposit (rent) a buy locks in the coin's token account stays locked only while the account
+// exists. Once a coin's last sale has landed the account is empty, so it is closed straight away
+// in its OWN transaction (never part of a sell, so a failed close can never block an exit) and the
+// deposit goes back into the Live Fund within a second or two instead of waiting for the
+// once-a-minute cleanup below, which stays as the backup for anything this misses.
+async function closeSoldAccountNow(pos, closedRec, prefix) {
+  if (!liveWalletKeypair || !liveWalletModule) return;
+  if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) { rentSweep.dirty = true; return; }
+  var mintStr = pos.mint;
+  rentSweep.closing.add(mintStr);
+  var t0 = Date.now();
+  try {
+    var run = function() { return closeSoldAccountInner(pos, closedRec, prefix, t0); };
+    if (rpcgate) await rpcgate.runWithPriority(2, run); else await run();
+  } catch (e) {
+    rentSweep.dirty = true;
+    liveLog(prefix + ': could not close the empty token account for ' + mintStr + ' right away (' + String((e && e.message) || e).slice(0, 100) + ') -- the one-minute cleanup will take care of it', 'warn');
+  } finally {
+    rentSweep.closing.delete(mintStr);
+  }
+}
+
+async function closeSoldAccountInner(pos, closedRec, prefix, t0) {
+  var web3 = require('@solana/web3.js');
+  var spl = require('@solana/spl-token');
+  var connection = liveWalletModule.getConnection();
+  var owner = liveWalletKeypair.publicKey;
+  var mint = new web3.PublicKey(pos.mint);
+  var program = await liveWalletModule.getTokenProgramId(connection, mint);
+  var ata = await spl.getAssociatedTokenAddress(mint, owner, false, program);
+  var pause = function(ms) { return new Promise(function(r) { setTimeout(r, ms); }); };
+
+  // Is there anything to close? (If the account is already gone, the cleanup or an earlier try
+  // got it, and whoever closed it already put the deposit back.)
+  var before = await connection.getAccountInfo(ata);
+  if (!before) {
+    // Not counted as an asset any more: it cannot be closed, so there is nothing to wait for.
+    S.liveRentLockedUsd = Math.max(0, parseFloat(((S.liveRentLockedUsd || 0) - (pos.rentUsd || 0)).toFixed(4)));
+    return;
+  }
+  // The node answering may be a moment behind the sale that just landed, so a balance that still
+  // shows tokens is read again a couple of times before the account is left for the cleanup.
+  var holdsTokens = false;
+  for (var look = 0; look < 3; look++) {
+    holdsTokens = false;
+    try { var bal = await connection.getTokenAccountBalance(ata); holdsTokens = !!(bal && bal.value && bal.value.amount !== '0'); } catch (eb) { holdsTokens = false; }
+    if (!holdsTokens) break;
+    if (look < 2) await pause(700);
+  }
+  if (holdsTokens) {
+    // Tokens are still in it (a sale left some behind): nothing is closed, the position's own
+    // records and the cleanup deal with it.
+    rentSweep.dirty = true;
+    return;
+  }
+
+  var sig = null, closedBySomeone = false;
+  for (var attempt = 1; attempt <= 3 && !sig && !closedBySomeone; attempt++) {
+    try {
+      var tx = new web3.Transaction();
+      tx.add(spl.createCloseAccountInstruction(ata, owner, owner, [], program));
+      sig = await web3.sendAndConfirmTransaction(connection, tx, [liveWalletKeypair], { commitment: 'confirmed', skipPreflight: true });
+    } catch (e) {
+      // A try that seemed to fail may still have landed: look before trying again.
+      var now = undefined;
+      try { now = await connection.getAccountInfo(ata); } catch (e2) { now = undefined; }
+      if (now === null) { closedBySomeone = true; break; }
+      if (attempt === 3) throw e;
+      await pause(1200 * attempt);
+    }
+  }
+
+  var changeLamports = null;
+  if (sig) {
+    for (var r = 0; r < 3 && changeLamports === null; r++) {
+      try { changeLamports = await liveWalletModule.getRealBalanceChange(connection, sig, owner); }
+      catch (e3) { await pause(1200); }
+    }
+  }
+  var estimated = false;
+  if (changeLamports === null) { changeLamports = before.lamports - 5000; estimated = true; }
+
+  var usd = (changeLamports / 1000000000) * SOL_PRICE_USD;
+  S.liveFund = parseFloat((S.liveFund + usd).toFixed(4));
+  S.liveRentReclaimedUsd = parseFloat((S.liveRentReclaimedUsd + usd).toFixed(4));
+  S.liveRentLockedUsd = Math.max(0, parseFloat(((S.liveRentLockedUsd || 0) - (pos.rentUsd || 0)).toFixed(4)));
+  if (closedRec) {
+    closedRec.rentRefundUsd = parseFloat(usd.toFixed(4));
+    closedRec.rentRefundMs = Date.now() - t0;
+  }
+  saveLiveHistory();
+  liveLog(prefix + ': closed the empty token account for ' + pos.mint + ' right after the sale -- got back ' + (changeLamports / 1000000000).toFixed(6) + ' SOL ($' + usd.toFixed(4) + ' after the network fee' + (estimated ? ', ESTIMATED' : '') + ') in ' + (Date.now() - t0) + 'ms -- added to the Live Fund (now $' + S.liveFund.toFixed(4) + ')', 'win');
+  checkLiveFundStopLoss();
 }
 
 async function sweepEmptyTokenAccounts() {
@@ -3996,6 +4151,8 @@ async function sweepEmptyTokenAccounts() {
         }
         if (info.tokenAmount.amount !== '0') return;
         if (info.mint === WSOL || skipMints.has(info.mint) || info.state === 'frozen') return;
+        // Being closed right now by the close-after-sale step: not touched twice.
+        if (rentSweep.closing.has(info.mint)) return;
         // Given up on for good only if it failed for a real reason; a temporary failure is retried.
         var prevFail = rentSweep.failed.get(a.pubkey.toString());
         if (prevFail && !prevFail.retry) return;
@@ -4034,6 +4191,7 @@ async function sweepEmptyTokenAccounts() {
       if (change === null) change = group.reduce(function(n, c) { return n + c.lamports; }, 0) - 5000;
       closed += group.length;
       netLamports += change;
+      S.liveRentLockedUsd = Math.max(0, (S.liveRentLockedUsd || 0) - (group.reduce(function(n, c) { return n + c.lamports; }, 0) / 1000000000) * SOL_PRICE_USD);
     };
     for (var i = 0; i < candidates.length; i += 8) {
       var batch = candidates.slice(i, i + 8);
@@ -4229,6 +4387,8 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // The paper-CSV facts: entry snapshot, per-tick tracking, close-time state.
       Object.assign(closedRec, liveCloseExtras(pos));
       Object.assign(closedRec, liveRpcExtras(pos));
+      Object.assign(closedRec, liveSignalExtras(pos));
+      closedRec.rentPaidUsd = pos.rentUsd || 0;
       closedRec.fees = (closedRec.totalTipUsd !== null && closedRec.totalFeeUsd !== null) ? parseFloat((closedRec.totalTipUsd + closedRec.totalFeeUsd).toFixed(6)) : null;
 
       // Win/loss counters, same rule as paper: the trade's overall result above
@@ -4302,6 +4462,8 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       liveLog(prefix + ': position closed for real, removed from tracking' + closeResultText + ' -- ' + pos.mint, 'win');
       rentSweep.dirty = true;
       saveLiveHistory();
+      // Take the deposit back now, in its own transaction, without holding anything else up.
+      closeSoldAccountNow(pos, closedRec, prefix).catch(function() {});
     } else if (outcome.ok && outcome.result && outcome.result.outcome === 'PENDING') {
       // Submitted but not yet known to have landed or expired. Remember the
       // exact transaction so the next attempt checks it BEFORE selling anything.
@@ -4363,7 +4525,8 @@ app.get('/api/live/export', function(req, res) {
   // The rest are paper's columns that live did not have, added at the end.
   var cols = ['Name','Mint','Platform','Size','EntryPrice','ExitPrice','PnL','PnLPct','PeakGainPct','CloseReason','OpenedAt','ClosedAt','ClosedDate','HoldTimeSec','TakeProfitMode','StopLossPct','BuyImpactUsd','TotalSellProceedsUsd','BuyTipUsd','SellTipUsd','TotalTipUsd','BuyNetworkFeeUsd','SellNetworkFeeUsd','TotalNetworkFeeUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1ProceedsUsd','Tier1ClosedAt','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2ProceedsUsd','Tier2ClosedAt','FundAmount','SavingsAmount','FundAfterTrade','BuySignature','SellSignature',
     'Chain','Source','TickCount','SecToFirstUpdate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','Tier1RealizedPnl','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','Tier2RealizedPnl',
-    'PeakRpcPerSec','RpcRequestsInTrade','SlowRpcInTrade','SlowestReadMs','Rpc429s','BuyBuildMs','BuyLandMs','BuyConfirmChecks','BuyQueueWaitMs','SellLandMs','SellConfirmChecks','SellQueueWaitMs','SellAttempts'];
+    'PeakRpcPerSec','RpcRequestsInTrade','SlowRpcInTrade','SlowestReadMs','Rpc429s','BuyBuildMs','BuyLandMs','BuyConfirmChecks','BuyQueueWaitMs','SellLandMs','SellConfirmChecks','SellQueueWaitMs','SellAttempts',
+    'RentPaidUsd','RentRefundUsd','RentRefundSec','SignalPrice','MarketPriceAtLanding','SignalToFillMs','ConcentrationCheckMs','MarketMoveDuringDelayPct','FillVsSignalPct','FeeAndImpactPct'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4381,7 +4544,9 @@ app.get('/api/live/export', function(req, res) {
       csvSafe(t.priceHistory || ''), t.entryLiquidityUsd, t.tier1RealizedPnl, csvSafe(t.entryTrigger || ''), csvSafe(t.windingDownAtClose || ''),
       t.secondsSinceDiscovery, csvSafe(t.entryDevBought || ''), csvSafe(t.entryDevSold || ''), csvSafe(t.hasDevWalletData || ''), t.tier2RealizedPnl,
       t.rpcPeakPerSec, t.rpcRequestsInTrade, csvSafe(t.rpcSlowInTrade || ''), t.rpcSlowestMs, t.rpc429s, t.buyBuildMs, t.buyLandMs, t.buyConfirmChecks, t.buyQueueWaitMs,
-      t.sellLandMs, t.sellConfirmChecks, t.sellQueueWaitMs, t.sellAttempts
+      t.sellLandMs, t.sellConfirmChecks, t.sellQueueWaitMs, t.sellAttempts,
+      t.rentPaidUsd, t.rentRefundUsd, (typeof t.rentRefundMs === 'number') ? parseFloat((t.rentRefundMs / 1000).toFixed(1)) : '',
+      t.signalPrice, t.landPrice, t.signalToFillMs, t.concentrationMs, t.marketMovePct, t.fillVsSignalPct, t.feeImpactPct
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other

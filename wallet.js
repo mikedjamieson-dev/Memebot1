@@ -232,6 +232,28 @@ async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr) {
   return { amount: String(amt.amount || '0'), decimals: amt.decimals || 0, fromTx: true };
 }
 
+// Reads, from a confirmed BUY transaction's own record, how much SOL it locked into the
+// wallet's token account for one mint (the refundable deposit, "rent"). This is the exact
+// amount the token account holds above zero after the buy minus what it held before, so it is
+// 0 when the account already existed. Uses the same shared transaction read as the fee and
+// balance-change functions, so it adds no extra request. Throws if the record cannot be read.
+async function getRentFromTx(connection, signature, ownerPublicKey, mintStr) {
+  var tx = await readTransactionShared(connection, signature);
+  if (!tx || !tx.meta || !tx.meta.preBalances || !tx.meta.postBalances) {
+    var err = new Error('Could not read the transaction record yet -- it may not be indexed');
+    err.code = 'TX_NOT_FOUND';
+    throw err;
+  }
+  var owner = ownerPublicKey.toString();
+  var mine = (tx.meta.postTokenBalances || []).filter(function(b) {
+    return b && b.mint === mintStr && b.owner === owner && typeof b.accountIndex === 'number';
+  });
+  if (mine.length === 0) return 0;
+  var idx = mine[0].accountIndex;
+  var change = tx.meta.postBalances[idx] - (tx.meta.preBalances[idx] || 0);
+  return change > 0 ? change : 0;
+}
+
 // Determines which token standard a specific mint actually uses --
 // the original Token Program, or the newer Token-2022 -- by reading
 // its real on-chain owner field rather than assuming. Confirmed
@@ -307,6 +329,7 @@ module.exports = {
   getTradingWalletBalance,
   getTokenBalance,
   getTokensFromTx,
+  getRentFromTx,
   getTokenProgramId,
   getRealTransactionFee,
   getRealBalanceChange,
