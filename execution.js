@@ -165,6 +165,29 @@ async function readBlockHeightShared(connection) {
   return heightShared.inflight;
 }
 
+// The latest blockhash, kept for BLOCKHASH_MAX_AGE_MS and shared by every buy and sell that
+// needs one in that time. A blockhash stays valid for about a minute, so one that is 2 seconds old
+// is as good as a new one -- but reading it takes a request and a wait, and a buy or sell that is
+// ready to go should not have to stand in line for it. Reads in flight are shared too.
+var BLOCKHASH_MAX_AGE_MS = 2000;
+var hashShared = { at: 0, value: null, inflight: null };
+async function getBlockhashShared(connection) {
+  if (hashShared.value && (Date.now() - hashShared.at) < BLOCKHASH_MAX_AGE_MS) return hashShared.value;
+  if (hashShared.inflight) return hashShared.inflight;
+  hashShared.inflight = connection.getLatestBlockhash().then(function(h) {
+    hashShared.value = h;
+    hashShared.at = Date.now();
+    hashShared.inflight = null;
+    return h;
+  }, function(e) {
+    hashShared.inflight = null;
+    throw e;
+  });
+  return hashShared.inflight;
+}
+// Forgotten after any send the network refused, so the next try reads a fresh one.
+function forgetBlockhash() { hashShared.value = null; hashShared.at = 0; }
+
 // The request gate (counts requests, keeps them under the plan limit, puts sells first).
 // If the file is missing everything still works, just without those protections.
 var gateModule;
@@ -196,6 +219,7 @@ function runWithGate(prio, fn) {
 var watchers = new Map();      // signature -> [watcher, ...]
 var pollerRunning = false;
 var STATUS_CHUNK = 200;
+var HEIGHT_CHECK_AFTER_MS = 20000;
 
 function allWatchers() {
   var out = [];
@@ -274,7 +298,11 @@ async function runPoller() {
 
       // The status is checked often so a landed transaction is noticed quickly; the
       // (slower-changing) block height only needs checking every couple of seconds.
-      if (Date.now() - lastHeightCheck >= 2000 && allWatchers().length > 0) {
+      // A transaction can only be past its window after about a minute, and every watcher is settled
+      // as PENDING at 30 seconds, so the block height is not read at all in the first 20 seconds.
+      var oldestAgeMs = 0;
+      allWatchers().forEach(function(w) { var a = Date.now() - w.startTime; if (a > oldestAgeMs) oldestAgeMs = a; });
+      if (oldestAgeMs >= HEIGHT_CHECK_AFTER_MS && Date.now() - lastHeightCheck >= 2000 && allWatchers().length > 0) {
         lastHeightCheck = Date.now();
         var currentBlockHeight = await runWithGate(prio, function() { return readBlockHeightShared(connection); });
         var overdue = allWatchers().filter(function(w) { return currentBlockHeight > w.latest.lastValidBlockHeight; });
@@ -391,7 +419,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     try { tipAndHash = await options.prefetched; } catch (e) { tipAndHash = null; }
     if (!tipAndHash || !tipAndHash[1] || !tipAndHash[1].blockhash) tipAndHash = null;
   }
-  if (!tipAndHash) tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), connection.getLatestBlockhash()]);
+  if (!tipAndHash) tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]);
   var tipLamports = tipAndHash[0];
   var latest = tipAndHash[1];
 
@@ -439,10 +467,12 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     }, 10000);
     json = await res.json();
   } catch (sendErr) {
+    forgetBlockhash();
     sendErr.mayHaveSent = true;
     throw sendErr;
   }
   if (json.error) {
+    forgetBlockhash();
     var err = new Error('Sender rejected the submission: ' + JSON.stringify(json.error));
     err.code = 'SENDER_REJECTED';
     throw err;
@@ -457,6 +487,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     throw err2;
   }
   var outcome = await pollForOutcome(signature, connection, latest, options);
+  if (outcome.outcome !== 'CONFIRMED') forgetBlockhash();
   outcome.tipLamports = tipLamports;
   return outcome;
 }
@@ -493,7 +524,7 @@ async function testSelfTransferViaSender(keypair, connection, rpcUrl) {
 function prefetchSendParts(connection, tierName) {
   var tier = SENDER_TIERS[tierName || 'SWQOS_ONLY'];
   if (!tier) return Promise.resolve(null);
-  return Promise.all([fetchCurrentTipLamports(tier), connection.getLatestBlockhash()]).catch(function() { return null; });
+  return Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]).catch(function() { return null; });
 }
 
 module.exports = {

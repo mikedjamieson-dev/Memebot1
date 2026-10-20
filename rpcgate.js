@@ -48,36 +48,50 @@ const queue = [];       // waiting requests
 let seq = 0;
 let pumpTimer = null;
 
+// The Free plan allows ONE sendTransaction per second through the normal node address (the fast
+// "Sender" address the bot's buys and sells use is separate and is not counted here). Two of these
+// sent in the same second are refused with a 429, and the refusals made the bot pause its buys. So
+// the gate lets only one through per SEND_SPACING_MS and holds the next one back.
+const SEND_SPACING_MS = Math.max(0, parseInt(process.env.RPC_SEND_SPACING_MS, 10) || 1100);
+let lastSendTxAt = 0;
+
 function pump() {
   if (pumpTimer) { clearTimeout(pumpTimer); pumpTimer = null; }
   const now = Date.now();
   while (sent.length && now - sent[0] >= 1000) sent.shift();
   while (queue.length) {
     // The best waiting request: lowest priority number; a long wait moves a request up one
-    // place every 5 seconds so nothing waits forever.
-    let bi = 0, bScore = Infinity, bSeq = Infinity;
+    // place every 5 seconds so nothing waits forever. A sendTransaction that came too soon after
+    // the last one is skipped over for now (it does not hold up anything else).
+    let bi = -1, bScore = Infinity, bSeq = Infinity;
     for (let i = 0; i < queue.length; i++) {
       const q = queue[i];
+      if (q.method === 'sendTransaction' && now - lastSendTxAt < SEND_SPACING_MS) continue;
       const score = q.prio - Math.floor((now - q.at) / 5000);
       if (score < bScore || (score === bScore && q.seq < bSeq)) { bi = i; bScore = score; bSeq = q.seq; }
     }
+    if (bi === -1) break;
     const pick = queue[bi];
     const cap = pick.prio === 0 ? LIMIT_PER_SEC : (LIMIT_PER_SEC - SELL_RESERVE);
     const w = Math.min(pick.weight, cap);
     if (sent.length + w > cap) break;
     queue.splice(bi, 1);
     for (let k = 0; k < w; k++) sent.push(now);
+    if (pick.method === 'sendTransaction') lastSendTxAt = now;
     pick.resolve(now - pick.at);
   }
   if (queue.length) {
-    const wake = Math.max(5, (sent[0] + 1000) - Date.now() + 2);
-    pumpTimer = setTimeout(pump, wake);
+    let wake = sent.length ? (sent[0] + 1000) - Date.now() + 2 : 50;
+    if (queue.some(function(q) { return q.method === 'sendTransaction'; })) {
+      wake = Math.min(wake, (lastSendTxAt + SEND_SPACING_MS) - Date.now() + 2);
+    }
+    pumpTimer = setTimeout(pump, Math.max(5, wake));
   }
 }
 
-function acquire(prio, weight) {
+function acquire(prio, weight, method) {
   return new Promise(function(resolve) {
-    queue.push({ prio: prio, weight: weight || 1, at: Date.now(), seq: seq++, resolve: resolve });
+    queue.push({ prio: prio, weight: weight || 1, method: method || '', at: Date.now(), seq: seq++, resolve: resolve });
     pump();
   });
 }
@@ -158,16 +172,18 @@ function gatedFetch(url, init) {
   const store = als.getStore();
   let prio = store && typeof store.prio === 'number' ? store.prio : null;
   if (prio === null) prio = METHOD_PRIO[info.method] !== undefined ? METHOD_PRIO[info.method] : 2;
-  return acquire(prio, info.weight).then(function(waited) {
+  return acquire(prio, info.weight, info.method).then(function(waited) {
     const startedAt = Date.now();
     const b = bucketFor(startedAt);
     b.n += info.weight;
     b.kinds[info.method] = (b.kinds[info.method] || 0) + info.weight;
-    if (waited > b.maxWait) b.maxWait = waited;
-    if (prio === 0 && waited > b.maxWait0) b.maxWait0 = waited;
+    // A send held back on purpose (one per second) is not "the node is slow", so it is not counted as waiting.
+    const holdIsOnPurpose = info.method === 'sendTransaction';
+    if (!holdIsOnPurpose && waited > b.maxWait) b.maxWait = waited;
+    if (!holdIsOnPurpose && prio === 0 && waited > b.maxWait0) b.maxWait0 = waited;
     totals.requests += info.weight;
     totals.byKind[info.method] = (totals.byKind[info.method] || 0) + info.weight;
-    if (store) { store.requests += info.weight; if (waited > store.maxWait) store.maxWait = waited; }
+    if (store) { store.requests += info.weight; if (!holdIsOnPurpose && waited > store.maxWait) store.maxWait = waited; }
     const done = function(status, failed) {
       const lat = Date.now() - startedAt;
       const bb = bucketFor(Date.now());

@@ -663,6 +663,26 @@ var bqDeliberateStop = false;
 var bqPingI = null;
 var bqTradeLogCount = 0;
 
+// Feed delay samples (ms between a trade's block time and the bot receiving it), newest 400 kept.
+var feedLagSamples = [];
+function noteFeedLag(ms) {
+  feedLagSamples.push(ms);
+  if (feedLagSamples.length > 400) feedLagSamples.shift();
+}
+function feedLagSummary() {
+  if (feedLagSamples.length === 0) return null;
+  var s = feedLagSamples.slice().sort(function(a, b) { return a - b; });
+  var at = function(p) { return s[Math.min(s.length - 1, Math.floor(s.length * p))]; };
+  return { samples: s.length, medianMs: at(0.5), p90Ms: at(0.9), minMs: s[0], maxMs: s[s.length - 1] };
+}
+var feedLagTimer = setInterval(function() {
+  try {
+    var sum = feedLagSummary();
+    if (sum && sum.samples >= 20) log('FEED DELAY (last ' + sum.samples + ' trades): median ' + sum.medianMs + 'ms, 90% under ' + sum.p90Ms + 'ms (block time has 1-second steps, so read this to the nearest second)', 'info');
+  } catch (e) { /* measurement only */ }
+}, 60000);
+if (feedLagTimer.unref) feedLagTimer.unref();
+
 var BQ_SOURCES = [
   {
     src: 'PUMP', chain: 'solana', protocolFamily: 'Pumpfun', protocol: 'pump',
@@ -749,6 +769,12 @@ function handleBQMessage(msg) {
   if (msg.type === 'ka') return;
   if (msg.type === 'error') {
     log('BQ ERROR: ' + JSON.stringify(msg.payload || msg).slice(0, 200), 'warn');
+    // The swap stream refused to start while it was asking for the block time: start it again without.
+    if (msg.id === 'trades_all' && !bqNoBlockField && pumpWs && pumpWs.readyState === WebSocket.OPEN) {
+      bqNoBlockField = true;
+      log('BQ: the swap stream was refused with the block-time field -- starting it again without it (prices keep flowing; the feed delay measurement is off)', 'warn');
+      try { sendTradesSubscription(); } catch (eRe) { log('BQ: could not restart the swap stream: ' + eRe.message, 'warn'); }
+    }
     return;
   }
   if (msg.type === 'complete') return;
@@ -796,16 +822,25 @@ function sendBQSubscriptions() {
   // verified live by Bitquery against real trade counts before this fix.
   // Market cap floor (CFG.BQ_SUBSCRIBE_MIN_MCAP) is deliberately left
   // unchanged - not touching trade quality just to see more volume.
+  sendTradesSubscription();
+}
+
+// The swap stream. It also asks for each trade's block time, used only to measure how far behind the
+// chain the feed runs. If Bitquery ever refuses that field (the stream answers with an error), the
+// stream is started again without it, straight away, so prices never stop flowing because of a
+// measurement. Setting FEED_LAG=off in Render leaves the field out from the start.
+var bqNoBlockField = (process.env.FEED_LAG === 'off');
+function sendTradesSubscription() {
   var protocols = BQ_SOURCES.map(function(s) { return '"' + s.protocol + '"'; }).join(', ');
   pumpWs.send(JSON.stringify({
     id: 'trades_all',
     type: 'start',
     payload: {
-      query: 'subscription { Trading { Trades(where: {Pair: {Market: {Protocol: {in: [' + protocols + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Trader { Address } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd } } }'
+      query: 'subscription { Trading { Trades(where: {Pair: {Market: {Protocol: {in: [' + protocols + ']}}}, Supply: {MarketCap: {gt: ' + CFG.BQ_SUBSCRIBE_MIN_MCAP + '}}}) { Side Trader { Address } AmountsInUsd { Base Quote } Supply { MarketCap TotalSupply } Pair { Token { Address } Market { ProtocolFamily } } PriceInUsd' + (bqNoBlockField ? '' : ' Block { Time }') + ' } } }'
     }
   }));
   bqTradeSubActive = true;
-  log('Swap stream active - all sources', 'pump');
+  log('Swap stream active - all sources' + (bqNoBlockField ? ' (feed delay measurement off)' : ''), 'pump');
 }
 
 function findArgValue(args, candidateNames) {
@@ -1024,6 +1059,18 @@ function handleSwap(t) {
 
   var protocolFamily = (pair.Market || {}).ProtocolFamily || '';
 
+  // FEED DELAY: how long after the trade was written into its block the bot received it. The block
+  // time only has whole-second steps, so one reading can be off by up to a second; the median over
+  // many trades (logged once a minute) is the number to read. Measurement only -- nothing depends on it.
+  var feedLagMs = null;
+  try {
+    var blockTimeMs = (t.Block && t.Block.Time) ? Date.parse(t.Block.Time) : NaN;
+    if (isFinite(blockTimeMs)) {
+      var lag = Date.now() - blockTimeMs;
+      if (lag > -5000 && lag < 600000) { feedLagMs = lag; noteFeedLag(lag); }
+    }
+  } catch (eLag) { feedLagMs = null; }
+
   var mcap = 0;
   if (t.Supply && t.Supply.MarketCap) {
     var mc = parseFloat(t.Supply.MarketCap);
@@ -1046,6 +1093,7 @@ function handleSwap(t) {
       poolTok.price = priceUsd;
       poolTok.mcap = mcap;
     }
+    if (feedLagMs !== null) poolTok.lastSwapLagMs = feedLagMs;
 
     // Data collection only - not used as a filter yet. Every current
     // entry-time metric (buy/sell counts, BSR, mcap, pool size) was
@@ -1233,7 +1281,7 @@ function handleSwap(t) {
     }
 
     // Live positions are checked on this same tick, same moment as paper.
-    handleLiveTick(mint, priceUsd);
+    handleLiveTick(mint, priceUsd, false, feedLagMs);
   }
 }
 
@@ -1879,6 +1927,7 @@ function buildLiveEntrySnapshot(tok, triggerSource, timing) {
     signalPrice: timing.signalPrice || null,
     signalAt: timing.signalAt || null,
     concentrationMs: (timing.concentrationMs !== undefined) ? timing.concentrationMs : null,
+    feedLagMs: (typeof tok.lastSwapLagMs === 'number') ? tok.lastSwapLagMs : null,
     entryMcap: tok.mcap || 0,
     entryBuys: tok.buys || 0,
     entrySells: tok.sells || 0,
@@ -3430,6 +3479,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             signalPriceUsd: (entrySnapshot && entrySnapshot.signalPrice) || null,
             signalAt: (entrySnapshot && entrySnapshot.signalAt) || null,
             concentrationMs: (entrySnapshot && entrySnapshot.concentrationMs !== undefined) ? entrySnapshot.concentrationMs : null,
+            feedLagMs: (entrySnapshot && typeof entrySnapshot.feedLagMs === 'number') ? entrySnapshot.feedLagMs : null,
             landPriceUsd: landSnap ? landSnap.price : null,
             landPriceAgeMs: landSnap ? landSnap.ageMs : null,
             landedAt: landedAt,
@@ -3668,7 +3718,7 @@ async function executeRealSell(req, res, platformName, buildSellFn) {
 // The check itself is synchronous and cheap; the real sell runs in the
 // background so the feed is never held up. pos.busy stops two sells
 // ever running on the same position at once.
-function handleLiveTick(mint, priceUsd, fromChain) {
+function handleLiveTick(mint, priceUsd, fromChain, feedLagMs) {
   if (!S.liveOpen || S.liveOpen.length === 0) return;
   for (var i = 0; i < S.liveOpen.length; i++) {
     var pos = S.liveOpen[i];
@@ -3698,6 +3748,9 @@ function handleLiveTick(mint, priceUsd, fromChain) {
     var priceBeforeThisTick = pos.currentPriceUsd || pos.entryPriceUsd;
 
     pos.currentPriceUsd = priceUsd;
+    pos.lastTickAt = Date.now();          // when this price reached the bot, and from where (for the exit-timing columns)
+    pos.lastTickFromChain = !!fromChain;
+    pos.lastTickLagMs = (typeof feedLagMs === 'number') ? feedLagMs : null;
     if (priceUsd > (pos.peakPriceUsd || 0)) pos.peakPriceUsd = priceUsd;
 
     // Per-tick tracking, the same things paper records on every tick it accepts:
@@ -4024,6 +4077,7 @@ function liveSignalExtras(pos) {
     signalToSendMs: (pos.signalAt && pos.sendStartedAt) ? pos.sendStartedAt - pos.signalAt : null,
     buyPreSendMs: (typeof pos.buyPreSendMs === 'number') ? pos.buyPreSendMs : null,
     buyGateWaitMs: (typeof pos.buyGateWaitMs === 'number') ? pos.buyGateWaitMs : null,
+    feedLagMs: (typeof pos.feedLagMs === 'number') ? pos.feedLagMs : null,
     marketMovePct: pct(land, sig),
     fillVsSignalPct: pct(fill, sig),
     feeImpactPct: pct(fill, land),
@@ -4365,6 +4419,12 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 
     liveLog(prefix + ': ' + kindText + ' | ' + pos.mint + ' | entry $' + pos.entryPriceUsd.toFixed(10) + ' -> $' + priceUsd.toFixed(10) + ' (' + (pct * 100).toFixed(1) + '%) -- selling for real', logType);
 
+    // For the exit-timing columns: the price that triggered this exit, when, how old that price
+    // was, and which feed it came from. Kept from the first decision, not a retry's.
+    if (!pos.exitTrigger) {
+      pos.exitTrigger = { at: Date.now(), price: priceUsd, pct: pct, tickAgeMs: pos.lastTickAt ? Date.now() - pos.lastTickAt : null, fromChain: !!pos.lastTickFromChain, feedLagMs: (typeof pos.lastTickLagMs === 'number') ? pos.lastTickLagMs : null };
+    }
+
     // Exits that must get out accept any price on pump.fun (95% slippage). Tier and
     // fixed take-profit sells keep the normal 15%. LetsBonk keeps its existing value:
     // its slippage unit is not verified, so it is not changed here.
@@ -4409,6 +4469,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       }
       bookLiveSavings(pos, tierLegPnl, prefix, action.kind === 'TIER1' ? 'tier 1 sale' : 'tier 2 sale');
       partialResult = { partial: true };
+      pos.exitTrigger = null;   // a tier sale is not the final exit; the final exit records its own
       // Plain-words result of this tier sale, also kept in a short list the dashboard
       // always shows (the main log scrolls past it within a minute when trading is busy).
       var tierLabel = action.kind === 'TIER1' ? 'TIER 1' : 'TIER 2';
@@ -4461,6 +4522,22 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       Object.assign(closedRec, liveRpcExtras(pos));
       Object.assign(closedRec, liveSignalExtras(pos));
       closedRec.rentPaidUsd = pos.rentUsd || 0;
+      // Exit timing: how old the triggering price was, where it came from, how long the sale took
+      // from decision to confirmed, and what the sale brought in compared with the tokens' value at
+      // the trigger price (includes the ~1.5% pump fee, so about -1.5% is the floor, not a delay cost).
+      try {
+        var et = pos.exitTrigger;
+        if (et) {
+          closedRec.exitTriggerPrice = et.price;
+          closedRec.exitTickAgeMs = et.tickAgeMs;
+          closedRec.exitFeedSource = et.fromChain ? 'chain' : 'trade feed';
+          closedRec.exitFeedLagMs = et.feedLagMs;
+          closedRec.exitDecisionToSaleMs = Date.now() - et.at;
+          var soldTokens = Number(outcome.soldAmount) / Math.pow(10, pos.tokenDecimals || 0);
+          var expectedUsd = soldTokens * et.price;
+          if (expectedUsd > 0 && typeof outcome.realImpactUsd === 'number') closedRec.exitSaleVsTriggerPct = parseFloat(((outcome.realImpactUsd / expectedUsd - 1) * 100).toFixed(2));
+        }
+      } catch (eExit) { /* the extra columns are optional */ }
       closedRec.fees = (closedRec.totalTipUsd !== null && closedRec.totalFeeUsd !== null) ? parseFloat((closedRec.totalTipUsd + closedRec.totalFeeUsd).toFixed(6)) : null;
 
       // Win/loss counters, same rule as paper: the trade's overall result above
@@ -4587,7 +4664,88 @@ app.get('/api/rpc-stats', function(req, res) {
     last60s: rpcgate.statsBetween(now - 60000, now),
     last10min: rpcgate.statsBetween(now - 600000, now),
     pauses: rpcgate.episodesSince(0).slice(-20),
+    feedDelay: feedLagSummary(),
   });
+});
+
+// Read-only: shows the Pump SDK that is really installed on the server -- version, everything
+// it exports, and the source of its buy/sell builders and how they treat cashback coins.
+// Plain text, no changes made. Add ?fn=name to print one function in full.
+app.get('/api/sdk-info', function(req, res) {
+  var out = [];
+  function pkgInfo(name) {
+    try {
+      var path = require('path'), fs = require('fs');
+      var dir = path.dirname(require.resolve(name));
+      for (var i = 0; i < 6; i++) {
+        var f = path.join(dir, 'package.json');
+        if (fs.existsSync(f)) {
+          var j = JSON.parse(fs.readFileSync(f, 'utf8'));
+          if (j && j.version) return j.name + ' ' + j.version;
+        }
+        dir = path.dirname(dir);
+      }
+    } catch (e) { return 'not readable: ' + e.message; }
+    return 'version not found';
+  }
+  function load(name) { try { return require(name); } catch (e) { return null; } }
+  function src(fn) { try { return Function.prototype.toString.call(fn); } catch (e) { return '(source not readable)'; } }
+  function members(obj) {
+    var names = {};
+    try { Object.getOwnPropertyNames(obj).forEach(function(n) { names[n] = 1; }); } catch (e) {}
+    try {
+      var proto = Object.getPrototypeOf(obj);
+      if (proto && proto !== Object.prototype && proto !== Function.prototype) {
+        Object.getOwnPropertyNames(proto).forEach(function(n) { names[n] = 1; });
+      }
+    } catch (e) {}
+    return Object.keys(names).filter(function(n) { return n !== 'constructor' && n !== 'prototype' && n !== 'length' && n !== 'name'; }).sort();
+  }
+  try {
+    var main = load('@pump-fun/pump-sdk');
+    var legacy = load('pump-sdk-legacy');
+    out.push('MAIN SDK:   ' + pkgInfo('@pump-fun/pump-sdk') + (main ? '' : '  (did not load)'));
+    out.push('LEGACY SDK: ' + (legacy ? pkgInfo('pump-sdk-legacy') : 'not installed'));
+    out.push('');
+    if (!main) return res.type('text/plain').send(out.join('\n'));
+    var want = String(req.query.fn || '').trim();
+    if (want) {
+      var found = false;
+      [['exports', main], ['PUMP_SDK', main.PUMP_SDK], ['OnlinePumpSdk.prototype', main.OnlinePumpSdk && main.OnlinePumpSdk.prototype]].forEach(function(pair) {
+        var o = pair[1];
+        if (o && typeof o[want] === 'function') { found = true; out.push('== ' + pair[0] + '.' + want + ' ==\n' + src(o[want]) + '\n'); }
+      });
+      if (!found) out.push('no function called ' + want);
+      return res.type('text/plain').send(out.join('\n'));
+    }
+    out.push('EXPORTS: ' + Object.keys(main).sort().join(', '));
+    out.push('');
+    if (main.PUMP_SDK) out.push('PUMP_SDK members: ' + members(main.PUMP_SDK).join(', '));
+    if (main.OnlinePumpSdk) out.push('OnlinePumpSdk members: ' + members(main.OnlinePumpSdk.prototype).join(', '));
+    out.push('');
+    var pat = /(buy|sell|cashback|v2|v3|bondingcurve|fee|quote)/i;
+    var seen = {};
+    function dump(label, o, names) {
+      names.forEach(function(n) {
+        if (!pat.test(n)) return;
+        var f; try { f = o[n]; } catch (e) { return; }
+        if (typeof f !== 'function') return;
+        var key = label + '.' + n;
+        if (seen[key]) return;
+        seen[key] = 1;
+        var t = src(f);
+        if (t.length > 6000) t = t.slice(0, 6000) + '\n... (cut; use ?fn=' + n + ' for the whole thing)';
+        out.push('== ' + key + ' ==\n' + t + '\n');
+      });
+    }
+    if (main.PUMP_SDK) dump('PUMP_SDK', main.PUMP_SDK, members(main.PUMP_SDK));
+    dump('exports', main, Object.keys(main));
+    if (main.OnlinePumpSdk) dump('OnlinePumpSdk', main.OnlinePumpSdk.prototype, members(main.OnlinePumpSdk.prototype));
+    res.type('text/plain').send(out.join('\n'));
+  } catch (e) {
+    out.push('error: ' + e.message);
+    res.type('text/plain').send(out.join('\n'));
+  }
 });
 
 // Live CSV: real closed trades only, built from S.liveClosed. PnL is the
@@ -4599,7 +4757,8 @@ app.get('/api/live/export', function(req, res) {
     'Chain','Source','TickCount','SecToFirstUpdate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','Tier1RealizedPnl','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','Tier2RealizedPnl',
     'PeakRpcPerSec','RpcRequestsInTrade','SlowRpcInTrade','SlowestReadMs','Rpc429s','BuyBuildMs','BuyLandMs','BuyConfirmChecks','BuyQueueWaitMs','SellLandMs','SellConfirmChecks','SellQueueWaitMs','SellAttempts',
     'RentPaidUsd','RentRefundUsd','RentRefundSec','SignalPrice','MarketPriceAtLanding','SignalToFillMs','ConcentrationCheckMs','MarketMoveDuringDelayPct','FillVsSignalPct','FeeAndImpactPct',
-    'SignalToSendMs','BuyPreSendMs','BuyGateWaitMs'];
+    'SignalToSendMs','BuyPreSendMs','BuyGateWaitMs','FeedLagMs',
+    'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4620,7 +4779,8 @@ app.get('/api/live/export', function(req, res) {
       t.sellLandMs, t.sellConfirmChecks, t.sellQueueWaitMs, t.sellAttempts,
       t.rentPaidUsd, t.rentRefundUsd, (typeof t.rentRefundMs === 'number') ? parseFloat((t.rentRefundMs / 1000).toFixed(1)) : '',
       t.signalPrice, t.landPrice, t.signalToFillMs, t.concentrationMs, t.marketMovePct, t.fillVsSignalPct, t.feeImpactPct,
-      t.signalToSendMs, t.buyPreSendMs, t.buyGateWaitMs
+      t.signalToSendMs, t.buyPreSendMs, t.buyGateWaitMs, t.feedLagMs,
+      t.exitTriggerPrice, t.exitTickAgeMs, csvSafe(t.exitFeedSource || ''), t.exitFeedLagMs, t.exitDecisionToSaleMs, t.exitSaleVsTriggerPct
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
