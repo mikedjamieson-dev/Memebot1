@@ -72,7 +72,11 @@ function pump() {
     }
     if (bi === -1) break;
     const pick = queue[bi];
-    const cap = pick.prio === 0 ? LIMIT_PER_SEC : (LIMIT_PER_SEC - SELL_RESERVE);
+    // Sells may use every slot. A buy's fast-lane requests (the coin's accounts, the blockhash) may
+    // use all but one, so a buy that is about to be sent does not wait for the second to roll over
+    // behind background polling. Everything else stops short of the sell reserve.
+    const cap = pick.prio <= 0 ? LIMIT_PER_SEC
+      : (pick.prio < 1 ? LIMIT_PER_SEC - Math.min(1, SELL_RESERVE) : LIMIT_PER_SEC - SELL_RESERVE);
     const w = Math.min(pick.weight, cap);
     if (sent.length + w > cap) break;
     queue.splice(bi, 1);

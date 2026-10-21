@@ -223,7 +223,7 @@ function feedLog(msg, type) {
   if (S.liveTradingEnabled || (S.liveOpen && S.liveOpen.length > 0)) liveLog(msg, type);
 }
 
-// pumpfun.js writes its own notices (v3 in use, fallback to 3.2.0, switch-back) into the live log.
+// pumpfun.js writes its own notices into the live log.
 try { require('./pumpfun').setLogger(function(m, t) { liveLog(m, t || 'info'); }); } catch (e) { /* logging only */ }
 
 // The request gate: every request to the Helius node is counted, kept under the plan limit,
@@ -2909,11 +2909,6 @@ function invalidateBuilderCaches() {
   try { require('./letsbonk').clearCaches(); } catch (e) {}
 }
 
-// Tells pumpfun.js what the chain said about a trade it built, so a rejected v3 trade can
-// switch the bot back to the proven 3.2.0 builders (only trades built with v3 count).
-function notePumpTradeResult(instructions, result) {
-  try { require('./pumpfun').noteTradeResult(instructions, result && result.outcome, result && result.error); } catch (e) { /* never affects a trade */ }
-}
 
 // While automatic live trading is on (or a real position is still open), keep
 // the things a real buy or sell needs already in memory -- the current tip
@@ -2997,16 +2992,18 @@ async function checkPumpSdkVersion() {
 setTimeout(function() {
   try {
     var st = require('./pumpfun').getStatus();
-    liveLog('PUMP SDK: buys and sells use ' + (st.v3Enabled ? 'v3' : 'the proven 3.2.0 builders') + ' from ' + PUMP_SDK_PACKAGE + ' ' + readInstalledPackageVersion(PUMP_SDK_PACKAGE) + ', backup ' + (st.hasBackupSdk ? readInstalledPackageVersion('pump-sdk-legacy', '@pump-fun/pump-sdk') + ' ready' : 'NOT installed'), st.hasBackupSdk ? 'info' : 'warn');
+    liveLog('PUMP SDK: buys and sells are built by ' + PUMP_SDK_PACKAGE + ' ' + readInstalledPackageVersion(PUMP_SDK_PACKAGE) + ' (v3 for normal coins, the regular builders for cashback coins)' + (st.sdkOk ? '' : ' -- BUT it is missing ' + st.missing.join(', ')), st.sdkOk ? 'info' : 'warn');
   } catch (e) { /* status line only */ }
 }, 6000);
+setTimeout(function() {
+  try { liveLog('SENDER: buys and sells are submitted through ' + require('./execution').senderHost() + ' (change with SENDER_REGION in Render: ewr, slc, lon, fra, ams, sg, tyo, global)', 'info'); } catch (e) { /* status line only */ }
+}, 6500);
 setTimeout(checkPumpSdkVersion, 30000);
 setInterval(checkPumpSdkVersion, PUMP_SDK_CHECK_MS);
 
 // -- SDK PROBE (read-only, nothing is traded) ---------------------
-// Trading uses @pump-fun/pump-sdk (4.1.0, v3 instructions); the older 3.2.0 copy
-// is installed as "pump-sdk-legacy" and is the automatic backup. This page only
-// prints what the main SDK contains and which versions are installed.
+// Trading uses @pump-fun/pump-sdk only (v3 instructions, plus its regular builders for
+// cashback coins). This page only prints what the SDK contains and which version is installed.
 //   /api/sdk-probe                      -> version, export names, method names + sizes
 //   /api/sdk-probe?fn=sellInstructions  -> that function's source (part 1)
 //   /api/sdk-probe?fn=NAME&part=2       -> the next 12000 characters
@@ -3016,7 +3013,6 @@ app.get('/api/sdk-probe', function(req, res) {
     var PART = 12000;
     var next = require(PUMP_SDK_PACKAGE);
     var nextVersion = readInstalledPackageVersion(PUMP_SDK_PACKAGE);
-    var backupVersion = readInstalledPackageVersion('pump-sdk-legacy', '@pump-fun/pump-sdk');
     var holders = [['export', next], ['PumpSdk.prototype', next.PumpSdk && next.PumpSdk.prototype], ['OnlinePumpSdk.prototype', next.OnlinePumpSdk && next.OnlinePumpSdk.prototype]];
     var fnName = req.query && req.query.fn ? String(req.query.fn) : '';
     if (fnName) {
@@ -3033,7 +3029,7 @@ app.get('/api/sdk-probe', function(req, res) {
       var parts = Math.ceil(src.length / PART);
       return res.send(PUMP_SDK_PACKAGE + ' ' + nextVersion + ' | ' + where + '.' + fnName + ' | ' + src.length + ' characters | part ' + part + ' of ' + parts + '\n\n' + (chunk || '(no more text -- that was the last part)'));
     }
-    var out = ['Main SDK version (trading uses this): ' + nextVersion, 'Backup SDK version (automatic fallback): ' + backupVersion, 'Pump trade status: ' + JSON.stringify(require('./pumpfun').getStatus()), ''];
+    var out = ['SDK version (all trading uses this): ' + nextVersion, 'Pump trade status: ' + JSON.stringify(require('./pumpfun').getStatus()), ''];
     holders.forEach(function(h) {
       if (!h[1]) { out.push(h[0] + ': not present', ''); return; }
       var names = h[0] === 'export' ? Object.keys(h[1]) : Object.getOwnPropertyNames(h[1]);
@@ -3099,7 +3095,7 @@ async function resolveSavingsInFlight(connection) {
   };
   var st = await readStatus();
   if (!st) {
-    var height = await connection.getBlockHeight();
+    var height = await require('./execution').readBlockHeightShared(connection);
     if (!f.lastValidBlockHeight || height <= f.lastValidBlockHeight) {
       if (Date.now() - f.at > 600000) savingsWarnOnce('inflight', 'LIVE SAVINGS: transfer ' + f.signature + ' is still unresolved after 10 minutes -- NOT sending again until it is settled; check it on a block explorer');
       return false;
@@ -3376,7 +3372,6 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
 
     liveLog(logPrefix + ' (' + platformName + ' buy) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
-    notePumpTradeResult(instructions, result);
 
     // PENDING (sent, never seen to land) and UNKNOWN (the reply was lost) do not prove the
     // buy failed. The wallet is checked; if the tokens are there the buy landed and is
@@ -3671,7 +3666,6 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
 
     liveLog(logPrefix + ' (' + platformName + ' sell) result: ' + result.outcome + ' | signature: ' + result.signature +
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
-    notePumpTradeResult(instructions, result);
     if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     var settled = null;
@@ -3972,9 +3966,14 @@ async function resolvePendingSellInner(pos, platformName) {
     };
     var st1 = await readStatus();
     if (!st1) {
-      var height = await connection.getBlockHeight();
       var deadline = ps.result.lastValidBlockHeight;
-      var expired = deadline ? height > deadline : (Date.now() - ps.at) > 90000;
+      // The window of a sell cannot have closed sooner than about 60 seconds after it was sent. This
+      // check only starts after the sell was already watched for 30 seconds, so the block height is
+      // only worth reading once another 20 seconds have passed. It is also shared with every other check.
+      var expired;
+      if (!deadline) expired = (Date.now() - ps.at) > 90000;
+      else if ((Date.now() - ps.at) < 20000) expired = false;
+      else expired = (await require('./execution').readBlockHeightShared(connection)) > deadline;
       if (!expired) {
         if (Date.now() - ps.at > 300000) {
           liveLog(prefix + ': ' + sig + ' still unresolved after 5 minutes -- no longer waiting on it; the real balance check will prevent a double sale', 'warn');
@@ -4215,7 +4214,11 @@ async function closeSoldAccountInner(pos, closedRec, prefix, t0) {
     try {
       var tx = new web3.Transaction();
       tx.add(spl.createCloseAccountInstruction(ata, owner, owner, [], program));
-      sig = await web3.sendAndConfirmTransaction(connection, tx, [liveWalletKeypair], { commitment: 'confirmed', skipPreflight: true });
+      // Sent and watched through the bot's own shared confirm checker (one batched status request for
+      // everything in flight), not the library's, which asked for the block height every second.
+      var closeSent = await require('./execution').sendAndConfirm(tx, liveWalletKeypair, connection, { skipPreflight: true });
+      if (closeSent.outcome !== 'CONFIRMED') throw new Error('close transaction ' + closeSent.outcome + (closeSent.error ? ' -- ' + closeSent.error : '') + ' (was not confirmed)');
+      sig = closeSent.signature;
     } catch (e) {
       // A try that seemed to fail may still have landed: look before trying again.
       var now = undefined;
@@ -4295,7 +4298,9 @@ async function sweepEmptyTokenAccounts() {
     var sendOnce = async function(group) {
       var tx = new web3.Transaction();
       group.forEach(function(c) { tx.add(spl.createCloseAccountInstruction(c.pubkey, owner, owner, [], c.program)); });
-      return web3.sendAndConfirmTransaction(connection, tx, [liveWalletKeypair], { commitment: 'confirmed' });
+      var sweepSent = await require('./execution').sendAndConfirm(tx, liveWalletKeypair, connection, {});
+      if (sweepSent.outcome !== 'CONFIRMED') throw new Error('close transaction ' + sweepSent.outcome + (sweepSent.error ? ' -- ' + sweepSent.error : '') + ' (was not confirmed)');
+      return sweepSent.signature;
     };
     var sendClose = async function(group) {
       var sig;
@@ -4703,9 +4708,7 @@ app.get('/api/sdk-info', function(req, res) {
   }
   try {
     var main = load('@pump-fun/pump-sdk');
-    var legacy = load('pump-sdk-legacy');
-    out.push('MAIN SDK:   ' + pkgInfo('@pump-fun/pump-sdk') + (main ? '' : '  (did not load)'));
-    out.push('LEGACY SDK: ' + (legacy ? pkgInfo('pump-sdk-legacy') : 'not installed'));
+    out.push('SDK:        ' + pkgInfo('@pump-fun/pump-sdk') + (main ? '' : '  (did not load)'));
     out.push('');
     if (!main) return res.type('text/plain').send(out.join('\n'));
     var want = String(req.query.fn || '').trim();

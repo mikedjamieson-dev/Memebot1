@@ -128,10 +128,30 @@ function extractApiKey(rpcUrl) {
   return match[1];
 }
 
+// Where buys and sells are submitted. Helius runs Sender in several places; their docs say a
+// backend program should use the regional address closest to it (plain http), and the single
+// global https address is for browsers. The bot runs in Ohio, so the default is Newark.
+// SENDER_REGION in Render changes it without a code push: ewr (Newark), slc (Salt Lake City),
+// lon (London), fra (Frankfurt), ams (Amsterdam), sg (Singapore), tyo (Tokyo), global (the old
+// https address), or a full address starting with http.
+var SENDER_REGIONS = { ewr: 1, slc: 1, lon: 1, fra: 1, ams: 1, sg: 1, tyo: 1 };
+var SENDER_GLOBAL = 'https://sender.helius-rpc.com/fast';
+function senderBase() {
+  var raw = String(process.env.SENDER_REGION || '').trim();
+  var v = raw.toLowerCase();
+  if (v === 'global') return SENDER_GLOBAL;
+  if (SENDER_REGIONS[v]) return 'http://' + v + '-sender.helius-rpc.com/fast';
+  if (/^https?:\/\/[^\s?]+$/i.test(raw)) return raw;
+  return 'http://ewr-sender.helius-rpc.com/fast';
+}
+function senderHost() {
+  return senderBase().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+}
+
 function buildSenderUrl(rpcUrl, tier) {
   var apiKey = extractApiKey(rpcUrl);
   var query = 'api-key=' + apiKey + (tier.queryParam ? '&' + tier.queryParam : '');
-  return 'https://sender.helius-rpc.com/fast?' + query;
+  return senderBase() + '?' + query;
 }
 
 function describe(label, value) {
@@ -219,7 +239,10 @@ function runWithGate(prio, fn) {
 var watchers = new Map();      // signature -> [watcher, ...]
 var pollerRunning = false;
 var STATUS_CHUNK = 200;
-var HEIGHT_CHECK_AFTER_MS = 20000;
+// A transaction's window (its blockhash) cannot close sooner than about 60 seconds after the
+// blockhash was read: it lasts 150 blocks and the chain makes at most about 2.5 blocks a second.
+// So the block height tells nothing before then, and it is not read at all until a watcher is this old.
+var HEIGHT_CHECK_AFTER_MS = 50000;
 
 function allWatchers() {
   var out = [];
@@ -298,8 +321,8 @@ async function runPoller() {
 
       // The status is checked often so a landed transaction is noticed quickly; the
       // (slower-changing) block height only needs checking every couple of seconds.
-      // A transaction can only be past its window after about a minute, and every watcher is settled
-      // as PENDING at 30 seconds, so the block height is not read at all in the first 20 seconds.
+      // A transaction can only be past its window after about a minute (see HEIGHT_CHECK_AFTER_MS), so
+      // the block height is not read before a watcher is 50 seconds old.
       var oldestAgeMs = 0;
       allWatchers().forEach(function(w) { var a = Date.now() - w.startTime; if (a > oldestAgeMs) oldestAgeMs = a; });
       if (oldestAgeMs >= HEIGHT_CHECK_AFTER_MS && Date.now() - lastHeightCheck >= 2000 && allWatchers().length > 0) {
@@ -384,12 +407,20 @@ function pollForOutcome(signature, connection, latest, options) {
 // Normal path: send through the regular connection, same as before.
 async function sendAndConfirm(transaction, keypair, connection, options) {
   options = options || {};
-  var latest = await connection.getLatestBlockhash();
+  var latest = await getBlockhashShared(connection);
   transaction.recentBlockhash = latest.blockhash;
   transaction.feePayer = keypair.publicKey;
   transaction.sign(keypair);
-  var signature = await connection.sendRawTransaction(transaction.serialize());
-  return pollForOutcome(signature, connection, latest, options);
+  var signature;
+  try {
+    signature = await connection.sendRawTransaction(transaction.serialize(), options.skipPreflight ? { skipPreflight: true } : undefined);
+  } catch (sendErr) {
+    forgetBlockhash();
+    throw sendErr;
+  }
+  var outcome = await pollForOutcome(signature, connection, latest, options);
+  if (outcome.outcome !== 'CONFIRMED') forgetBlockhash();
+  return outcome;
 }
 
 // Priority path: adds a tip (real, current amount) and a priority
@@ -531,6 +562,8 @@ module.exports = {
   sendAndConfirm,
   sendAndConfirmViaSender,
   prefetchSendParts,
+  readBlockHeightShared,
+  senderHost,
   testSelfTransfer,
   testSelfTransferViaSender,
   fetchCurrentTipLamports,
