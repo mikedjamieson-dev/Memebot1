@@ -446,15 +446,33 @@ function recheckExpiredBans() {
 var SOLANA_INCINERATOR = '1nc1nerator11111111111111111111111111111111';
 var pendingConcentrationChecks = new Set();
 
+// The holder check is a web request to Bitquery, and it is the longest wait before a buy. Opening a
+// fresh secure connection for each check cost a good part of that wait, so one connection is kept open
+// and reused, and a light request every 20 seconds keeps it from going idle. The query and the
+// decision are exactly the same as before.
+var bitqueryAgent = new (require('https').Agent)({ keepAlive: true, keepAliveMsecs: 20000, maxSockets: 4 });
+async function bitqueryPost(bodyText) {
+  var opts = { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BITQUERY_TOKEN }, body: bodyText };
+  try {
+    return await fetch('https://streaming.bitquery.io/graphql', Object.assign({ agent: bitqueryAgent }, opts));
+  } catch (e) {
+    // A kept connection the other side already closed fails at once. Ask again on a new connection
+    // rather than let the check be skipped.
+    return await fetch('https://streaming.bitquery.io/graphql', opts);
+  }
+}
+function warmBitqueryConnection() {
+  if (!BITQUERY_TOKEN) return;
+  fetch('https://streaming.bitquery.io/graphql', { method: 'HEAD', agent: bitqueryAgent }).then(function(r) { return r.text(); }).catch(function() {});
+}
+setTimeout(warmBitqueryConnection, 3000);
+setInterval(warmBitqueryConnection, 20000);
+
 async function checkWalletConcentration(mint) {
   if (!BITQUERY_TOKEN) return { safe: true, reason: 'no token' };
   try {
     var query = 'query { Solana { BalanceUpdates(limit: {count: 5} orderBy: {descendingByField: "BalanceUpdate_Holding_maximum"} where: {BalanceUpdate: {Currency: {MintAddress: {is: "' + mint + '"}}}, Transaction: {Result: {Success: true}}}) { BalanceUpdate { Account { Address } Holding: PostBalance(maximum: Block_Slot) } } } }';
-    var res = await fetch('https://streaming.bitquery.io/graphql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + BITQUERY_TOKEN },
-      body: JSON.stringify({ query: query }),
-    });
+    var res = await bitqueryPost(JSON.stringify({ query: query }));
     if (!res.ok) return { safe: true, reason: 'query failed, allowing through' };
     var data = await res.json();
     var updates = data && data.data && data.data.Solana && data.data.Solana.BalanceUpdates;
@@ -2996,7 +3014,7 @@ setTimeout(function() {
   } catch (e) { /* status line only */ }
 }, 6000);
 setTimeout(function() {
-  try { liveLog('SENDER: buys and sells are submitted through ' + require('./execution').senderHost() + ' (change with SENDER_REGION in Render: ewr, slc, lon, fra, ams, sg, tyo, global)', 'info'); } catch (e) { /* status line only */ }
+  try { liveLog('SENDER: buys and sells are submitted through ' + require('./execution').senderHost() + ' (set SENDER_REGION in Render to pick one: ewr, slc, lon, fra, ams, sg, tyo, global, or ab for the test)', 'info'); } catch (e) { /* status line only */ }
 }, 6500);
 setTimeout(checkPumpSdkVersion, 30000);
 setInterval(checkPumpSdkVersion, PUMP_SDK_CHECK_MS);
@@ -3481,6 +3499,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             rpcFrom: buyT0,
             buyBuildMs: buyBuiltMs,
             buyLandMs: buySendMs,
+            buySenderHost: result.senderHost || null,
             buyGateWaitMs: gateWaitMs,
             buyPreSendMs: buySendT0 - buyT0,
             sendStartedAt: buySendT0,
@@ -4056,6 +4075,8 @@ function liveRpcExtras(pos) {
     buyConfirmChecks: nz(pos.buyConfirmChecks),
     buyQueueWaitMs: nz(pos.buyQueueWaitMs),
     sellLandMs: nz(pos.sellLandMs),
+    buySenderHost: nz(pos.buySenderHost),
+    sellSenderHost: nz(pos.sellSenderHost),
     sellConfirmChecks: nz(pos.sellConfirmChecks),
     sellQueueWaitMs: nz(pos.sellQueueWaitMs),
     sellAttempts: pos.sellAttemptsTotal || 0,
@@ -4446,6 +4467,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     if (confirmed) {
       pos.sellFails = 0; pos.zeroFails = 0; pos.stuck = false;
       pos.sellLandMs = Math.max(pos.sellLandMs || 0, outcome.sendMs || 0);
+      if (outcome.result && outcome.result.senderHost) pos.sellSenderHost = outcome.result.senderHost;
       pos.sellConfirmChecks = (pos.sellConfirmChecks || 0) + (outcome.confirmChecks || 0);
       pos.sellQueueWaitMs = Math.max(pos.sellQueueWaitMs || 0, outcome.queueWaitMs || 0);
       if (typeof outcome.realImpactUsd === 'number') pos.sellImpactUsd = (pos.sellImpactUsd || 0) + outcome.realImpactUsd;
@@ -4761,7 +4783,8 @@ app.get('/api/live/export', function(req, res) {
     'PeakRpcPerSec','RpcRequestsInTrade','SlowRpcInTrade','SlowestReadMs','Rpc429s','BuyBuildMs','BuyLandMs','BuyConfirmChecks','BuyQueueWaitMs','SellLandMs','SellConfirmChecks','SellQueueWaitMs','SellAttempts',
     'RentPaidUsd','RentRefundUsd','RentRefundSec','SignalPrice','MarketPriceAtLanding','SignalToFillMs','ConcentrationCheckMs','MarketMoveDuringDelayPct','FillVsSignalPct','FeeAndImpactPct',
     'SignalToSendMs','BuyPreSendMs','BuyGateWaitMs','FeedLagMs',
-    'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct'];
+    'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
+    'BuySenderHost','SellSenderHost'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4783,7 +4806,8 @@ app.get('/api/live/export', function(req, res) {
       t.rentPaidUsd, t.rentRefundUsd, (typeof t.rentRefundMs === 'number') ? parseFloat((t.rentRefundMs / 1000).toFixed(1)) : '',
       t.signalPrice, t.landPrice, t.signalToFillMs, t.concentrationMs, t.marketMovePct, t.fillVsSignalPct, t.feeImpactPct,
       t.signalToSendMs, t.buyPreSendMs, t.buyGateWaitMs, t.feedLagMs,
-      t.exitTriggerPrice, t.exitTickAgeMs, csvSafe(t.exitFeedSource || ''), t.exitFeedLagMs, t.exitDecisionToSaleMs, t.exitSaleVsTriggerPct
+      t.exitTriggerPrice, t.exitTickAgeMs, csvSafe(t.exitFeedSource || ''), t.exitFeedLagMs, t.exitDecisionToSaleMs, t.exitSaleVsTriggerPct,
+      csvSafe(t.buySenderHost || ''), csvSafe(t.sellSenderHost || '')
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other

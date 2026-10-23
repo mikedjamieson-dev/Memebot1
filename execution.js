@@ -134,18 +134,27 @@ function extractApiKey(rpcUrl) {
 // SENDER_REGION in Render changes it without a code push: ewr (Newark), slc (Salt Lake City),
 // lon (London), fra (Frankfurt), ams (Amsterdam), sg (Singapore), tyo (Tokyo), global (the old
 // https address), or a full address starting with http.
+// "ab" (the default for now) is a test: every send picks Newark or the global address at random, and
+// the Live CSV records which one each buy and sell used, so the two can be compared in the same market.
 var SENDER_REGIONS = { ewr: 1, slc: 1, lon: 1, fra: 1, ams: 1, sg: 1, tyo: 1 };
 var SENDER_GLOBAL = 'https://sender.helius-rpc.com/fast';
+var SENDER_NEWARK = 'http://ewr-sender.helius-rpc.com/fast';
 function senderBase() {
   var raw = String(process.env.SENDER_REGION || '').trim();
   var v = raw.toLowerCase();
+  if (v === '' || v === 'ab') return Math.random() < 0.5 ? SENDER_NEWARK : SENDER_GLOBAL;
   if (v === 'global') return SENDER_GLOBAL;
   if (SENDER_REGIONS[v]) return 'http://' + v + '-sender.helius-rpc.com/fast';
   if (/^https?:\/\/[^\s?]+$/i.test(raw)) return raw;
-  return 'http://ewr-sender.helius-rpc.com/fast';
+  return SENDER_NEWARK;
+}
+function hostOf(url) {
+  return String(url || '').replace(/^https?:\/\//i, '').replace(/[\/?].*$/, '');
 }
 function senderHost() {
-  return senderBase().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  var v = String(process.env.SENDER_REGION || '').trim().toLowerCase();
+  if (v === '' || v === 'ab') return 'TEST: ' + hostOf(SENDER_NEWARK) + ' and ' + hostOf(SENDER_GLOBAL) + ' take turns at random';
+  return hostOf(senderBase());
 }
 
 function buildSenderUrl(rpcUrl, tier) {
@@ -480,6 +489,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
 
   var serialized = transaction.serialize();
   var senderUrl = buildSenderUrl(rpcUrl, tier);
+  var senderUsed = hostOf(senderUrl);
   var body = {
     jsonrpc: '2.0',
     id: 1,
@@ -520,6 +530,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   var outcome = await pollForOutcome(signature, connection, latest, options);
   if (outcome.outcome !== 'CONFIRMED') forgetBlockhash();
   outcome.tipLamports = tipLamports;
+  outcome.senderHost = senderUsed;
   return outcome;
 }
 
