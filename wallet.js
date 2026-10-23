@@ -210,14 +210,29 @@ function readTransactionShared(connection, signature) {
   return promise;
 }
 
+// A transaction can be heard to have landed (the node's push message, see execution.js) a few
+// tens of milliseconds before the node that serves reads can hand over its record. A record that is
+// not there yet is asked for again a few times, a fraction of a second apart, before it is given up
+// on. When the record is there at once (the usual case) nothing is waited for.
+var TX_READ_RETRY_MS = [200, 300, 500, 800];
+async function readTransactionRetried(connection, signature) {
+  var tx = await readTransactionShared(connection, signature);
+  for (var i = 0; i < TX_READ_RETRY_MS.length && (!tx || !tx.meta); i++) {
+    await new Promise(function(resolve) { setTimeout(resolve, TX_READ_RETRY_MS[i]); });
+    tx = await readTransactionShared(connection, signature);
+  }
+  return tx;
+}
+
 // Reads, from a confirmed transaction's own record, how many tokens of one mint the
 // wallet held AFTER that transaction. This is exact for that transaction and does not
 // depend on which RPC node answers a balance question a moment after the trade.
 // Returns { amount, decimals, fromTx: true }. If the transaction is found but lists no
 // balance for this mint, the answer is a real zero (nothing was delivered). Throws if the
 // transaction cannot be read yet.
-async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr) {
-  var tx = await readTransactionShared(connection, signature);
+async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr, singleTry) {
+  // singleTry: ask once and say so at once if the record is not there (used where something else can be tried next).
+  var tx = singleTry ? await readTransactionShared(connection, signature) : await readTransactionRetried(connection, signature);
   if (!tx || !tx.meta) {
     var err = new Error('Could not read the transaction record yet -- it may not be indexed');
     err.code = 'TX_NOT_FOUND';
@@ -238,7 +253,7 @@ async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr) {
 // 0 when the account already existed. Uses the same shared transaction read as the fee and
 // balance-change functions, so it adds no extra request. Throws if the record cannot be read.
 async function getRentFromTx(connection, signature, ownerPublicKey, mintStr) {
-  var tx = await readTransactionShared(connection, signature);
+  var tx = await readTransactionRetried(connection, signature);
   if (!tx || !tx.meta || !tx.meta.preBalances || !tx.meta.postBalances) {
     var err = new Error('Could not read the transaction record yet -- it may not be indexed');
     err.code = 'TX_NOT_FOUND';
@@ -290,7 +305,7 @@ async function getTokenProgramId(connection, mint) {
 // the fee in lamports. Throws if the transaction can't be found
 // (e.g. called too soon after confirmation, before it's indexed).
 async function getRealTransactionFee(connection, signature) {
-  var tx = await readTransactionShared(connection, signature);
+  var tx = await readTransactionRetried(connection, signature);
   if (!tx || !tx.meta || tx.meta.fee === undefined) {
     var err = new Error('Could not read the real fee for this transaction -- it may not be indexed yet');
     err.code = 'FEE_NOT_FOUND';
@@ -307,7 +322,7 @@ async function getRealTransactionFee(connection, signature) {
 // movements out of the same wallet -- more accurate than summing
 // separate estimated pieces by hand. Returns lamports.
 async function getRealBalanceChange(connection, signature, publicKey) {
-  var tx = await readTransactionShared(connection, signature);
+  var tx = await readTransactionRetried(connection, signature);
   if (!tx || !tx.meta || !tx.meta.preBalances || !tx.meta.postBalances) {
     var err = new Error('Could not read the real balance change for this transaction -- it may not be indexed yet');
     err.code = 'BALANCE_CHANGE_NOT_FOUND';

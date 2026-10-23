@@ -2821,6 +2821,9 @@ app.post('/api/live/test-raydiumcpmm-quote', async function(req, res) {
 function liveDeployedUsd() {
   var total = 0;
   (S.liveOpen || []).forEach(function(p) {
+    // A position whose buy cost has not been taken off the fund yet is not counted as deployed:
+    // counting it would add its cost on top of a fund that still holds that money.
+    if (p.bookkeepingPending) return;
     var frac = 1;
     if (p.startTokenAmountRaw && p.tokenAmountRaw) {
       var s0 = Number(p.startTokenAmountRaw), s1 = Number(p.tokenAmountRaw);
@@ -2937,6 +2940,8 @@ async function warmLiveExecution() {
   if (!S.liveTradingEnabled && S.liveOpen.length === 0) return;
   try {
     require('./execution').warmTipCache();
+    // The connection that tells the bot the moment a buy or sell lands is opened ahead of time.
+    require('./execution').warmLandingSocket(process.env[liveWalletModule.LIVE_RPC_ENV]);
     require('./pumpfun').warmCaches(liveWalletModule.getConnection()).catch(function() {});
   } catch (e) { /* warming is only a speed-up; a real trade still works without it */ }
 }
@@ -3264,10 +3269,37 @@ async function readHeldAfterBuy(connection, mint, mintStr, signature, logPrefix,
   var owner = liveWalletKeypair.publicKey;
   var lastErr = null;
   var sawZero = false;
+  var hasRecord = !!signature && !/^recovered-/.test(String(signature));
   for (var i = 0; i < 8; i++) {
     if (i > 0) await new Promise(function(resolve) { setTimeout(resolve, 400); });
     try {
-      var bal = await liveWalletModule.getTokenBalance(connection, mint, owner);
+      var bal;
+      if (i === 0 && hasRecord) {
+        // First look: the wallet's token balance AND the buy transaction's own record are asked at the
+        // same time, and the first one to show tokens is used. The record is a request the bookkeeping
+        // makes anyway (it is shared, so this adds none). Either one on its own can be a moment behind
+        // right after a landing; together the position is opened as soon as either is ready.
+        bal = await new Promise(function(resolve) {
+          var open = 2, balErr = null, balZero = false;
+          var settle = function() {
+            open--;
+            if (open === 0) resolve({ none: true, err: balErr, zero: balZero });
+          };
+          liveWalletModule.getTokenBalance(connection, mint, owner).then(function(b) {
+            if (b && parseFloat(b.amount) > 0) resolve({ ok: b });
+            else { balZero = true; settle(); }
+          }, function(e) { balErr = e; settle(); });
+          liveWalletModule.getTokensFromTx(connection, signature, owner, mintStr, true).then(function(t) {
+            if (t && parseFloat(t.amount) > 0) resolve({ ok: t, fromRecord: true });
+            else settle();
+          }, function() { settle(); });
+        });
+        if (bal.ok) return { value: bal.ok };
+        if (bal.err) throw bal.err;
+        bal = bal.zero ? { amount: '0' } : null;
+      } else {
+        bal = await liveWalletModule.getTokenBalance(connection, mint, owner);
+      }
       if (bal && parseFloat(bal.amount) > 0) {
         if (i > 0) liveLog(logPrefix + ' (' + platformName + ' buy): the token balance showed up after ' + i + ' re-read' + (i > 1 ? 's' : '') + ' -- the first read was behind', 'info');
         return { value: bal };
@@ -3405,11 +3437,11 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
     if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
     if (result.outcome === 'CONFIRMED') {
-      // The three reads below (what the buy cost the wallet, the tip and fee,
-      // and how many tokens arrived) do not depend on each other, so they run
-      // together. The position cannot be watched for exits until all three are
-      // in, so every millisecond here is a millisecond without a stop loss.
-      var postBuyT0 = Date.now();
+      // Three reads follow a confirmed buy: what the buy cost the wallet, the tip and fee, and how
+      // many tokens arrived. They start together. The position is opened THE MOMENT the token count is
+      // known, because that is all the stop loss and the exits need; the money bookkeeping (fund,
+      // costs, deposit) is applied as soon as its reads are in, normally within a moment, and a
+      // sale never records its result before that has finished (see pos.bookkeepingPromise).
       // The market price the bot last saw for this coin at the moment the buy landed (for the
       // signal-vs-fill measurement), taken before anything else is read.
       var landedAt = Date.now();
@@ -3422,43 +3454,67 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
       // the same transaction record as the balance change (no extra request).
       var rentPromise = liveWalletModule.getRentFromTx(connection, result.signature, liveWalletKeypair.publicKey, mintStr).then(
         function(v) { return { value: v }; }, function(e) { return { error: e }; });
-      var postBuy = await Promise.all([balanceChangePromise, costsPromise, heldPromise, rentPromise]);
+      var bookReads = Promise.all([balanceChangePromise, costsPromise, rentPromise]);
 
-      if (postBuy[0].error) {
-        liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + postBuy[0].error.message, 'warn');
-        if (result.recovered) {
-          // The exact cost of a recovered buy is not readable, so the Live Fund is lowered by the
-          // buy size as an estimate (the real cost is slightly more) rather than not at all.
-          S.liveFund = parseFloat((S.liveFund - sizeUsd).toFixed(4));
-          liveLog(logPrefix + ' (' + platformName + ' buy): Live Fund lowered by the buy size $' + sizeUsd.toFixed(2) + ' as an ESTIMATE -- now $' + S.liveFund.toFixed(4), 'warn');
+      // Applies the money side of the buy: moves the Live Fund by what the buy really cost, books the
+      // deposit as locked, records the tip and fee. All in one synchronous step, so the fund and the
+      // position never disagree for longer than that step. pos is the opened position, or null when
+      // the tokens could not be found (the fund still moves, as it always did).
+      var applyBuyBookkeeping = function(book, pos) {
+        var changeUsd;
+        if (book[0].error) {
+          liveLog(logPrefix + ' (' + platformName + ' buy): could not read real balance change to update Live Fund -- ' + book[0].error.message, 'warn');
+          if (result.recovered) {
+            // The exact cost of a recovered buy is not readable, so the Live Fund is lowered by the
+            // buy size as an estimate (the real cost is slightly more) rather than not at all.
+            S.liveFund = parseFloat((S.liveFund - sizeUsd).toFixed(4));
+            liveLog(logPrefix + ' (' + platformName + ' buy): Live Fund lowered by the buy size $' + sizeUsd.toFixed(2) + ' as an ESTIMATE -- now $' + S.liveFund.toFixed(4), 'warn');
+          }
+        } else {
+          var changeLamports = book[0].value;
+          changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
+          S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
+          liveLog(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
+            ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
         }
-      } else {
-        var changeLamports = postBuy[0].value;
-        var changeUsd = (changeLamports / 1000000000) * SOL_PRICE_USD;
-        S.liveFund = parseFloat((S.liveFund + changeUsd).toFixed(4));
-        liveLog(logPrefix + ' (' + platformName + ' buy): real wallet impact $' + changeUsd.toFixed(4) +
-          ' (' + changeLamports + ' lamports, includes the trade, fee, and tip) -- Live Fund now $' + S.liveFund.toFixed(4), 'info');
-      }
 
-      // The deposit is the bot's own money, locked until the account is closed. It is kept out of
-      // this trade's result (it is not a cost) and counted in the fund as locked rent instead.
-      var rentLamports = 0, rentUsd = 0;
-      if (!postBuy[0].error && !postBuy[3].error && postBuy[3].value > 0) {
-        rentLamports = postBuy[3].value;
-        rentUsd = (rentLamports / 1000000000) * SOL_PRICE_USD;
-        S.liveRentLockedUsd = parseFloat(((S.liveRentLockedUsd || 0) + rentUsd).toFixed(4));
-        liveLog(logPrefix + ' (' + platformName + ' buy): $' + rentUsd.toFixed(4) + ' of this buy is the refundable token-account deposit -- it is not counted as a trading cost and comes back when the account is closed after the sale', 'info');
-      }
-      var buyCosts = postBuy[1];
-      liveLog(logPrefix + ' (' + platformName + ' buy): ' + describeRealCosts(buyCosts), 'info');
+        // The deposit is the bot's own money, locked until the account is closed. It is kept out of
+        // this trade's result (it is not a cost) and counted in the fund as locked rent instead.
+        var rentLamports = 0, rentUsd = 0;
+        if (!book[0].error && !book[2].error && book[2].value > 0) {
+          rentLamports = book[2].value;
+          rentUsd = (rentLamports / 1000000000) * SOL_PRICE_USD;
+          S.liveRentLockedUsd = parseFloat(((S.liveRentLockedUsd || 0) + rentUsd).toFixed(4));
+          liveLog(logPrefix + ' (' + platformName + ' buy): $' + rentUsd.toFixed(4) + ' of this buy is the refundable token-account deposit -- it is not counted as a trading cost and comes back when the account is closed after the sale', 'info');
+        }
+        var buyCosts = book[1];
+        liveLog(logPrefix + ' (' + platformName + ' buy): ' + describeRealCosts(buyCosts), 'info');
+        if (pos) {
+          pos.buyImpactUsd = (typeof changeUsd === 'number') ? changeUsd + rentUsd : null;
+          pos.rentUsd = rentUsd;
+          pos.rentLamports = rentLamports;
+          pos.buyTipUsd = buyCosts.tipUsd;
+          pos.buyFeeUsd = buyCosts.feeUsd;
+          pos.tipKnown = buyCosts.tipUsd !== null;
+          pos.feeKnown = buyCosts.feeUsd !== null;
+          pos.buyBookkeepingMs = Date.now() - landedAt;
+          // Last, in the same step as the fund change above: from here the position counts as deployed money.
+          pos.bookkeepingPending = false;
+        }
+      };
 
+      var openedPos = null;
+      var posProblem = null;
+      var heldNothing = false;
       try {
-        if (postBuy[2].error) throw postBuy[2].error;
-        var heldBalance = postBuy[2].value;
+        var heldRes = await heldPromise;
+        var heldKnownAt = Date.now();
+        if (heldRes.error) throw heldRes.error;
+        var heldBalance = heldRes.value;
         var tokensHeld = parseFloat(heldBalance.amount) / Math.pow(10, heldBalance.decimals);
         if (tokensHeld > 0) {
           var entryPriceUsd = sizeUsd / tokensHeld;
-          S.liveOpen.push({
+          openedPos = {
             id: result.signature,
             mint: mintStr,
             platform: platformKey,
@@ -3469,17 +3525,22 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
             name: ((S.tokens && S.tokens.get(mintStr)) || {}).n || '',
-            buyImpactUsd: (typeof changeUsd === 'number') ? changeUsd + rentUsd : null,
-            rentUsd: rentUsd,
-            rentLamports: rentLamports,
+            // The money side is filled in by applyBuyBookkeeping a moment later. Until then the
+            // position is not counted as deployed (the fund has not been lowered by it yet), and no
+            // sale records its result (it waits on bookkeepingPromise).
+            buyImpactUsd: null,
+            rentUsd: 0,
+            rentLamports: 0,
             sellImpactUsd: 0,
             sellImpactKnown: true,
-            buyTipUsd: buyCosts.tipUsd,
-            buyFeeUsd: buyCosts.feeUsd,
+            buyTipUsd: null,
+            buyFeeUsd: null,
             sellTipUsd: 0,
             sellFeeUsd: 0,
-            tipKnown: buyCosts.tipUsd !== null,
-            feeKnown: buyCosts.feeUsd !== null,
+            tipKnown: false,
+            feeKnown: false,
+            bookkeepingPending: true,
+            bookkeepingPromise: null,
             tpl: S.liveTakeProfitMode,
             tpPct: S.liveTakeProfitPct,
             // Fixed when the position opens, like paper's trade.sl: changing the
@@ -3500,10 +3561,16 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             buyBuildMs: buyBuiltMs,
             buyLandMs: buySendMs,
             buySenderHost: result.senderHost || null,
+            buyLandSource: result.landSource || null,
             buyGateWaitMs: gateWaitMs,
             buyPreSendMs: buySendT0 - buyT0,
             sendStartedAt: buySendT0,
             buyConfirmChecks: (typeof result.checks === 'number') ? result.checks : null,
+            // Live-only timing: how long the token count took to read after the buy landed, and how long
+            // from landing until the position was open and being watched.
+            postBuyReadMs: heldKnownAt - landedAt,
+            landedToOpenMs: null,
+            buyBookkeepingMs: null,
             peakPriceUsd: entryPriceUsd,
             currentPriceUsd: entryPriceUsd,
             tier1Done: false,
@@ -3519,17 +3586,39 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             largestSellUsd: 0,
             sellerWallets: {},
             currentMcap: 0,
-          });
+          };
+          S.liveOpen.push(openedPos);
+          openedPos.landedToOpenMs = Date.now() - landedAt;
           syncOnchainPrices();
           liveLog('LIVE ENTER ' + (S.tokens.get(mintStr) ? S.tokens.get(mintStr).n : mintStr.slice(0, 6) + '...') + ' [' + platformName + '] | ' + mintStr + ' | $' + sizeUsd.toFixed(2) + ' | Entry $' + entryPriceUsd.toFixed(10) + ' | ' + tokensHeld + ' tokens held', 'entry');
-          liveLog('LIVE BUY TIMING: build ' + buyBuiltMs + 'ms | submit to landed ' + buySendMs + 'ms | reads before position was watched ' + (Date.now() - postBuyT0) + 'ms | total ' + (Date.now() - buyT0) + 'ms', 'info');
+          liveLog('LIVE BUY TIMING: build ' + buyBuiltMs + 'ms | submit to landed ' + buySendMs + 'ms | landed to position watched ' + openedPos.landedToOpenMs + 'ms | total to watched ' + (Date.now() - buyT0) + 'ms', 'info');
         } else {
-          liveLog(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
-          // The bot must never buy this coin a second time because it lost track of the first.
-          liveCooldowns.set(mintStr, Date.now());
+          heldNothing = true;
         }
       } catch (posErr) {
-        liveLog(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posErr.message + ' -- check manually', 'warn');
+        posProblem = posErr;
+      }
+
+      // The money side. When the position is open this runs behind it; a sale waits for it.
+      var bookDone = bookReads.then(function(book) {
+        applyBuyBookkeeping(book, openedPos);
+        return true;
+      }).catch(function(bookErr) {
+        if (openedPos) openedPos.bookkeepingPending = false;
+        liveLog(logPrefix + ' (' + platformName + ' buy): recording the buy cost failed -- ' + bookErr.message + ' -- check the Live Fund', 'warn');
+        return false;
+      });
+      if (openedPos) openedPos.bookkeepingPromise = bookDone;
+      await bookDone;
+
+      if (openedPos) {
+        liveLog('LIVE BUY BOOKKEEPING: costs and fund recorded ' + (Date.now() - landedAt) + 'ms after landing (the position was already being watched)', 'info');
+      } else if (heldNothing) {
+        liveLog(logPrefix + ' (' + platformName + ' buy): confirmed but real token balance reads zero -- position NOT recorded, check manually', 'warn');
+        // The bot must never buy this coin a second time because it lost track of the first.
+        liveCooldowns.set(mintStr, Date.now());
+      } else if (posProblem) {
+        liveLog(logPrefix + ' (' + platformName + ' buy): could not record real position -- ' + posProblem.message + ' -- check manually', 'warn');
         liveCooldowns.set(mintStr, Date.now());
       }
 
@@ -3675,6 +3764,22 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
     }
     liveLog(logPrefix + ' (' + platformName + ' sell) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
 
+    // pump.fun pays a sale out of the curve's REAL SOL. When the curve holds less than the sale is
+    // quoted at, the builder sells only what the curve can pay for (see pumpfun.js); the rest stays in
+    // the wallet and the position stays open to sell it next. The amounts used for the accounting
+    // below are the ones really sold.
+    var cappedSale = false;
+    var sellInfo = instructions && instructions.pumpSellInfo ? instructions.pumpSellInfo : null;
+    if (instructions && instructions.pumpSellAmount && String(instructions.pumpSellAmount) !== String(sellAmount)) {
+      cappedSale = true;
+      liveLog(logPrefix + ' (' + platformName + ' sell): the curve cannot pay for the whole sale -- selling ' + instructions.pumpSellAmount + ' of ' + sellAmount + ' now, the rest stays in the wallet and is sold next', 'warn');
+      sellAmount = String(instructions.pumpSellAmount);
+      remainingAmount = (BigInt(balance.amount) - BigInt(sellAmount)).toString();
+    }
+    if (sellInfo) {
+      liveLog(logPrefix + ' (' + platformName + ' sell) CURVE CHECK: selling ' + sellInfo.selling + ' tokens, quoted at ' + sellInfo.quoteLamports + ' lamports | curve holds ' + (sellInfo.realQuoteLamports === null ? 'unknown' : sellInfo.realQuoteLamports) + ' real lamports (sale limit ' + (sellInfo.limitLamports === null ? 'unknown' : sellInfo.limitLamports) + ') | virtual ' + sellInfo.virtualQuoteLamports + ' | ' + (sellInfo.cashbackCoin ? 'cashback coin' : 'normal coin') + (cappedSale ? ' | CAPPED' : ''), 'info');
+    }
+
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
@@ -3687,12 +3792,21 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
       (result.error ? ' | error: ' + result.error : ''), result.outcome === 'CONFIRMED' ? 'win' : 'warn');
     if (result.outcome !== 'CONFIRMED') invalidateBuilderCaches();
 
+    // Error 6024 (overflow) is the one the curve-limit sizing above is meant to remove. When it still
+    // happens, everything known about the sale is written down so the cause can be read, not guessed.
+    var error6024 = !!(result.error && /6024|0x1788/.test(String(result.error)));
+    if (error6024) {
+      liveLog(logPrefix + ' (' + platformName + ' sell) ERROR 6024 EVIDENCE: ' + JSON.stringify(sellInfo || { note: 'no curve numbers (not built by the pump.fun curve builder)' }) + ' | sold ' + sellAmount + ' of wallet balance ' + balance.amount + ' | signature ' + result.signature, 'warn');
+    }
+
     var settled = null;
     if (result.outcome === 'CONFIRMED') {
       settled = await settleConfirmedRealSell(connection, result, logPrefix, platformName);
     }
 
-    return { ok: true, result: result, sendMs: Date.now() - sellSendT0, confirmChecks: (typeof result.checks === 'number') ? result.checks : 0, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
+    return { ok: true, result: result, cappedSale: cappedSale, sellInfo: sellInfo, error6024: error6024,
+      sellBalanceMs: sellBalanceMs, sellBuildMs: sellBuildMs, sellPreSendMs: sellSendT0 - sellT0,
+      sendMs: Date.now() - sellSendT0, confirmChecks: (typeof result.checks === 'number') ? result.checks : 0, soldAmount: sellAmount, remainingAmount: remainingAmount, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     invalidateBuilderCaches();
@@ -3953,6 +4067,7 @@ function closeLiveOutsideBot(pos, priceUsd, prefix) {
     savingsAmount: pos.savingsBooked || null, fundAmount: null, netFundImpact: null, fees: null
   });
   Object.assign(S.liveClosed[S.liveClosed.length - 1], liveCloseExtras(pos));
+  Object.assign(S.liveClosed[S.liveClosed.length - 1], liveTimingExtras(pos));
   saveLiveHistory();
   liveCooldowns.set(pos.mint, Date.now());
   liveLog(prefix + ': real balance for ' + pos.mint + ' read as zero ' + pos.zeroFails + ' times in a row -- nothing left to sell. Position removed from tracking and recorded as "Closed outside bot" with an unknown P&L (not counted as a win or a loss).', 'warn');
@@ -4080,6 +4195,25 @@ function liveRpcExtras(pos) {
     sellConfirmChecks: nz(pos.sellConfirmChecks),
     sellQueueWaitMs: nz(pos.sellQueueWaitMs),
     sellAttempts: pos.sellAttemptsTotal || 0,
+  };
+}
+
+// Live-only timing and sale facts for the Live CSV (paper has no such things): how the landing was noticed,
+// how long the token count took after a buy landed, how long until the position was being watched, the steps
+// of the last sale, and how often the curve limit or error 6024 came into it.
+function liveTimingExtras(pos) {
+  var nz = function(v) { return (v === undefined) ? null : v; };
+  return {
+    buyLandSource: nz(pos.buyLandSource),
+    sellLandSource: nz(pos.sellLandSource),
+    postBuyReadMs: nz(pos.postBuyReadMs),
+    landedToOpenMs: nz(pos.landedToOpenMs),
+    buyBookkeepingMs: nz(pos.buyBookkeepingMs),
+    sellBalanceMs: nz(pos.sellBalanceMs),
+    sellBuildMs: nz(pos.sellBuildMs),
+    sellPreSendMs: nz(pos.sellPreSendMs),
+    sellCappedParts: pos.cappedLegs || 0,
+    sell6024Count: pos.sell6024Count || 0,
   };
 }
 
@@ -4460,6 +4594,9 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       pos.sellAttemptsTotal = (pos.sellAttemptsTotal || 0) + 1;
       outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage);
     }
+    // The position is opened before the buy's cost is recorded (see performRealBuyInner). A sale never
+    // records its result, and a position is never closed as "outside the bot", before that has finished.
+    if (pos.bookkeepingPromise) await pos.bookkeepingPromise;
     var confirmed = !!(outcome.ok && outcome.result && outcome.result.outcome === 'CONFIRMED');
     var nowEst = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
 
@@ -4468,8 +4605,14 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       pos.sellFails = 0; pos.zeroFails = 0; pos.stuck = false;
       pos.sellLandMs = Math.max(pos.sellLandMs || 0, outcome.sendMs || 0);
       if (outcome.result && outcome.result.senderHost) pos.sellSenderHost = outcome.result.senderHost;
+      if (outcome.result && outcome.result.landSource) pos.sellLandSource = outcome.result.landSource;
       pos.sellConfirmChecks = (pos.sellConfirmChecks || 0) + (outcome.confirmChecks || 0);
       pos.sellQueueWaitMs = Math.max(pos.sellQueueWaitMs || 0, outcome.queueWaitMs || 0);
+      // Live-only sale timing (from the last sale of the position): balance read, building, and
+      // the time from the start of the sale to the moment it was sent.
+      if (typeof outcome.sellBalanceMs === 'number') pos.sellBalanceMs = outcome.sellBalanceMs;
+      if (typeof outcome.sellBuildMs === 'number') pos.sellBuildMs = outcome.sellBuildMs;
+      if (typeof outcome.sellPreSendMs === 'number') pos.sellPreSendMs = outcome.sellPreSendMs;
       if (typeof outcome.realImpactUsd === 'number') pos.sellImpactUsd = (pos.sellImpactUsd || 0) + outcome.realImpactUsd;
       else pos.sellImpactKnown = false;
       if (typeof outcome.tipUsd === 'number') pos.sellTipUsd = (pos.sellTipUsd || 0) + outcome.tipUsd;
@@ -4506,6 +4649,18 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       liveLog(prefix + ': ' + tierLabel + ' SALE DONE -- ' + (pos.name || pos.mint) + ' | sold ' + tierSoldPct + '% of what was held at +' + tierPctNow + '% | ' + tierPnlText + ' | the rest stays open (remaining raw amount ' + pos.tokenAmountRaw + ') -- ' + pos.mint, 'win');
       S.liveTierSales.unshift({ time: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }), name: pos.name || '', mint: pos.mint, tier: tierLabel, soldPct: tierSoldPct, gainPct: tierPctNow, pnl: tierLegPnl });
       if (S.liveTierSales.length > 30) S.liveTierSales.pop();
+    } else if (confirmed && outcome.cappedSale) {
+      // A full exit where the curve could only pay for part of the tokens (see pumpfun.js). What was
+      // sold is booked like any other sale (proceeds, savings split), the position stays open with the
+      // rest, and no tier flag is touched. The exit is then run again straight away for what is left.
+      pos.tokenAmountRaw = outcome.remainingAmount;
+      pos.cappedLegs = (pos.cappedLegs || 0) + 1;
+      var capLegPnl = liveLegPnl(pos, outcome.realImpactUsd, liveSoldFraction(pos, outcome.soldAmount));
+      bookLiveSavings(pos, capLegPnl, prefix, 'part sale (curve limit)');
+      liveLog(prefix + ': PART SALE DONE -- the curve could only pay for ' + outcome.soldAmount + ' tokens, ' + outcome.remainingAmount + ' remain. The position stays open and the rest is sold next (part ' + pos.cappedLegs + ') -- ' + pos.mint, 'warn');
+      // A curve that keeps paying for only a sliver would otherwise be sold into over and over.
+      if (pos.cappedLegs <= 12) partialResult = { partial: true };
+      else pos.retryAfter = Date.now() + 10000;
     } else if (confirmed) {
       var idx = S.liveOpen.indexOf(pos);
       if (idx !== -1) S.liveOpen.splice(idx, 1);
@@ -4548,6 +4703,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       Object.assign(closedRec, liveCloseExtras(pos));
       Object.assign(closedRec, liveRpcExtras(pos));
       Object.assign(closedRec, liveSignalExtras(pos));
+      Object.assign(closedRec, liveTimingExtras(pos));
       closedRec.rentPaidUsd = pos.rentUsd || 0;
       // Exit timing: how old the triggering price was, where it came from, how long the sale took
       // from decision to confirmed, and what the sale brought in compared with the tokens' value at
@@ -4647,6 +4803,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       pos.retryAfter = Date.now() + 1000;
       liveLog(prefix + ': the sell was submitted but has not confirmed yet (' + outcome.result.signature + ') -- the bot will check that exact transaction before any retry and will NOT sell this twice', 'warn');
     } else {
+      if (outcome.error6024) pos.sell6024Count = (pos.sell6024Count || 0) + 1;
       noteLiveSellFailure(pos, outcome.zeroBalance === true);
       liveLog(prefix + ': real sell did not confirm (' + (outcome.error || (outcome.result && outcome.result.outcome)) + ') -- position kept, attempt ' + pos.sellFails + (pos.stuck ? ', now flagged STUCK' : ', will retry'), 'warn');
       // Do not wait for the next price update to retry a fast first failure: re-check
@@ -4784,7 +4941,8 @@ app.get('/api/live/export', function(req, res) {
     'RentPaidUsd','RentRefundUsd','RentRefundSec','SignalPrice','MarketPriceAtLanding','SignalToFillMs','ConcentrationCheckMs','MarketMoveDuringDelayPct','FillVsSignalPct','FeeAndImpactPct',
     'SignalToSendMs','BuyPreSendMs','BuyGateWaitMs','FeedLagMs',
     'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
-    'BuySenderHost','SellSenderHost'];
+    'BuySenderHost','SellSenderHost',
+    'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4807,7 +4965,8 @@ app.get('/api/live/export', function(req, res) {
       t.signalPrice, t.landPrice, t.signalToFillMs, t.concentrationMs, t.marketMovePct, t.fillVsSignalPct, t.feeImpactPct,
       t.signalToSendMs, t.buyPreSendMs, t.buyGateWaitMs, t.feedLagMs,
       t.exitTriggerPrice, t.exitTickAgeMs, csvSafe(t.exitFeedSource || ''), t.exitFeedLagMs, t.exitDecisionToSaleMs, t.exitSaleVsTriggerPct,
-      csvSafe(t.buySenderHost || ''), csvSafe(t.sellSenderHost || '')
+      csvSafe(t.buySenderHost || ''), csvSafe(t.sellSenderHost || ''),
+      csvSafe(t.buyLandSource || ''), csvSafe(t.sellLandSource || ''), t.postBuyReadMs, t.landedToOpenMs, t.buyBookkeepingMs, t.sellBalanceMs, t.sellBuildMs, t.sellPreSendMs, t.sellCappedParts, t.sell6024Count
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -4888,7 +5047,12 @@ async function manualSellLivePosition(pos) {
   }
   var pct = (price - pos.entryPriceUsd) / pos.entryPriceUsd;
   var rawBefore = pos.tokenAmountRaw;
-  await runLiveExit(pos, { kind: 'MANUAL', fraction: null }, price, pct);
+  var manualRes = await runLiveExit(pos, { kind: 'MANUAL', fraction: null }, price, pct);
+  // When the curve could only pay for part of the sale, the rest is sold straight after, the same
+  // way the automatic exits do it.
+  for (var again = 0; again < 12 && manualRes && manualRes.partial && S.liveOpen.indexOf(pos) !== -1; again++) {
+    manualRes = await runLiveExit(pos, { kind: 'MANUAL', fraction: null }, price, pct);
+  }
   return { closed: S.liveOpen.indexOf(pos) === -1, soldAmount: rawBefore };
 }
 

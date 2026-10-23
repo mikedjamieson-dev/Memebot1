@@ -270,7 +270,162 @@ function finishWatcher(w, result) {
   }
   result.checks = w.checks;
   result.pollWaitMs = w.waitMs;
+  // How the landing was noticed: 'ws' (the signature subscription, see below) or 'poll' (the checker).
+  if ((result.outcome === 'CONFIRMED' || result.outcome === 'FAILED') && !result.landSource) result.landSource = 'poll';
+  // Nobody is waiting on this signature any more: its subscription is released.
+  if (!watchers.has(w.signature)) dropLanding(w.signature);
   w.resolve(result);
+}
+
+// -- NOTICING A LANDING THE MOMENT IT HAPPENS ---------------------
+// The checker above asks the node "has it landed yet?" at 0.4 s, then every 0.8 s, so a buy that
+// lands 100 ms after a check is noticed up to 800 ms late (that delay is in BuyLandMs, and the
+// position is not watched until it ends). A signature subscription flips that around: the node
+// pushes a message the moment the transaction is confirmed. The checker stays running as the
+// backup, exactly as before; whichever hears first settles the transaction, with the same
+// meaning (confirmed with no error = CONFIRMED, confirmed with an error = FAILED). Every result
+// says which one heard it (landSource). If the socket is down, unavailable, or LANDING_SOCKET=off
+// is set in Render, nothing changes: the checker alone does the job, as it always did.
+var WS = null;
+try { WS = require('ws'); } catch (e) { WS = null; }
+var landing = {
+  url: null, sock: null, open: false, pingTimer: null, lastPongAt: 0, nextId: 1,
+  reqs: new Map(),   // request id -> signature, until the node answers with a subscription number
+  subs: new Map(),   // subscription number -> signature
+  want: new Map(),   // signature -> { at, subId, fired }
+  stats: { opened: 0, closed: 0, subscribed: 0, notifications: 0, errors: 0, lastError: null },
+};
+
+function toWsUrl(u) {
+  u = String(u || '').trim();
+  if (u.indexOf('https://') === 0) return 'wss://' + u.slice(8);
+  if (u.indexOf('http://') === 0) return 'ws://' + u.slice(7);
+  if (u.indexOf('wss://') === 0 || u.indexOf('ws://') === 0) return u;
+  return null;
+}
+
+function landingEnabled() {
+  return !!WS && String(process.env.LANDING_SOCKET || '').trim().toLowerCase() !== 'off';
+}
+
+function landingSend(obj) {
+  try { landing.sock.send(JSON.stringify(obj)); return true; } catch (e) { return false; }
+}
+
+function landingSubscribe(signature) {
+  var id = landing.nextId++;
+  landing.reqs.set(id, signature);
+  if (!landingSend({ jsonrpc: '2.0', id: id, method: 'signatureSubscribe', params: [signature, { commitment: 'confirmed' }] })) landing.reqs.delete(id);
+}
+
+function dropLanding(signature) {
+  var e = landing.want.get(signature);
+  if (!e) return;
+  landing.want.delete(signature);
+  if (e.subId !== null && e.subId !== undefined) {
+    landing.subs.delete(e.subId);
+    // A subscription that already fired is removed by the node itself.
+    if (!e.fired && landing.open) landingSend({ jsonrpc: '2.0', id: landing.nextId++, method: 'signatureUnsubscribe', params: [e.subId] });
+  }
+}
+
+function onLandingMessage(raw) {
+  var msg;
+  try { msg = JSON.parse(raw); } catch (e) { return; }
+  if (msg && msg.id !== undefined && landing.reqs.has(msg.id)) {
+    var sigReq = landing.reqs.get(msg.id);
+    landing.reqs.delete(msg.id);
+    if (msg.error || typeof msg.result !== 'number') {
+      landing.stats.errors++;
+      landing.stats.lastError = JSON.stringify(msg.error || msg).slice(0, 200);
+      return;
+    }
+    landing.stats.subscribed++;
+    var entry = landing.want.get(sigReq);
+    if (entry) {
+      entry.subId = msg.result;
+      landing.subs.set(msg.result, sigReq);
+    } else {
+      // Nobody is waiting for this signature any more.
+      landingSend({ jsonrpc: '2.0', id: landing.nextId++, method: 'signatureUnsubscribe', params: [msg.result] });
+    }
+    return;
+  }
+  if (msg && msg.method === 'signatureNotification' && msg.params) {
+    var sig = landing.subs.get(msg.params.subscription);
+    if (!sig) return;
+    var val = msg.params.result && msg.params.result.value;
+    if (val === undefined || val === null || val === 'receivedSignature') return;
+    landing.stats.notifications++;
+    var e2 = landing.want.get(sig);
+    if (e2) e2.fired = true;
+    var err = val.err;
+    var list = watchers.get(sig) ? watchers.get(sig).slice() : [];
+    list.forEach(function(w) {
+      finishWatcher(w, err ? { outcome: 'FAILED', signature: sig, error: JSON.stringify(err), landSource: 'ws' } : { outcome: 'CONFIRMED', signature: sig, landSource: 'ws' });
+    });
+    dropLanding(sig);
+  }
+}
+
+function connectLanding(wsUrl) {
+  if (!landingEnabled() || !wsUrl) return;
+  if (landing.sock && landing.url === wsUrl && (landing.sock.readyState === 0 || landing.sock.readyState === 1)) return;
+  if (landing.sock) { try { landing.sock.terminate(); } catch (e) {} landing.sock = null; landing.open = false; }
+  landing.url = wsUrl;
+  var sock;
+  try { sock = new WS(wsUrl); } catch (e) { landing.sock = null; return; }
+  landing.sock = sock;
+  landing.open = false;
+  sock.on('open', function() {
+    if (landing.sock !== sock) return;
+    landing.open = true;
+    landing.stats.opened++;
+    landing.lastPongAt = Date.now();
+    clearInterval(landing.pingTimer);
+    landing.pingTimer = setInterval(function() {
+      // A socket that stopped answering is dropped, so the next send opens a fresh one.
+      if (Date.now() - landing.lastPongAt > 70000) { try { sock.terminate(); } catch (e) {} return; }
+      try { sock.ping(); } catch (e) {}
+    }, 25000);
+    if (landing.pingTimer.unref) landing.pingTimer.unref();
+    landing.want.forEach(function(entry, signature) { if (entry.subId === null && !entry.fired) landingSubscribe(signature); });
+  });
+  sock.on('pong', function() { landing.lastPongAt = Date.now(); });
+  sock.on('message', function(data) { onLandingMessage(String(data)); });
+  sock.on('error', function() { /* a close follows; the checker is the backup meanwhile */ });
+  sock.on('close', function() {
+    if (landing.sock !== sock) return;
+    landing.open = false;
+    landing.sock = null;
+    clearInterval(landing.pingTimer);
+    landing.stats.closed++;
+    landing.reqs.clear();
+    landing.subs.clear();
+    landing.want.forEach(function(entry) { entry.subId = null; });
+  });
+}
+
+function watchLanding(signature, wsUrl) {
+  if (!landingEnabled() || !wsUrl) return;
+  try {
+    var now = Date.now();
+    landing.want.forEach(function(entry, sig) { if (now - entry.at > 120000) dropLanding(sig); });
+    if (landing.want.has(signature)) return;
+    landing.want.set(signature, { at: now, subId: null, fired: false });
+    connectLanding(wsUrl);
+    if (landing.open) landingSubscribe(signature);
+  } catch (e) { /* the checker covers it */ }
+}
+
+// Opens the socket ahead of time (called while live trading is on) so the first buy does not wait for
+// the connection to be made.
+function warmLandingSocket(rpcUrl) {
+  try { connectLanding(toWsUrl(rpcUrl)); } catch (e) { /* optional */ }
+}
+
+function landingStatus() {
+  return { available: !!WS, enabled: landingEnabled(), connected: landing.open, waiting: landing.want.size, opened: landing.stats.opened, closed: landing.stats.closed, subscribed: landing.stats.subscribed, notifications: landing.stats.notifications, errors: landing.stats.errors, lastError: landing.stats.lastError };
 }
 
 // One batched request (or a few, if there are very many) for a list of signatures.
@@ -409,6 +564,7 @@ function pollForOutcome(signature, connection, latest, options) {
     var list = watchers.get(signature);
     if (!list) { list = []; watchers.set(signature, list); }
     list.push(w);
+    if (options.wsUrl) watchLanding(signature, options.wsUrl);
     startPoller();
   });
 }
@@ -527,7 +683,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     err2.mayHaveSent = true;
     throw err2;
   }
-  var outcome = await pollForOutcome(signature, connection, latest, options);
+  var outcome = await pollForOutcome(signature, connection, latest, Object.assign({}, options, { wsUrl: toWsUrl(rpcUrl) }));
   if (outcome.outcome !== 'CONFIRMED') forgetBlockhash();
   outcome.tipLamports = tipLamports;
   outcome.senderHost = senderUsed;
@@ -574,6 +730,8 @@ module.exports = {
   sendAndConfirmViaSender,
   prefetchSendParts,
   readBlockHeightShared,
+  warmLandingSocket,
+  landingStatus,
   senderHost,
   testSelfTransfer,
   testSelfTransferViaSender,
