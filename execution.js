@@ -272,8 +272,21 @@ function finishWatcher(w, result) {
   result.pollWaitMs = w.waitMs;
   // How the landing was noticed: 'ws' (the signature subscription, see below) or 'poll' (the checker).
   if ((result.outcome === 'CONFIRMED' || result.outcome === 'FAILED') && !result.landSource) result.landSource = 'poll';
-  // Nobody is waiting on this signature any more: its subscription is released.
-  if (!watchers.has(w.signature)) dropLanding(w.signature);
+  result.landTimes = w.times || null;
+  // Nobody is waiting on this signature any more, so its subscription is released. When the checker
+  // heard the landing first, the subscription is kept open for a few seconds so the moment the
+  // listener hears it too can be timed (it costs no node requests); that is what shows, in the
+  // Live CSV, which of the two is faster.
+  if (!watchers.has(w.signature)) {
+    var le = landing.want.get(w.signature);
+    if (result.landSource === 'poll' && le && !le.fired && le.subId !== null && le.subId !== undefined && landing.open) {
+      var keepSig = w.signature;
+      var keepTimer = setTimeout(function() { dropLanding(keepSig); }, 3000);
+      if (keepTimer.unref) keepTimer.unref();
+    } else {
+      dropLanding(w.signature);
+    }
+  }
   w.resolve(result);
 }
 
@@ -358,7 +371,10 @@ function onLandingMessage(raw) {
     if (val === undefined || val === null || val === 'receivedSignature') return;
     landing.stats.notifications++;
     var e2 = landing.want.get(sig);
-    if (e2) e2.fired = true;
+    if (e2) {
+      e2.fired = true;
+      if (e2.times && !e2.times.wsAt) e2.times.wsAt = Date.now();
+    }
     var err = val.err;
     var list = watchers.get(sig) ? watchers.get(sig).slice() : [];
     list.forEach(function(w) {
@@ -406,13 +422,13 @@ function connectLanding(wsUrl) {
   });
 }
 
-function watchLanding(signature, wsUrl) {
+function watchLanding(signature, wsUrl, times) {
   if (!landingEnabled() || !wsUrl) return;
   try {
     var now = Date.now();
     landing.want.forEach(function(entry, sig) { if (now - entry.at > 120000) dropLanding(sig); });
     if (landing.want.has(signature)) return;
-    landing.want.set(signature, { at: now, subId: null, fired: false });
+    landing.want.set(signature, { at: now, subId: null, fired: false, times: times || null });
     connectLanding(wsUrl);
     if (landing.open) landingSubscribe(signature);
   } catch (e) { /* the checker covers it */ }
@@ -447,10 +463,25 @@ async function readStatuses(connection, signatures, prio, tickInfo) {
 
 function judgeStatus(w, status) {
   if (status) {
+    if ((isSuccessStatus(status) || status.err) && w.times && !w.times.pollAt) w.times.pollAt = Date.now();
     if (isSuccessStatus(status)) { finishWatcher(w, { outcome: 'CONFIRMED', signature: w.signature }); return true; }
     if (status.err) { finishWatcher(w, { outcome: 'FAILED', signature: w.signature, error: JSON.stringify(status.err) }); return true; }
   }
   return false;
+}
+
+// How long to wait before a transaction is checked again. Checks are made at 0.4 s and 0.8 s after the
+// send (nothing can have landed at the instant of sending, so there is no check then). After that, when
+// the listener has confirmed its subscription for this transaction it is the main way a landing is
+// noticed and the checker only stays as the backup, every 2 s. Without a working listener the checker
+// keeps its old pace: every 0.4 s for the first 3 s, then every 0.8 s.
+function nextCheckDelay(w, now) {
+  var base = w.pollIntervalMs;
+  var age = now - w.startTime;
+  var e = landing.want.get(w.signature);
+  var listening = landing.open && e && e.subId !== null && e.subId !== undefined && !e.fired;
+  if (listening) return age < base * 2 ? base : base * 5;
+  return age < 3000 ? base : base * 2;
 }
 
 async function runPoller() {
@@ -460,31 +491,33 @@ async function runPoller() {
     if (all.length === 0) break;
     var connection = all[0].connection;
     var now = Date.now();
-    var interval = Infinity, prio = null;
+    // Only the transactions whose turn has come are asked about; the rest wait for theirs.
+    var due = all.filter(function(w) { return w.nextAt <= now; });
+    var prio = null;
     all.forEach(function(w) {
-      var each = (now - w.startTime) < 3000 ? w.pollIntervalMs : w.pollIntervalMs * 2;
-      if (each < interval) interval = each;
       var p = (w.prio === null || w.prio === undefined) ? 1 : w.prio;
       if (prio === null || p < prio) prio = p;
     });
-    var waitMs = interval;
     var tickErr = null;
     var tickInfo = { maxWait: 0 };
 
     try {
-      var signatures = [];
-      var seen = {};
-      all.forEach(function(w) { if (!seen[w.signature]) { seen[w.signature] = true; signatures.push(w.signature); } });
-      var statusMap = await readStatuses(connection, signatures, prio, tickInfo);
-      all.forEach(function(w) {
-        if (w.done) return;
-        w.checks++;
-        if (tickInfo.maxWait > w.waitMs) w.waitMs = tickInfo.maxWait;
-        judgeStatus(w, statusMap[w.signature]);
-      });
+      if (due.length > 0) {
+        var signatures = [];
+        var seen = {};
+        due.forEach(function(w) { if (!seen[w.signature]) { seen[w.signature] = true; signatures.push(w.signature); } });
+        var statusMap = await readStatuses(connection, signatures, prio, tickInfo);
+        due.forEach(function(w) {
+          if (w.done) return;
+          w.checks++;
+          if (tickInfo.maxWait > w.waitMs) w.waitMs = tickInfo.maxWait;
+          var at = Date.now();
+          w.nextAt = at + nextCheckDelay(w, at);
+          judgeStatus(w, statusMap[w.signature]);
+        });
+      }
 
-      // The status is checked often so a landed transaction is noticed quickly; the
-      // (slower-changing) block height only needs checking every couple of seconds.
+      // The (slower-changing) block height only needs checking every couple of seconds.
       // A transaction can only be past its window after about a minute (see HEIGHT_CHECK_AFTER_MS), so
       // the block height is not read before a watcher is 50 seconds old.
       var oldestAgeMs = 0;
@@ -508,8 +541,9 @@ async function runPoller() {
       // Could not read the chain this time. The transactions are already sent, so every
       // signature is kept and looked at again after a short pause.
       tickErr = readErr;
-      waitMs = Math.max(waitMs, 800);
       lastHeightCheck = 0;
+      var errAt = Date.now();
+      due.forEach(function(w) { if (!w.done) w.nextAt = Math.max(w.nextAt, errAt + 800); });
       allWatchers().forEach(function(w) { w.readErrors++; w.lastReadError = readErr; });
     }
 
@@ -527,6 +561,12 @@ async function runPoller() {
     });
 
     if (watchers.size === 0) break;
+    // Sleep until the next transaction is due; never longer than 2 s, so the time limit and the
+    // block-height check are still looked at regularly.
+    var sleepNow = Date.now();
+    var nextDue = Infinity;
+    allWatchers().forEach(function(w) { if (w.nextAt < nextDue) nextDue = w.nextAt; });
+    var waitMs = Math.min(Math.max(nextDue - sleepNow, 20), 2000);
     await new Promise(function(resolve) { setTimeout(resolve, waitMs); });
   }
 }
@@ -560,11 +600,14 @@ function pollForOutcome(signature, connection, latest, options) {
       maxPollMs: options.maxPollMs || 30000,
       readErrors: 0, lastReadError: null, checks: 0, waitMs: 0,
       prio: g ? g.currentPriority() : null,
+      // When the checker and the listener each heard the landing (see landTimes in the result).
+      times: { startedAt: Date.now(), wsAt: null, pollAt: null },
     };
+    w.nextAt = w.startTime + w.pollIntervalMs;
     var list = watchers.get(signature);
     if (!list) { list = []; watchers.set(signature, list); }
     list.push(w);
-    if (options.wsUrl) watchLanding(signature, options.wsUrl);
+    if (options.wsUrl) watchLanding(signature, options.wsUrl, w.times);
     startPoller();
   });
 }

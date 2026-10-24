@@ -1966,6 +1966,26 @@ function buildLiveEntrySnapshot(tok, triggerSource, timing) {
   };
 }
 
+// Coins the bot saw a signal on but could not buy because they are not paired with SOL. Live-only
+// record, reset with the server; shown as marked rows at the bottom of the Live CSV so the data can
+// show whether trading them would pay.
+var liveNonSolSkips = [];
+var KNOWN_QUOTE_NAMES = {
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT'
+};
+function recordNonSolSkip(tok, platformName, quoteMint, snapshot) {
+  liveNonSolSkips.push({
+    name: tok.n || '', mint: tok.mint, platform: platformName,
+    quoteMint: quoteMint, quoteName: KNOWN_QUOTE_NAMES[quoteMint] || 'other',
+    signalAt: (snapshot && snapshot.signalAt) || Date.now(),
+    signalPrice: (snapshot && snapshot.signalPrice) || null,
+    // Price the bot last saw for the coin, so the rows show how it moved after the signal.
+    lastPrice: tok.price || null
+  });
+  if (liveNonSolSkips.length > 500) liveNonSolSkips.shift();
+}
+
 function startLiveEntry(tok, snapshot) {
   var platformName = tok.src === 'PUMP' ? 'pump.fun' : 'LetsBonk';
   var platformKey = tok.src === 'PUMP' ? 'pumpfun' : 'letsbonk';
@@ -1975,6 +1995,8 @@ function startLiveEntry(tok, snapshot) {
     // A token skipped for thin liquidity is left alone for the same cooldown
     // as any other live exit, instead of being re-checked on every tick.
     if (r && r.skipped) liveCooldowns.set(tok.mint, Date.now());
+    // A coin paired with something other than SOL is only noted for the Live CSV; nothing is bought.
+    if (r && r.skipped && r.quoteMint) recordNonSolSkip(tok, platformName, r.quoteMint, snapshot);
   }).catch(function(e) {
     liveLog('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
   }).then(function() {
@@ -3562,6 +3584,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             buyLandMs: buySendMs,
             buySenderHost: result.senderHost || null,
             buyLandSource: result.landSource || null,
+            buyLandTimes: result.landTimes || null,
             buyGateWaitMs: gateWaitMs,
             buyPreSendMs: buySendT0 - buyT0,
             sendStartedAt: buySendT0,
@@ -3632,7 +3655,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
     if (e.code === 'THIN_LIQUIDITY' || e.code === 'UNSUPPORTED_QUOTE') {
       // Nothing was sent. Not a failure of the lookups, so the remembered settings stay.
       liveLog(logPrefix + ' (' + platformName + ' buy) SKIPPED for ' + mintStr + ': ' + e.message, 'warn');
-      return { ok: false, skipped: true, error: e.message };
+      return { ok: false, skipped: true, error: e.message, quoteMint: (e.code === 'UNSUPPORTED_QUOTE') ? (e.quoteMint || 'unknown') : null };
     }
     liveLog(logPrefix + ' (' + platformName + ' buy) ERROR: ' + e.message, 'warn');
     invalidateBuilderCaches();
@@ -4201,11 +4224,22 @@ function liveRpcExtras(pos) {
 // Live-only timing and sale facts for the Live CSV (paper has no such things): how the landing was noticed,
 // how long the token count took after a buy landed, how long until the position was being watched, the steps
 // of the last sale, and how often the curve limit or error 6024 came into it.
+// Milliseconds from sending a transaction until the listener (wsAt) or the checker (pollAt) first
+// reported it landed; empty if that one had not reported (yet) by the time the trade closed.
+function landTimeMs(times, key) {
+  if (!times || !times.startedAt || !times[key]) return null;
+  return times[key] - times.startedAt;
+}
+
 function liveTimingExtras(pos) {
   var nz = function(v) { return (v === undefined) ? null : v; };
   return {
     buyLandSource: nz(pos.buyLandSource),
     sellLandSource: nz(pos.sellLandSource),
+    buyListenerMs: landTimeMs(pos.buyLandTimes, 'wsAt'),
+    buyCheckerMs: landTimeMs(pos.buyLandTimes, 'pollAt'),
+    sellListenerMs: landTimeMs(pos.sellLandTimes, 'wsAt'),
+    sellCheckerMs: landTimeMs(pos.sellLandTimes, 'pollAt'),
     postBuyReadMs: nz(pos.postBuyReadMs),
     landedToOpenMs: nz(pos.landedToOpenMs),
     buyBookkeepingMs: nz(pos.buyBookkeepingMs),
@@ -4606,6 +4640,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       pos.sellLandMs = Math.max(pos.sellLandMs || 0, outcome.sendMs || 0);
       if (outcome.result && outcome.result.senderHost) pos.sellSenderHost = outcome.result.senderHost;
       if (outcome.result && outcome.result.landSource) pos.sellLandSource = outcome.result.landSource;
+      if (outcome.result && outcome.result.landTimes) pos.sellLandTimes = outcome.result.landTimes;
       pos.sellConfirmChecks = (pos.sellConfirmChecks || 0) + (outcome.confirmChecks || 0);
       pos.sellQueueWaitMs = Math.max(pos.sellQueueWaitMs || 0, outcome.queueWaitMs || 0);
       // Live-only sale timing (from the last sale of the position): balance read, building, and
@@ -4942,7 +4977,7 @@ app.get('/api/live/export', function(req, res) {
     'SignalToSendMs','BuyPreSendMs','BuyGateWaitMs','FeedLagMs',
     'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
     'BuySenderHost','SellSenderHost',
-    'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count'];
+    'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4966,7 +5001,8 @@ app.get('/api/live/export', function(req, res) {
       t.signalToSendMs, t.buyPreSendMs, t.buyGateWaitMs, t.feedLagMs,
       t.exitTriggerPrice, t.exitTickAgeMs, csvSafe(t.exitFeedSource || ''), t.exitFeedLagMs, t.exitDecisionToSaleMs, t.exitSaleVsTriggerPct,
       csvSafe(t.buySenderHost || ''), csvSafe(t.sellSenderHost || ''),
-      csvSafe(t.buyLandSource || ''), csvSafe(t.sellLandSource || ''), t.postBuyReadMs, t.landedToOpenMs, t.buyBookkeepingMs, t.sellBalanceMs, t.sellBuildMs, t.sellPreSendMs, t.sellCappedParts, t.sell6024Count
+      csvSafe(t.buyLandSource || ''), csvSafe(t.sellLandSource || ''), t.postBuyReadMs, t.landedToOpenMs, t.buyBookkeepingMs, t.sellBalanceMs, t.sellBuildMs, t.sellPreSendMs, t.sellCappedParts, t.sell6024Count,
+      t.buyListenerMs, t.buyCheckerMs, t.sellListenerMs, t.sellCheckerMs
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -4988,6 +5024,20 @@ app.get('/api/live/export', function(req, res) {
     rows.push(extraRow({ Name: csvSafe('TOKENS LEFT IN WALLET'), Mint: d.mint,
       CloseReason: csvSafe('NOT SOLD - ' + d.amount + ' raw token units in account ' + addr + ', no tracked position') }));
   });
+  // Coins skipped because they are not paired with SOL: one marked row each, then a summary row.
+  if (liveNonSolSkips.length) {
+    var byQuote = {};
+    liveNonSolSkips.forEach(function(k) {
+      var key = k.quoteName + ' (' + k.quoteMint + ')';
+      byQuote[key] = (byQuote[key] || 0) + 1;
+      rows.push(extraRow({ Name: csvSafe('SKIPPED NON-SOL COIN: ' + k.name), Mint: k.mint, Platform: k.platform, SignalPrice: k.signalPrice,
+        EntryPrice: k.lastPrice,
+        OpenedAt: csvSafe(new Date(k.signalAt).toLocaleString('en-US', { timeZone: 'America/New_York' })),
+        CloseReason: csvSafe('NOT BOUGHT - paired with ' + k.quoteName + ' (' + k.quoteMint + '); EntryPrice column here is the last price the bot saw for it') }));
+    });
+    rows.push(extraRow({ Name: csvSafe('NON-SOL SUMMARY'),
+      CloseReason: csvSafe(liveNonSolSkips.length + ' coins skipped for not being SOL-paired | ' + Object.keys(byQuote).map(function(q) { return q + ' ' + byQuote[q]; }).join(', ')) }));
+  }
   // How hard the bot leaned on the node during this live session, and every time new buys were
   // held back because the node was slow. Added as marked rows at the bottom, like the rows above.
   if (rpcgate) {

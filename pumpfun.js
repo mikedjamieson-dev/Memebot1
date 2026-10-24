@@ -215,6 +215,7 @@ function checkSolPaired(bc, state) {
   if (q === null || q === DEFAULT_KEY || q === WSOL_MINT) return;
   var err = new Error('this coin is not paired with SOL (its quote token is ' + q + ') -- the bot only trades SOL-paired coins, so it was skipped');
   err.code = 'UNSUPPORTED_QUOTE';
+  err.quoteMint = q;
   throw err;
 }
 
