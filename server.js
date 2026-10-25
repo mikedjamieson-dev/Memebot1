@@ -678,6 +678,7 @@ var bqPairSubActive = false;
 var bqTradeSubActive = false;
 var bqReconnectDelay = 3000;
 var bqDeliberateStop = false;
+var bqLimitHandled = false;   // Bitquery refused a stream for too many connections: handled once per connection
 var bqPingI = null;
 var bqTradeLogCount = 0;
 
@@ -732,6 +733,7 @@ function connectBQ() {
       bqPairSubActive = false;
       bqTradeSubActive = false;
       bqReconnectDelay = 3000;
+      bqLimitHandled = false;
       S.sources['BITQUERY'] = 'live:0';
       log('Bitquery LIVE - real time data connected', 'pump');
       if (S.liveTradingEnabled || S.liveOpen.length > 0) liveLog('LIVE FEED: price feed connected -- real positions are being watched', 'info');
@@ -787,6 +789,19 @@ function handleBQMessage(msg) {
   if (msg.type === 'ka') return;
   if (msg.type === 'error') {
     log('BQ ERROR: ' + JSON.stringify(msg.payload || msg).slice(0, 200), 'warn');
+    // Bitquery allows only a few streams at once on this plan. If another copy of the bot is still connected
+    // (for instance the old one while Render swaps in a new deploy), the streams are refused. Asking again
+    // straight away only fails the same way, so drop this connection and try the whole thing again in 30s,
+    // for as long as it takes the other connection to go away.
+    if (/concurrent subscriptions|subscription limit/i.test(JSON.stringify(msg.payload || msg))) {
+      if (!bqLimitHandled) {
+        bqLimitHandled = true;
+        log('BQ: Bitquery refused the streams because too many are open on this account (another copy of the bot may still be connected). Reconnecting in 30s and trying again.', 'warn');
+        bqReconnectDelay = 30000;
+        try { if (pumpWs) pumpWs.close(); } catch (eLim) { /* the close handler reconnects */ }
+      }
+      return;
+    }
     // The swap stream refused to start while it was asking for the block time: start it again without.
     if (msg.id === 'trades_all' && !bqNoBlockField && pumpWs && pumpWs.readyState === WebSocket.OPEN) {
       bqNoBlockField = true;

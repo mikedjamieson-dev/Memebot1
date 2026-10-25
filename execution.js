@@ -470,17 +470,13 @@ function judgeStatus(w, status) {
   return false;
 }
 
-// How long to wait before a transaction is checked again. Checks are made at 0.4 s and 0.8 s after the
-// send (nothing can have landed at the instant of sending, so there is no check then). After that, when
-// the listener has confirmed its subscription for this transaction it is the main way a landing is
-// noticed and the checker only stays as the backup, every 2 s. Without a working listener the checker
-// keeps its old pace: every 0.4 s for the first 3 s, then every 0.8 s.
+// How long to wait before a transaction is checked again: every 0.4 s for the first 3 s, then every
+// 0.8 s -- the same pace the checker always had, whether or not the listener is working. The only
+// difference is that nothing is checked at the instant of sending (nothing can have landed yet), so the
+// first check is at 0.4 s.
 function nextCheckDelay(w, now) {
   var base = w.pollIntervalMs;
   var age = now - w.startTime;
-  var e = landing.want.get(w.signature);
-  var listening = landing.open && e && e.subId !== null && e.subId !== undefined && !e.fired;
-  if (listening) return age < base * 2 ? base : base * 5;
   return age < 3000 ? base : base * 2;
 }
 
