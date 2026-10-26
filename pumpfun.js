@@ -263,7 +263,22 @@ async function readCoin(connection, onlineSdk, mint, user, what) {
   return { state: state, bc: bc, tokenProgram: fetched[1] };
 }
 
-async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent, maxImpactPct) {
+// Real-SOL gate. The thin-liquidity check above looks at the curve's VIRTUAL reserves (a built-in cushion every
+// new coin starts with), so it never fires. What pays a sale is the curve's REAL SOL. When minRealLamports is
+// given, a buy is refused before anything is built or sent if the curve holds less real SOL than that.
+function checkRealQuote(bc, minRealLamports) {
+  var real = realQuoteOf(bc);
+  var realLam = real ? Number(real.toString()) : null;
+  if (minRealLamports > 0 && realLam !== null && realLam < minRealLamports) {
+    var err = new Error('too little real SOL in the curve: it holds ' + (realLam / 1e9).toFixed(4) + ' SOL, the minimum to buy is ' + (minRealLamports / 1e9).toFixed(4) + ' SOL -- a sale could not be paid out');
+    err.code = 'LOW_REAL_SOL';
+    err.realLamports = realLam;
+    throw err;
+  }
+  return realLam;
+}
+
+async function buildBuyInstructions(connection, mint, user, solAmountLamports, slippagePercent, maxImpactPct, minRealLamports) {
   assertSdk();
   var onlineSdk = new sdk.OnlinePumpSdk(connection);
   var coin = await readCoin(connection, onlineSdk, mint, user, '');
@@ -273,6 +288,7 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
 
   var solAmountBN = new BN(solAmountLamports.toString());
   checkBuyImpact(bc.virtualQuoteReserves, solAmountBN, maxImpactPct);
+  var realLamportsAtBuy = checkRealQuote(bc, minRealLamports);
   var amount;
   try {
     amount = quoteTokensForSol(bc, solAmountBN);
@@ -321,7 +337,27 @@ async function buildBuyInstructions(connection, mint, user, solAmountLamports, s
       ' -- ' + describe('associatedUserAccountInfo', buyState.associatedUserAccountInfo)
     );
   }
-  return tagBuiltWith(checkInstructions(ixs, cashback ? 'buyInstructions' : 'buyV3Instructions'), cashback ? 'cashback' : 'v3');
+  var builtBuy = tagBuiltWith(checkInstructions(ixs, cashback ? 'buyInstructions' : 'buyV3Instructions'), cashback ? 'cashback' : 'v3');
+  // The curve's real SOL at the moment of the buy, for the Live CSV.
+  try { Object.defineProperty(builtBuy, 'pumpBuyInfo', { value: { realQuoteLamports: realLamportsAtBuy }, enumerable: false, configurable: true }); } catch (e) { /* optional */ }
+  return builtBuy;
+}
+
+// While a position is held: what the curve can pay for these tokens right now. share is how much of the
+// tokens' quoted value the curve's real SOL could pay (1 = all of it). Used by the live drain watch.
+async function readCurvePayout(connection, mint, user, tokensRaw) {
+  assertSdk();
+  var onlineSdk = new sdk.OnlinePumpSdk(connection);
+  var state = await onlineSdk.fetchBuyState(mint, user);
+  var bc = state && state.bondingCurve;
+  if (!bc || !bc.virtualQuoteReserves || !bc.virtualTokenReserves) throw new Error('curve could not be read');
+  var real = realQuoteOf(bc);
+  var tokens = new BN(String(tokensRaw));
+  var quote = quoteSolForTokens(bc, tokens);
+  var realLam = real ? Number(real.toString()) : null;
+  var quoteLam = Number(quote.toString());
+  var share = (realLam === null) ? null : (quoteLam > 0 ? Math.min(1, (realLam * SELL_RESERVE_SHARE_PCT / 100) / quoteLam) : 1);
+  return { realLamports: realLam, quoteLamports: quoteLam, share: share, complete: !!bc.complete };
 }
 
 async function buildSellInstructions(connection, mint, user, tokenAmount, slippagePercent) {
@@ -437,6 +473,8 @@ module.exports = {
   buildSellInstructions,
   quoteTokensForSol,
   quoteSolForTokens,
+  readCurvePayout,
+  checkRealQuote,
   capSellToRealReserves,
   SELL_RESERVE_SHARE_PCT,
   checkBuyImpact,

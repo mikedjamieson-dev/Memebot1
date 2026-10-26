@@ -656,6 +656,10 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   }
   if (!tipAndHash) tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]);
   var tipLamports = tipAndHash[0];
+  // The tip test (see server.js): a level above normal pays a multiple of the going tip, never less than the tier's minimum.
+  if (options.tipMultiplier && options.tipMultiplier !== 1) {
+    tipLamports = Math.max(tier.minLamports, Math.round(tipLamports * options.tipMultiplier));
+  }
   var latest = tipAndHash[1];
 
   transaction.instructions.unshift(
@@ -764,6 +768,145 @@ function prefetchSendParts(connection, tierName) {
   return Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]).catch(function() { return null; });
 }
 
+// -- FEED TEST (measurement only, nothing is bought or sold by it) --------
+// How much sooner would the chain itself tell us about a new coin than Bitquery does? With FEED_TEST=on
+// in Render, this listens to the node's own log stream for the pump.fun program (one websocket, no
+// requests to the node) and notes when each coin's creation shows up. Each time Bitquery reports a new
+// coin, the two arrival times are compared (both measured here, on this server, so the comparison is
+// fair). The result is summed up in the Live CSV so the answer is read from data, not guessed.
+// The coin is matched without decoding anything: the creation event's raw bytes contain the coin's
+// 32-byte address, and the address Bitquery reports is searched for in them.
+var PUMP_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+var feedTest = { on: false, url: null, sock: null, nextId: 1, subId: null, retry: 0, creates: [], pendingBq: [],
+  stats: { creates: 0, matched: 0, bqUnmatched: 0, wsFirst: 0, bqFirst: 0, errors: 0, lastError: null, opened: 0 }, deltas: [] };
+
+function feedTestEnabled() {
+  return !!WS && String(process.env.FEED_TEST || '').trim().toLowerCase() === 'on';
+}
+
+function feedTestRecord(deltaMs) {
+  feedTest.stats.matched++;
+  if (deltaMs > 0) feedTest.stats.wsFirst++; else feedTest.stats.bqFirst++;
+  feedTest.deltas.push(deltaMs);
+  if (feedTest.deltas.length > 2000) feedTest.deltas.shift();
+}
+
+function feedTestTrim(now) {
+  while (feedTest.creates.length && (feedTest.creates.length > 400 || now - feedTest.creates[0].at > 120000)) feedTest.creates.shift();
+  while (feedTest.pendingBq.length) {
+    var b = feedTest.pendingBq[0];
+    if (feedTest.pendingBq.length > 400 || now - b.at > 60000) { feedTest.pendingBq.shift(); feedTest.stats.bqUnmatched++; } else break;
+  }
+}
+
+function feedTestOnCreate(sig, bufs, at) {
+  feedTest.stats.creates++;
+  for (var i = feedTest.pendingBq.length - 1; i >= 0; i--) {
+    var b = feedTest.pendingBq[i];
+    if (b.list.some(function(by) { return bufs.some(function(buf) { return buf.includes(by); }); })) {
+      feedTest.pendingBq.splice(i, 1);
+      feedTestRecord(b.at - at);   // positive: the chain stream was first
+      return;
+    }
+  }
+  feedTest.creates.push({ at: at, sig: sig, bufs: bufs });
+  feedTestTrim(at);
+}
+
+// Called by the bot each time Bitquery reports new coins (payload = the message's text, receivedAt = when it
+// arrived here). Every address-shaped string in it is turned into its 32 bytes and looked for inside the chain
+// stream's creation events, so nothing has to be known about where the coin's address sits in the message.
+function feedTestNoteBitquery(payload, receivedAt) {
+  if (!feedTest.on) return;
+  try {
+    var seen = {};
+    var list = [];
+    var found = String(payload).match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g) || [];
+    for (var k = 0; k < found.length && list.length < 40; k++) {
+      if (seen[found[k]]) continue;
+      seen[found[k]] = true;
+      try { var by = new PublicKey(found[k]).toBuffer(); if (by.length === 32) list.push(by); } catch (e) { /* not an address */ }
+    }
+    if (!list.length) return;
+    for (var i = feedTest.creates.length - 1; i >= 0; i--) {
+      var c = feedTest.creates[i];
+      if (list.some(function(by2) { return c.bufs.some(function(buf) { return buf.includes(by2); }); })) {
+        feedTest.creates.splice(i, 1);
+        feedTestRecord(receivedAt - c.at);
+        return;
+      }
+    }
+    feedTest.pendingBq.push({ list: list, at: receivedAt });
+    feedTestTrim(receivedAt);
+  } catch (e) { /* measurement only */ }
+}
+
+function feedTestOpen() {
+  if (!feedTest.on || !feedTest.url) return;
+  if (feedTest.sock && (feedTest.sock.readyState === 0 || feedTest.sock.readyState === 1)) return;
+  var sock;
+  try { sock = new WS(feedTest.url); } catch (e) { feedTest.stats.errors++; feedTest.stats.lastError = e.message; return; }
+  feedTest.sock = sock;
+  sock.on('open', function() {
+    feedTest.stats.opened++;
+    feedTest.retry = 0;
+    try {
+      sock.send(JSON.stringify({ jsonrpc: '2.0', id: feedTest.nextId++, method: 'logsSubscribe', params: [{ mentions: [PUMP_PROGRAM_ID] }, { commitment: 'processed' }] }));
+    } catch (e) { /* the close handler reconnects */ }
+  });
+  sock.on('message', function(raw) {
+    var at = Date.now();
+    try {
+      var rawText = String(raw);
+      if (rawText.indexOf('Instruction: Create') === -1) return;   // trades are the vast majority; skip them cheaply
+      var m = JSON.parse(rawText);
+      if (m.method !== 'logsNotification') return;
+      var v = m.params && m.params.result && m.params.result.value;
+      if (!v || v.err || !Array.isArray(v.logs)) return;
+      var isCreate = false;
+      for (var i = 0; i < v.logs.length; i++) {
+        if (/Instruction: Create/.test(v.logs[i])) { isCreate = true; break; }
+      }
+      if (!isCreate) return;
+      var bufs = [];
+      v.logs.forEach(function(l) {
+        if (l.indexOf('Program data: ') === 0) { try { bufs.push(Buffer.from(l.slice(14), 'base64')); } catch (e) { /* skip */ } }
+      });
+      if (bufs.length) feedTestOnCreate(v.signature, bufs, at);
+    } catch (e) { /* measurement only */ }
+  });
+  var onGone = function(err) {
+    if (err) { feedTest.stats.errors++; feedTest.stats.lastError = String(err.message || err).slice(0, 120); }
+    if (feedTest.sock === sock) feedTest.sock = null;
+    if (!feedTest.on) return;
+    feedTest.retry = Math.min(feedTest.retry + 1, 6);
+    var t = setTimeout(feedTestOpen, Math.min(30000, 1000 * Math.pow(2, feedTest.retry)));
+    if (t.unref) t.unref();
+  };
+  sock.on('close', function() { onGone(null); });
+  sock.on('error', function(e) { onGone(e); });
+}
+
+function startFeedTest(rpcUrl) {
+  if (!feedTestEnabled() || feedTest.on) return feedTest.on;
+  feedTest.url = toWsUrl(rpcUrl);
+  if (!feedTest.url) return false;
+  feedTest.on = true;
+  feedTestOpen();
+  return true;
+}
+
+function feedTestIsOn() { return feedTest.on; }
+
+function feedTestSummary() {
+  if (!feedTest.on && feedTest.stats.matched === 0 && feedTest.stats.creates === 0) return null;
+  var d = feedTest.deltas.slice().sort(function(a, b) { return a - b; });
+  var pick = function(p) { return d.length ? d[Math.min(d.length - 1, Math.floor(d.length * p))] : null; };
+  return { on: feedTest.on, creates: feedTest.stats.creates, matched: feedTest.stats.matched, wsFirst: feedTest.stats.wsFirst, bqFirst: feedTest.stats.bqFirst,
+    bqUnmatched: feedTest.stats.bqUnmatched, errors: feedTest.stats.errors, lastError: feedTest.stats.lastError,
+    medianMs: pick(0.5), p10Ms: pick(0.1), p90Ms: pick(0.9) };
+}
+
 module.exports = {
   sendAndConfirm,
   sendAndConfirmViaSender,
@@ -771,6 +914,10 @@ module.exports = {
   readBlockHeightShared,
   warmLandingSocket,
   landingStatus,
+  startFeedTest,
+  feedTestNoteBitquery,
+  feedTestIsOn,
+  feedTestSummary,
   senderHost,
   testSelfTransfer,
   testSelfTransferViaSender,
