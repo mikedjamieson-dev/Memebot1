@@ -190,6 +190,15 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 </style>
 </head>
 <body>
+<div id="bb-login" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.88);align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;width:100%;max-width:340px;color:#e6edf3;font-family:inherit;">
+    <div style="font-size:16px;font-weight:600;margin-bottom:10px;">BunkerBuster password</div>
+    <input id="bb-login-input" type="password" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px;font-size:16px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;">
+    <div id="bb-login-msg" style="color:#f85149;font-size:13px;min-height:18px;margin:8px 0;"></div>
+    <button id="bb-login-btn" type="button" style="width:100%;padding:10px;font-size:16px;border:0;border-radius:6px;background:#238636;color:#fff;cursor:pointer;">Enter</button>
+  </div>
+</div>
+
 
 <div id="js-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#ff3d5a;color:#fff;padding:12px;font-family:monospace;font-size:13px;word-break:break-word;">
   <div style="font-weight:bold;margin-bottom:4px;">⚠️ A real error just happened -- screenshot this and send it:</div>
@@ -873,18 +882,30 @@ function bbKeyClear() {
   try { localStorage.removeItem('bb_key'); } catch (e) { /* nothing stored */ }
 }
 var bbKeyAsking = null;
-var bbKeyDeclinedAt = 0;
-function bbKeyAsk() {
-  // If the password box was just closed without an answer, it is not shown again for a minute.
-  if (!bbKeyAsking && (Date.now() - bbKeyDeclinedAt) < 60000) return Promise.resolve('');
+// The password is asked for in a box on the page itself (not a browser pop-up). Every request that needs it
+// waits for the same box, and the box stays until a password is entered.
+function bbKeyAsk(wasRejected) {
   if (!bbKeyAsking) {
-    bbKeyAsking = Promise.resolve().then(function() {
-      var k = window.prompt('BunkerBuster password:');
-      if (k && k.trim()) bbKeySet(k.trim());
-      else bbKeyDeclinedAt = Date.now();
-      bbKeyAsking = null;
-      bbKeyExportLinks();
-      return bbKeyGet();
+    bbKeyAsking = new Promise(function(resolve) {
+      var box = document.getElementById('bb-login');
+      var inp = document.getElementById('bb-login-input');
+      var btn = document.getElementById('bb-login-btn');
+      var msg = document.getElementById('bb-login-msg');
+      msg.textContent = wasRejected ? 'That password was not accepted. Try again.' : '';
+      inp.value = '';
+      box.style.display = 'flex';
+      setTimeout(function() { inp.focus(); }, 50);
+      var done = function() {
+        var k = inp.value.trim();
+        if (!k) return;
+        bbKeySet(k);
+        box.style.display = 'none';
+        bbKeyAsking = null;
+        bbKeyExportLinks();
+        resolve(k);
+      };
+      btn.onclick = done;
+      inp.onkeydown = function(e) { if (e.key === 'Enter') done(); };
     });
   }
   return bbKeyAsking;
@@ -908,12 +929,15 @@ window.fetch = async function(url, opts) {
     return bbRealFetch(url, o);
   };
   var key = bbKeyGet();
-  if (!key) key = await bbKeyAsk();
+  if (!key) key = await bbKeyAsk(false);
   var res = await send(key);
   if (res.status === 401) {
-    bbKeyClear();
-    key = await bbKeyAsk();
-    res = await send(key);
+    // Only throw the saved password away if it is the very one that was just refused. A request that went out
+    // earlier with an old or empty password must never wipe a password entered since.
+    if (bbKeyGet() === key) bbKeyClear();
+    var current = bbKeyGet();
+    if (!current) current = await bbKeyAsk(true);
+    res = await send(current);
   }
   return res;
 };

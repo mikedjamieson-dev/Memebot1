@@ -15,10 +15,10 @@ const PORT = process.env.PORT || 3000;
 // or in the address as ?key=... for the two download links. The page itself (/) and /health stay open
 // because they show and change nothing. If BB_KEY is not set the bot refuses every /api/ request instead of
 // leaving the controls open.
-const BB_KEY = String(process.env.BB_KEY || '');
+const BB_KEY = String(process.env.BB_KEY || '').trim();   // stray spaces or line breaks pasted into Render are ignored
 function keyMatches(given) {
   if (!BB_KEY || typeof given !== 'string') return false;
-  var a = crypto.createHash('sha256').update(given).digest();
+  var a = crypto.createHash('sha256').update(given.trim()).digest();
   var b = crypto.createHash('sha256').update(BB_KEY).digest();
   return crypto.timingSafeEqual(a, b);
 }
