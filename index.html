@@ -190,14 +190,6 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
 </style>
 </head>
 <body>
-<div id="bb-login" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.88);align-items:center;justify-content:center;padding:16px;">
-  <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;width:100%;max-width:340px;color:#e6edf3;font-family:inherit;">
-    <div style="font-size:16px;font-weight:600;margin-bottom:10px;">BunkerBuster password</div>
-    <input id="bb-login-input" type="password" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:10px;font-size:16px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#e6edf3;">
-    <div id="bb-login-msg" style="color:#f85149;font-size:13px;min-height:18px;margin:8px 0;"></div>
-    <button id="bb-login-btn" type="button" style="width:100%;padding:10px;font-size:16px;border:0;border-radius:6px;background:#238636;color:#fff;cursor:pointer;">Enter</button>
-  </div>
-</div>
 
 
 <div id="js-error-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#ff3d5a;color:#fff;padding:12px;font-family:monospace;font-size:13px;word-break:break-word;">
@@ -864,84 +856,6 @@ window.onerror = function(msg, source, lineno, colno, error) {
 };
 var BASE = '';
 
-// -- PASSWORD ------------------------------------------------------
-// Every /api/ address on the server needs the bot's password (BB_KEY in Render). It is asked for once and
-// kept in this browser. Every request made by this page carries it in the x-bb-key header; the two download
-// links carry it in the address instead, because a link cannot send a header.
-var bbKeyMemory = '';
-function bbKeyGet() {
-  try { var k = localStorage.getItem('bb_key'); if (k) return k; } catch (e) { /* browser storage may be blocked */ }
-  return bbKeyMemory;
-}
-function bbKeySet(k) {
-  bbKeyMemory = k;
-  try { localStorage.setItem('bb_key', k); } catch (e) { /* kept in memory for this visit */ }
-}
-function bbKeyClear() {
-  bbKeyMemory = '';
-  try { localStorage.removeItem('bb_key'); } catch (e) { /* nothing stored */ }
-}
-var bbKeyAsking = null;
-// The password is asked for in a box on the page itself (not a browser pop-up). Every request that needs it
-// waits for the same box, and the box stays until a password is entered.
-function bbKeyAsk(wasRejected) {
-  if (!bbKeyAsking) {
-    bbKeyAsking = new Promise(function(resolve) {
-      var box = document.getElementById('bb-login');
-      var inp = document.getElementById('bb-login-input');
-      var btn = document.getElementById('bb-login-btn');
-      var msg = document.getElementById('bb-login-msg');
-      msg.textContent = wasRejected ? 'That password was not accepted. Try again.' : '';
-      inp.value = '';
-      box.style.display = 'flex';
-      setTimeout(function() { inp.focus(); }, 50);
-      var done = function() {
-        var k = inp.value.trim();
-        if (!k) return;
-        bbKeySet(k);
-        box.style.display = 'none';
-        bbKeyAsking = null;
-        bbKeyExportLinks();
-        resolve(k);
-      };
-      btn.onclick = done;
-      inp.onkeydown = function(e) { if (e.key === 'Enter') done(); };
-    });
-  }
-  return bbKeyAsking;
-}
-function bbKeyExportLinks() {
-  var k = bbKeyGet();
-  var live = document.getElementById('live-export-link');
-  if (live) live.setAttribute('href', '/api/live/export' + (k ? '?key=' + encodeURIComponent(k) : ''));
-  var pt = document.getElementById('pt-export-link');
-  if (pt) {
-    var base = (typeof ptSource !== 'undefined' && ptSource === 'live') ? '/api/live/export' : '/api/portfolio/export';
-    pt.setAttribute('href', base + (k ? '?key=' + encodeURIComponent(k) : ''));
-  }
-}
-var bbRealFetch = window.fetch.bind(window);
-window.fetch = async function(url, opts) {
-  if (typeof url !== 'string' || url.indexOf('/api/') === -1) return bbRealFetch(url, opts);
-  var send = function(key) {
-    var o = Object.assign({}, opts || {});
-    o.headers = Object.assign({}, (opts && opts.headers) || {}, { 'x-bb-key': key });
-    return bbRealFetch(url, o);
-  };
-  var key = bbKeyGet();
-  if (!key) key = await bbKeyAsk(false);
-  var res = await send(key);
-  if (res.status === 401) {
-    // Only throw the saved password away if it is the very one that was just refused. A request that went out
-    // earlier with an old or empty password must never wipe a password entered since.
-    if (bbKeyGet() === key) bbKeyClear();
-    var current = bbKeyGet();
-    if (!current) current = await bbKeyAsk(true);
-    res = await send(current);
-  }
-  return res;
-};
-bbKeyExportLinks();
 var botRunning = false;
 var liveTradingOn = false;
 var logFilter = 'all';
@@ -2091,7 +2005,6 @@ function setPortSource(src) {
   document.getElementById('btn-src-live').classList.toggle('active', src === 'live');
   document.querySelectorAll('.pt-paper-only').forEach(function(b) { b.style.display = src === 'paper' ? '' : 'none'; });
   document.querySelectorAll('.pt-live-only').forEach(function(b) { b.style.display = src === 'live' ? '' : 'none'; });
-  bbKeyExportLinks();
   ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
   document.querySelectorAll('#port-page .filter-row').forEach(function(row) {
     row.querySelectorAll('.filter-btn').forEach(function(b, i) { b.classList.toggle('active', i === 0); });

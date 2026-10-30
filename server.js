@@ -4,31 +4,11 @@ const WebSocket = require('ws');
 const fetch = require('node-fetch');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
-// -- PASSWORD --------------------------------------------------
-// Every /api/ address needs the bot's password (BB_KEY in Render): sent by the page in the x-bb-key header,
-// or in the address as ?key=... for the two download links. The page itself (/) and /health stay open
-// because they show and change nothing. If BB_KEY is not set the bot refuses every /api/ request instead of
-// leaving the controls open.
-const BB_KEY = String(process.env.BB_KEY || '').trim();   // stray spaces or line breaks pasted into Render are ignored
-function keyMatches(given) {
-  if (!BB_KEY || typeof given !== 'string') return false;
-  var a = crypto.createHash('sha256').update(given.trim()).digest();
-  var b = crypto.createHash('sha256').update(BB_KEY).digest();
-  return crypto.timingSafeEqual(a, b);
-}
-app.use('/api', function(req, res, next) {
-  if (!BB_KEY) return res.status(503).json({ error: 'BB_KEY is not set in Render -- the bot refuses all requests until it is' });
-  var given = req.get('x-bb-key');
-  if (typeof given !== 'string' || given === '') given = (typeof req.query.key === 'string') ? req.query.key : '';
-  if (!keyMatches(given)) return res.status(401).json({ error: 'wrong or missing password' });
-  next();
-});
 const BITQUERY_TOKEN = process.env.BITQUERY_TOKEN || '';
 
 // -- CONFIGURATION ---------------------------------------------
