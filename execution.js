@@ -19,7 +19,7 @@
 //               above; genuinely unresolved, not a guess at either
 //               outcome
 
-const { Transaction, SystemProgram, ComputeBudgetProgram, PublicKey } = require('@solana/web3.js');
+const { SystemProgram, ComputeBudgetProgram, PublicKey } = require('@solana/web3.js');
 
 // Helius Sender's own required tip accounts -- confirmed directly from
 // a real rejection response ("transaction must send a tip ... to one
@@ -97,16 +97,23 @@ async function fetchTipFloorLamports(tier) {
   }
 }
 
+// Where the tip number of the most recent read came from: 'live' (just fetched from Jito), 'cached'
+// (a recent fetch), 'stale' (the last good one, after a failed fetch) or 'minimum' (the tier's documented
+// minimum, because Jito could not be read). Recorded on every trade so a tip that is not the real going
+// rate shows up in the data instead of being hidden.
+var lastTipSource = 'none';
 async function fetchCurrentTipLamports(tier, forceRefresh) {
   var key = String(tier.minLamports);
   var cached = tipCache[key];
-  if (!forceRefresh && cached && (Date.now() - cached.at) < TIP_CACHE_TTL_MS) return cached.lamports;
+  if (!forceRefresh && cached && (Date.now() - cached.at) < TIP_CACHE_TTL_MS) { lastTipSource = 'cached'; return cached.lamports; }
   var fresh = await fetchTipFloorLamports(tier);
   if (fresh !== null) {
     tipCache[key] = { lamports: fresh, at: Date.now() };
+    lastTipSource = 'live';
     return fresh;
   }
-  if (cached && (Date.now() - cached.at) < TIP_CACHE_STALE_MS) return cached.lamports;
+  if (cached && (Date.now() - cached.at) < TIP_CACHE_STALE_MS) { lastTipSource = 'stale'; return cached.lamports; }
+  lastTipSource = 'minimum';
   return tier.minLamports;
 }
 
@@ -128,39 +135,20 @@ function extractApiKey(rpcUrl) {
   return match[1];
 }
 
-// Where buys and sells are submitted. Helius runs Sender in several places; their docs say a
-// backend program should use the regional address closest to it (plain http), and the single
-// global https address is for browsers. The bot runs in Ohio, so the default is Newark.
-// SENDER_REGION in Render changes it without a code push: ewr (Newark), slc (Salt Lake City),
-// lon (London), fra (Frankfurt), ams (Amsterdam), sg (Singapore), tyo (Tokyo), global (the old
-// https address), or a full address starting with http.
-// "ab" (the default for now) is a test: every send picks Newark or the global address at random, and
-// the Live CSV records which one each buy and sell used, so the two can be compared in the same market.
-var SENDER_REGIONS = { ewr: 1, slc: 1, lon: 1, fra: 1, ams: 1, sg: 1, tyo: 1 };
-var SENDER_GLOBAL = 'https://sender.helius-rpc.com/fast';
+// Where buys and sells are submitted: Helius Sender, Newark (plain http, the address Helius documents for a
+// backend program; the bot runs in Ohio). The live trades measured so far all went through Newark.
 var SENDER_NEWARK = 'http://ewr-sender.helius-rpc.com/fast';
-function senderBase() {
-  var raw = String(process.env.SENDER_REGION || '').trim();
-  var v = raw.toLowerCase();
-  if (v === '' || v === 'ab') return Math.random() < 0.5 ? SENDER_NEWARK : SENDER_GLOBAL;
-  if (v === 'global') return SENDER_GLOBAL;
-  if (SENDER_REGIONS[v]) return 'http://' + v + '-sender.helius-rpc.com/fast';
-  if (/^https?:\/\/[^\s?]+$/i.test(raw)) return raw;
-  return SENDER_NEWARK;
-}
 function hostOf(url) {
   return String(url || '').replace(/^https?:\/\//i, '').replace(/[\/?].*$/, '');
 }
 function senderHost() {
-  var v = String(process.env.SENDER_REGION || '').trim().toLowerCase();
-  if (v === '' || v === 'ab') return 'TEST: ' + hostOf(SENDER_NEWARK) + ' and ' + hostOf(SENDER_GLOBAL) + ' take turns at random';
-  return hostOf(senderBase());
+  return hostOf(SENDER_NEWARK);
 }
 
 function buildSenderUrl(rpcUrl, tier) {
   var apiKey = extractApiKey(rpcUrl);
   var query = 'api-key=' + apiKey + (tier.queryParam ? '&' + tier.queryParam : '');
-  return senderBase() + '?' + query;
+  return SENDER_NEWARK + '?' + query;
 }
 
 function describe(label, value) {
@@ -217,13 +205,10 @@ async function getBlockhashShared(connection) {
 // Forgotten after any send the network refused, so the next try reads a fresh one.
 function forgetBlockhash() { hashShared.value = null; hashShared.at = 0; }
 
-// The request gate (counts requests, keeps them under the plan limit, puts sells first).
-// If the file is missing everything still works, just without those protections.
-var gateModule;
+// The request gate (counts requests, keeps them under the plan limit, puts sells first). It is part of the
+// bot: if the file is missing the bot refuses to start, instead of running without the protection.
+var gateModule = require('./rpcgate');
 function gate() {
-  if (gateModule === undefined) {
-    try { gateModule = require('./rpcgate'); } catch (e) { gateModule = null; }
-  }
   return gateModule;
 }
 
@@ -231,7 +216,7 @@ function gate() {
 // whose maxWait is how long the request waited in line.
 function runWithGate(prio, fn) {
   var g = gate();
-  if (g && prio !== null && prio !== undefined) return g.runTracked(prio, fn);
+  if (prio !== null && prio !== undefined) return g.runTracked(prio, fn);
   return fn({ maxWait: 0 });
 }
 
@@ -297,8 +282,7 @@ function finishWatcher(w, result) {
 // pushes a message the moment the transaction is confirmed. The checker stays running as the
 // backup, exactly as before; whichever hears first settles the transaction, with the same
 // meaning (confirmed with no error = CONFIRMED, confirmed with an error = FAILED). Every result
-// says which one heard it (landSource). If the socket is down, unavailable, or LANDING_SOCKET=off
-// is set in Render, nothing changes: the checker alone does the job, as it always did.
+// says which one heard it (landSource). If the socket is down or unavailable, nothing changes: the checker alone does the job, as it always did.
 var WS = null;
 try { WS = require('ws'); } catch (e) { WS = null; }
 var landing = {
@@ -318,7 +302,7 @@ function toWsUrl(u) {
 }
 
 function landingEnabled() {
-  return !!WS && String(process.env.LANDING_SOCKET || '').trim().toLowerCase() !== 'off';
+  return !!WS;
 }
 
 function landingSend(obj) {
@@ -638,12 +622,19 @@ async function sendAndConfirm(transaction, keypair, connection, options) {
 // priority fee specifically -- unlike the tip, this has not been
 // built to fetch a live recommended value yet. That is a reasonable
 // next refinement, not something this build claims to already do.
+var RESEND_EVERY_MS = 1500;
+var RESEND_MAX = 6;
+
 async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl, options) {
   options = options || {};
   var tierName = options.tier || 'SWQOS_ONLY';
   var tier = SENDER_TIERS[tierName];
   if (!tier) throw new Error('unknown Sender tier: ' + tierName);
   var microLamportsPerCu = options.microLamportsPerCu || 100000;
+  // The compute-unit limit the fee is charged on. Without one the network assumes a very large default and
+  // charges the priority fee on all of it. The real use per trade is recorded (computeUnitsConsumed in the
+  // Live CSV) so this limit can be tightened from data.
+  var cuLimit = options.cuLimit || 600000;
 
   // The tip number and the latest blockhash do not depend on each other, so
   // they are fetched at the same time.
@@ -656,13 +647,11 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   }
   if (!tipAndHash) tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]);
   var tipLamports = tipAndHash[0];
-  // The tip test (see server.js): a level above normal pays a multiple of the going tip, never less than the tier's minimum.
-  if (options.tipMultiplier && options.tipMultiplier !== 1) {
-    tipLamports = Math.max(tier.minLamports, Math.round(tipLamports * options.tipMultiplier));
-  }
+  var tipSource = lastTipSource;
   var latest = tipAndHash[1];
 
   transaction.instructions.unshift(
+    ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
     ComputeBudgetProgram.setComputeUnitPrice({ microLamports: microLamportsPerCu })
   );
   transaction.add(
@@ -726,37 +715,28 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     err2.mayHaveSent = true;
     throw err2;
   }
-  var outcome = await pollForOutcome(signature, connection, latest, Object.assign({}, options, { wsUrl: toWsUrl(rpcUrl) }));
+  // The same signed transaction is sent again every RESEND_EVERY_MS until its outcome is known (at most
+  // RESEND_MAX times). Sending the identical transaction again cannot make it happen twice -- it has one
+  // signature, and the network runs a signature once -- it only gives a dropped one more chances.
+  var resends = 0;
+  var resendTimer = setInterval(function() {
+    if (resends >= RESEND_MAX) { clearInterval(resendTimer); return; }
+    resends++;
+    fetchWithTimeout(senderUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 5000).catch(function() { /* the first send is what counts */ });
+  }, RESEND_EVERY_MS);
+  var outcome;
+  try {
+    outcome = await pollForOutcome(signature, connection, latest, Object.assign({}, options, { wsUrl: toWsUrl(rpcUrl) }));
+  } finally {
+    clearInterval(resendTimer);
+  }
   if (outcome.outcome !== 'CONFIRMED') forgetBlockhash();
   outcome.tipLamports = tipLamports;
+  outcome.tipSource = tipSource;
   outcome.senderHost = senderUsed;
+  outcome.resends = resends;
+  outcome.cuLimit = cuLimit;
   return outcome;
-}
-
-// The one-time proof test, normal path: the smallest possible real
-// transaction -- 0.00001 SOL sent from the trading wallet to itself.
-async function testSelfTransfer(keypair, connection) {
-  var transaction = new Transaction().add(
-    SystemProgram.transfer({
-      fromPubkey: keypair.publicKey,
-      toPubkey: keypair.publicKey,
-      lamports: 10000,
-    })
-  );
-  return sendAndConfirm(transaction, keypair, connection);
-}
-
-// Same proof test, routed through Sender instead, to prove the tip +
-// priority fee + Sender submission path against real infrastructure.
-async function testSelfTransferViaSender(keypair, connection, rpcUrl) {
-  var transaction = new Transaction().add(
-    SystemProgram.transfer({
-      fromPubkey: keypair.publicKey,
-      toPubkey: keypair.publicKey,
-      lamports: 10000,
-    })
-  );
-  return sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl, { tier: 'SWQOS_ONLY' });
 }
 
 // Starts the two reads a send needs (the tip number and the latest blockhash) right now, so the
@@ -768,145 +748,6 @@ function prefetchSendParts(connection, tierName) {
   return Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]).catch(function() { return null; });
 }
 
-// -- FEED TEST (measurement only, nothing is bought or sold by it) --------
-// How much sooner would the chain itself tell us about a new coin than Bitquery does? With FEED_TEST=on
-// in Render, this listens to the node's own log stream for the pump.fun program (one websocket, no
-// requests to the node) and notes when each coin's creation shows up. Each time Bitquery reports a new
-// coin, the two arrival times are compared (both measured here, on this server, so the comparison is
-// fair). The result is summed up in the Live CSV so the answer is read from data, not guessed.
-// The coin is matched without decoding anything: the creation event's raw bytes contain the coin's
-// 32-byte address, and the address Bitquery reports is searched for in them.
-var PUMP_PROGRAM_ID = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
-var feedTest = { on: false, url: null, sock: null, nextId: 1, subId: null, retry: 0, creates: [], pendingBq: [],
-  stats: { creates: 0, matched: 0, bqUnmatched: 0, wsFirst: 0, bqFirst: 0, errors: 0, lastError: null, opened: 0 }, deltas: [] };
-
-function feedTestEnabled() {
-  return !!WS && String(process.env.FEED_TEST || '').trim().toLowerCase() === 'on';
-}
-
-function feedTestRecord(deltaMs) {
-  feedTest.stats.matched++;
-  if (deltaMs > 0) feedTest.stats.wsFirst++; else feedTest.stats.bqFirst++;
-  feedTest.deltas.push(deltaMs);
-  if (feedTest.deltas.length > 2000) feedTest.deltas.shift();
-}
-
-function feedTestTrim(now) {
-  while (feedTest.creates.length && (feedTest.creates.length > 400 || now - feedTest.creates[0].at > 120000)) feedTest.creates.shift();
-  while (feedTest.pendingBq.length) {
-    var b = feedTest.pendingBq[0];
-    if (feedTest.pendingBq.length > 400 || now - b.at > 60000) { feedTest.pendingBq.shift(); feedTest.stats.bqUnmatched++; } else break;
-  }
-}
-
-function feedTestOnCreate(sig, bufs, at) {
-  feedTest.stats.creates++;
-  for (var i = feedTest.pendingBq.length - 1; i >= 0; i--) {
-    var b = feedTest.pendingBq[i];
-    if (b.list.some(function(by) { return bufs.some(function(buf) { return buf.includes(by); }); })) {
-      feedTest.pendingBq.splice(i, 1);
-      feedTestRecord(b.at - at);   // positive: the chain stream was first
-      return;
-    }
-  }
-  feedTest.creates.push({ at: at, sig: sig, bufs: bufs });
-  feedTestTrim(at);
-}
-
-// Called by the bot each time Bitquery reports new coins (payload = the message's text, receivedAt = when it
-// arrived here). Every address-shaped string in it is turned into its 32 bytes and looked for inside the chain
-// stream's creation events, so nothing has to be known about where the coin's address sits in the message.
-function feedTestNoteBitquery(payload, receivedAt) {
-  if (!feedTest.on) return;
-  try {
-    var seen = {};
-    var list = [];
-    var found = String(payload).match(/[1-9A-HJ-NP-Za-km-z]{32,44}/g) || [];
-    for (var k = 0; k < found.length && list.length < 40; k++) {
-      if (seen[found[k]]) continue;
-      seen[found[k]] = true;
-      try { var by = new PublicKey(found[k]).toBuffer(); if (by.length === 32) list.push(by); } catch (e) { /* not an address */ }
-    }
-    if (!list.length) return;
-    for (var i = feedTest.creates.length - 1; i >= 0; i--) {
-      var c = feedTest.creates[i];
-      if (list.some(function(by2) { return c.bufs.some(function(buf) { return buf.includes(by2); }); })) {
-        feedTest.creates.splice(i, 1);
-        feedTestRecord(receivedAt - c.at);
-        return;
-      }
-    }
-    feedTest.pendingBq.push({ list: list, at: receivedAt });
-    feedTestTrim(receivedAt);
-  } catch (e) { /* measurement only */ }
-}
-
-function feedTestOpen() {
-  if (!feedTest.on || !feedTest.url) return;
-  if (feedTest.sock && (feedTest.sock.readyState === 0 || feedTest.sock.readyState === 1)) return;
-  var sock;
-  try { sock = new WS(feedTest.url); } catch (e) { feedTest.stats.errors++; feedTest.stats.lastError = e.message; return; }
-  feedTest.sock = sock;
-  sock.on('open', function() {
-    feedTest.stats.opened++;
-    feedTest.retry = 0;
-    try {
-      sock.send(JSON.stringify({ jsonrpc: '2.0', id: feedTest.nextId++, method: 'logsSubscribe', params: [{ mentions: [PUMP_PROGRAM_ID] }, { commitment: 'processed' }] }));
-    } catch (e) { /* the close handler reconnects */ }
-  });
-  sock.on('message', function(raw) {
-    var at = Date.now();
-    try {
-      var rawText = String(raw);
-      if (rawText.indexOf('Instruction: Create') === -1) return;   // trades are the vast majority; skip them cheaply
-      var m = JSON.parse(rawText);
-      if (m.method !== 'logsNotification') return;
-      var v = m.params && m.params.result && m.params.result.value;
-      if (!v || v.err || !Array.isArray(v.logs)) return;
-      var isCreate = false;
-      for (var i = 0; i < v.logs.length; i++) {
-        if (/Instruction: Create/.test(v.logs[i])) { isCreate = true; break; }
-      }
-      if (!isCreate) return;
-      var bufs = [];
-      v.logs.forEach(function(l) {
-        if (l.indexOf('Program data: ') === 0) { try { bufs.push(Buffer.from(l.slice(14), 'base64')); } catch (e) { /* skip */ } }
-      });
-      if (bufs.length) feedTestOnCreate(v.signature, bufs, at);
-    } catch (e) { /* measurement only */ }
-  });
-  var onGone = function(err) {
-    if (err) { feedTest.stats.errors++; feedTest.stats.lastError = String(err.message || err).slice(0, 120); }
-    if (feedTest.sock === sock) feedTest.sock = null;
-    if (!feedTest.on) return;
-    feedTest.retry = Math.min(feedTest.retry + 1, 6);
-    var t = setTimeout(feedTestOpen, Math.min(30000, 1000 * Math.pow(2, feedTest.retry)));
-    if (t.unref) t.unref();
-  };
-  sock.on('close', function() { onGone(null); });
-  sock.on('error', function(e) { onGone(e); });
-}
-
-function startFeedTest(rpcUrl) {
-  if (!feedTestEnabled() || feedTest.on) return feedTest.on;
-  feedTest.url = toWsUrl(rpcUrl);
-  if (!feedTest.url) return false;
-  feedTest.on = true;
-  feedTestOpen();
-  return true;
-}
-
-function feedTestIsOn() { return feedTest.on; }
-
-function feedTestSummary() {
-  if (!feedTest.on && feedTest.stats.matched === 0 && feedTest.stats.creates === 0) return null;
-  var d = feedTest.deltas.slice().sort(function(a, b) { return a - b; });
-  var pick = function(p) { return d.length ? d[Math.min(d.length - 1, Math.floor(d.length * p))] : null; };
-  return { on: feedTest.on, creates: feedTest.stats.creates, matched: feedTest.stats.matched, wsFirst: feedTest.stats.wsFirst, bqFirst: feedTest.stats.bqFirst,
-    bqUnmatched: feedTest.stats.bqUnmatched, errors: feedTest.stats.errors, lastError: feedTest.stats.lastError,
-    medianMs: pick(0.5), p10Ms: pick(0.1), p90Ms: pick(0.9) };
-}
-
 module.exports = {
   sendAndConfirm,
   sendAndConfirmViaSender,
@@ -914,13 +755,7 @@ module.exports = {
   readBlockHeightShared,
   warmLandingSocket,
   landingStatus,
-  startFeedTest,
-  feedTestNoteBitquery,
-  feedTestIsOn,
-  feedTestSummary,
   senderHost,
-  testSelfTransfer,
-  testSelfTransferViaSender,
   fetchCurrentTipLamports,
   warmTipCache,
   HELIUS_SENDER_TIP_ACCOUNTS,

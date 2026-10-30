@@ -126,15 +126,10 @@ function getConnection() {
     err.code = 'RPC_NOT_CONFIGURED';
     throw err;
   }
-  // Every request goes through the rate gate (counted, kept under the plan limit,
-  // sells first). If the gate file is missing the connection works exactly as before.
-  var gate = null;
-  // Setting RPC_GATE to off on Render turns the gate off without touching the code.
-  if (String(process.env.RPC_GATE || '').toLowerCase() !== 'off') {
-    try { gate = require('./rpcgate'); } catch (e) { gate = null; }
-  }
-  if (gate) return new Connection(rpcUrl.trim(), { commitment: 'confirmed', fetch: gate.gatedFetch });
-  return new Connection(rpcUrl.trim(), 'confirmed');
+  // Every request goes through the rate gate (counted, kept under the plan limit, sells first). The gate is
+  // part of the bot: if its file is missing the bot refuses to start rather than run without it.
+  var gate = require('./rpcgate');
+  return new Connection(rpcUrl.trim(), { commitment: 'confirmed', fetch: gate.gatedFetch });
 }
 
 // Reads the real, current SOL balance for a given public key from the
@@ -173,7 +168,6 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
     // zero, which would hide the actual problem.
     var isAccountNotFound = e.message && (
       e.message.indexOf('could not find account') !== -1 ||
-      e.message.indexOf('Invalid param') !== -1 ||
       e.message.indexOf('AccountNotFound') !== -1
     );
     if (isAccountNotFound) {
@@ -242,7 +236,13 @@ async function getTokensFromTx(connection, signature, ownerPublicKey, mintStr, s
   var post = (tx.meta.postTokenBalances || []).filter(function(b) {
     return b && b.mint === mintStr && b.owner === owner;
   });
-  if (post.length === 0) return { amount: '0', decimals: 0, fromTx: true };
+  if (post.length === 0) {
+    // A confirmed trade of this coin always lists the wallet's account for it. If it does not, something is
+    // not as expected, and calling that "zero tokens" would hide it -- so it is reported as an error.
+    var errNo = new Error('The transaction record lists no balance for this coin in this wallet');
+    errNo.code = 'MINT_NOT_IN_TX';
+    throw errNo;
+  }
   var amt = post[0].uiTokenAmount || {};
   return { amount: String(amt.amount || '0'), decimals: amt.decimals || 0, fromTx: true };
 }
@@ -314,6 +314,20 @@ async function getRealTransactionFee(connection, signature) {
   return tx.meta.fee;
 }
 
+// Reads how many compute units a confirmed transaction really used, from its own record. Recorded on
+// every trade so the limit set on the transaction can be tightened from real numbers. Returns null if the
+// record does not carry it.
+async function getComputeUnitsFromTx(connection, signature) {
+  var tx = await readTransactionRetried(connection, signature);
+  if (!tx || !tx.meta) {
+    var err = new Error('Could not read the compute units for this transaction -- it may not be indexed yet');
+    err.code = 'CU_NOT_FOUND';
+    throw err;
+  }
+  var cu = tx.meta.computeUnitsConsumed;
+  return (typeof cu === 'number') ? cu : null;
+}
+
 // Reads the wallet's real, net SOL balance change caused by a specific
 // confirmed transaction -- negative for a buy (SOL left the wallet),
 // positive for a sell (SOL came in). This already naturally includes
@@ -347,6 +361,7 @@ module.exports = {
   getRentFromTx,
   getTokenProgramId,
   getRealTransactionFee,
+  getComputeUnitsFromTx,
   getRealBalanceChange,
   getConnection,
   LIVE_KEY_ENV,
