@@ -521,7 +521,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="settings-sub" id="sub-wallets">
       <button class="settings-back" onclick="closeSubLive('sub-wallets')">← BACK</button>
       <div class="settings-sub-title">LIVE WALLET</div>
-      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now. Balance refreshes every 30 seconds — USD estimate every 10 minutes.</div>
+      <div class="settings-hint" style="margin-bottom:12px;">Real data, read directly from the chain. Nothing here is typed in -- it reflects whatever is actually connected right now. Balance refreshes every 30 seconds while this page is open, live trading is on, or a coin is held — USD estimate every 15 seconds.</div>
 
       <div class="settings-lbl">TRADING WALLET ADDRESS</div>
       <div class="wallet-display" id="live-trading-address">Checking...</div>
@@ -538,6 +538,24 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <input class="settings-input" id="input-live-fund" placeholder="Set the live trading fund amount..." style="margin-top:8px;"/>
       <button class="settings-save" onclick="saveLiveFund()" style="margin-top:6px;">SET LIVE TRADING FUND</button>
       <div class="settings-status" id="status-live-fund"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">SEND ROUTE (REAL BUYS, SELLS AND SAVINGS)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">MAX sends every trade on every path at once (Helius, Jito and others) — the fastest landing. Tip: the higher of 0.001 SOL and Jito's current going rate, per send. CHEAP sends on one path only. Tip: 0.000005 SOL per send. The Live CSV records the route of every trade.</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn active" id="btn-route-max" onclick="setLiveRoute('MAX')">⚡ MAX</button>
+        <button class="tp-btn" id="btn-route-cheap" onclick="setLiveRoute('SWQOS_ONLY')">CHEAP</button>
+      </div>
+      <button class="settings-save" onclick="saveLiveRoute()">SAVE SEND ROUTE</button>
+      <div class="settings-status" id="status-live-route"></div>
+
+      <div class="settings-lbl" style="margin-top:16px;">ANTI-SANDWICH (HELIUS MEV-PROTECT)</div>
+      <div class="settings-hint" style="margin-bottom:8px;">When ON, trades avoid validators linked to sandwich attacks. Helius documents it with the CHEAP route; with MAX it is untested, and it may slow landing because some validators are skipped. Test it and compare the landing times in the Live CSV.</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-mev-on" onclick="setLiveMev(true)">● ON</button>
+        <button class="tp-btn active" id="btn-mev-off" onclick="setLiveMev(false)">○ OFF</button>
+      </div>
+      <button class="settings-save" onclick="saveLiveMev()">SAVE ANTI-SANDWICH SETTING</button>
+      <div class="settings-status" id="status-live-mev"></div>
     </div>
 
     <!-- Testing -->
@@ -576,7 +594,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <input class="settings-input" id="livetrade-mint" placeholder="Paste the real token mint address..."/>
 
       <div class="settings-lbl" style="margin-top:16px;">STEP 1: BUY (~$1 REAL)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">Buys approximately $1 worth of this token, real money, sized from the live SOL price.</div>
+      <div class="settings-hint" style="margin-bottom:8px;">Buys $1 worth of this token (plus the network fee and tip), real money, sized from the live SOL price. The Live Trading Fund must be at least $1, because the cost is taken from it.</div>
       <button class="settings-save" onclick="runLiveTradeBuy('pumpfun')" style="background:rgba(255,80,80,0.15);border-color:var(--red);">BUY ON PUMP.FUN ($1 REAL)</button>
       <div class="settings-status" id="status-livetrade-buy"></div>
 
@@ -1051,6 +1069,31 @@ async function lockLiveFund() {
   } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
 
+var currentLiveRoute = 'MAX';
+function setLiveRoute(route) {
+  currentLiveRoute = route === 'SWQOS_ONLY' ? 'SWQOS_ONLY' : 'MAX';
+  document.getElementById('btn-route-max').classList.toggle('active', currentLiveRoute === 'MAX');
+  document.getElementById('btn-route-cheap').classList.toggle('active', currentLiveRoute === 'SWQOS_ONLY');
+}
+async function saveLiveRoute() {
+  var el = document.getElementById('status-live-route');
+  var ok = await apiPost({ liveSendRoute: currentLiveRoute });
+  el.textContent = ok ? '✅ Send route: ' + (currentLiveRoute === 'MAX' ? 'MAX (fastest)' : 'CHEAP') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+var currentLiveMev = false;
+function setLiveMev(enabled) {
+  currentLiveMev = !!enabled;
+  document.getElementById('btn-mev-on').classList.toggle('active', currentLiveMev);
+  document.getElementById('btn-mev-off').classList.toggle('active', !currentLiveMev);
+}
+async function saveLiveMev() {
+  var el = document.getElementById('status-live-mev');
+  var ok = await apiPost({ liveMevProtect: currentLiveMev });
+  el.textContent = ok ? '✅ Anti-sandwich: ' + (currentLiveMev ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function saveLiveAutoLock() {
   var el = document.getElementById('status-live-autolock');
   var ok = await apiPost({ liveAutoLockEnabled: currentLiveAutoLockEnabled });
@@ -1282,7 +1325,7 @@ async function runLiveTradeBuy(platform) {
   var mint = document.getElementById('livetrade-mint').value.trim();
   if (!mint) { el.textContent = 'Paste a real token mint address first'; el.style.color = 'var(--red)'; return; }
   var platformLabel = 'pump.fun';
-  var confirmed = confirm('This will spend approximately $1 in REAL SOL to buy this token on ' + platformLabel + '.\n\nMint: ' + mint + '\n\nThis is not a test -- it is a real transaction. Continue?');
+  var confirmed = confirm('This will spend $1 (plus the network fee and tip) in REAL SOL to buy this token on ' + platformLabel + '.\n\nMint: ' + mint + '\n\nThis is not a test -- it is a real transaction. Continue?');
   if (!confirmed) { el.textContent = 'Cancelled -- nothing sent'; el.style.color = 'var(--dim)'; return; }
   el.textContent = 'Submitting real transaction, please wait...';
   el.style.color = 'var(--dim)';
@@ -1346,10 +1389,20 @@ async function saveAutoLock() {
 // ── LOG ───────────────────────────────────────────────────────
 function setFilter(f) {
   logFilter = f;
-  document.querySelectorAll('.lf').forEach(function(b) {
+  // Only the paper log's own buttons (the live log has its own, set by setLiveFilter).
+  var paperBox = document.getElementById('logbox');
+  if (paperBox) paperBox.querySelectorAll('.lf').forEach(function(b) {
     b.classList.toggle('act', b.textContent.toLowerCase().indexOf(f) >= 0 || (f === 'all' && b.textContent === 'ALL'));
   });
   if (!frozen) renderLog();
+}
+
+// Anything that came from outside the page (coin names, log lines, reasons) is shown as plain text, never
+// read as page code, so a coin named with web code in it cannot run anything in this page.
+function escHtml(v) {
+  return String(v === undefined || v === null ? '' : v).replace(/[&<>"']/g, function(c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
 }
 
 // Detects a Solana mint address (base58, 32-44 chars) inside a log
@@ -1359,7 +1412,8 @@ function setFilter(f) {
 // log (e.g. "NEW TOKEN X | PUMP | <mint> | Added to pool").
 function linkifyMint(msg) {
   var mintPattern = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
-  return msg.replace(mintPattern, function(match) {
+  // The line is made safe first; an address is made only of letters and digits, so it is unchanged by that.
+  return escHtml(msg).replace(mintPattern, function(match) {
     return '<span class="ca-addr" style="cursor:pointer;text-decoration:underline;" onclick="copyCA(\'' + match + '\', event)">' + match + ' <span class="ca-copy" id="ca-copy-' + match + '">📋</span></span>';
   });
 }
@@ -1392,7 +1446,7 @@ function renderLog() {
   fl.slice(0, 150).forEach(function(e) {
     var d = document.createElement('div');
     d.className = 'le ' + (e.type || 'info');
-    d.innerHTML = '<span class="lt">' + e.time + '</span>' + linkifyMint(e.msg);
+    d.innerHTML = '<span class="lt">' + escHtml(e.time) + '</span>' + linkifyMint(e.msg);
     el.appendChild(d);
   });
 }
@@ -1423,7 +1477,7 @@ function renderLiveLog() {
   fl.slice(0, 150).forEach(function(e) {
     var d = document.createElement('div');
     d.className = 'le ' + (e.type || 'info');
-    d.innerHTML = '<span class="lt">' + e.time + '</span>' + linkifyMint(e.msg);
+    d.innerHTML = '<span class="lt">' + escHtml(e.time) + '</span>' + linkifyMint(e.msg);
     el.appendChild(d);
   });
 }
@@ -1648,7 +1702,7 @@ async function fetchState() {
         var tpDisplay = t.tpl === 'FIXED' ? 'TP ' + (t.tpPct||'?') + '%' : 'TRAIL';
         var d4 = document.createElement('div');
         d4.className = 'trade';
-        d4.innerHTML = '<div class="trade-top"><div class="trade-name">' + t.tok.n + '<span class="real-badge">REAL</span></div><button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button></div>' +
+        d4.innerHTML = '<div class="trade-top"><div class="trade-name">' + escHtml(t.tok.n) + '</div><button class="sell-btn" onclick="sellTrade(\'' + t.id + '\')">SELL</button></div>' +
           '<div class="trade-meta">$' + f2(t.size) + ' · ' + age + 's · ' + '◎SOL' + ' · ' + tpDisplay + '</div>' +
           '<div class="pnl-row"><div class="pnl-item"><div class="pnl-lbl">SL</div><div class="pnl-val" style="color:var(--red)">-' + (t.sl?(t.sl*100).toFixed(0):'10') + '%</div></div>' +
           '<div class="pnl-item"><div class="pnl-lbl">P&L</div><div class="pnl-val" style="color:' + pnlColor + '">' + pnlDisplay + '</div></div>' +
@@ -1683,7 +1737,7 @@ async function fetchState() {
         var pctStr = t.pnlPct !== undefined ? pSign(t.pnlPct) + parseFloat(t.pnlPct).toFixed(2) + '%' : 'N/A';
         var d5 = document.createElement('div');
         d5.className = 'ctrade'; d5.style.borderLeft = '3px solid ' + pnlColor;
-        d5.innerHTML = '<div class="ctrade-header"><span class="ctrade-name">' + (t.isGrad?'🎓 ':'') + (t.tok?t.tok.n:'?') + '</span><span class="ctrade-pnl" style="color:' + pnlColor + '">' + pSign(t.pnl) + '$' + f2(t.pnl) + '</span></div>' +
+        d5.innerHTML = '<div class="ctrade-header"><span class="ctrade-name">' + (t.isGrad?'🎓 ':'') + escHtml(t.tok?t.tok.n:'?') + '</span><span class="ctrade-pnl" style="color:' + pnlColor + '">' + pSign(t.pnl) + '$' + f2(t.pnl) + '</span></div>' +
           '<div class="ctrade-g3"><div class="ctrade-cell"><div class="ctrade-lbl">CAPITAL</div><div class="ctrade-val">$' + f2(t.size) + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">GAIN/LOSS</div><div class="ctrade-val" style="color:' + pnlColor + '">' + pctStr + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">SRC</div><div class="ctrade-val" style="color:var(--blue)">' + (t.src||'?') + ' ' + '◎' + '</div></div></div>' +
@@ -1691,7 +1745,7 @@ async function fetchState() {
           '<div class="ctrade-cell"><div class="ctrade-lbl">EXIT</div><div class="ctrade-val" style="font-size:11px">$' + f8(t.exitPrice) + '</div></div></div>' +
           (t.entryMcap ? '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">MC ENTRY</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.entryMcap) + '</div></div>' +
           '<div class="ctrade-cell"><div class="ctrade-lbl">MC EXIT</div><div class="ctrade-val" style="font-size:11px">$' + mcapFmt(t.exitMcap) + '</div></div></div>' : '') +
-          '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason||'?') + '</span><span>' + (t.openedAt||'') + (t.closedAt?' → '+t.closedAt:'') + '</span></div>' + caRow(t.mint);
+          '<div class="ctrade-footer"><span style="color:var(--yellow)">' + escHtml(t.closeReason||'?') + '</span><span>' + (t.openedAt||'') + (t.closedAt?' → '+t.closedAt:'') + '</span></div>' + caRow(t.mint);
         document.getElementById('closed-list').appendChild(d5);
       });
     } else { closedSec.style.display = 'none'; }
@@ -1719,6 +1773,8 @@ async function fetchState() {
       currentLiveAutoLockEnabled = liveAlOn;
       document.getElementById('btn-live-autolock-on').classList.toggle('active', liveAlOn);
       document.getElementById('btn-live-autolock-off').classList.toggle('active', !liveAlOn);
+      if (data.liveSendRoute) setLiveRoute(data.liveSendRoute);
+      if (typeof data.liveMevProtect === 'boolean') setLiveMev(data.liveMevProtect);
     }
 
     // Live win stats + closed trades -- separate from paper's, same layout
@@ -1760,7 +1816,7 @@ async function fetchState() {
             '<div class="ctrade-cell"><div class="ctrade-lbl">MC EXIT</div><div class="ctrade-val" style="font-size:11px">$' + Math.round(t.exitMcap || 0).toLocaleString() + '</div></div></div>' : '') +
             '<div class="ctrade-g2"><div class="ctrade-cell"><div class="ctrade-lbl">TIPS</div><div class="ctrade-val" style="font-size:11px">' + tipS + '</div></div>' +
             '<div class="ctrade-cell"><div class="ctrade-lbl">NETWORK FEES</div><div class="ctrade-val" style="font-size:11px">' + feeS + '</div></div></div>' +
-            '<div class="ctrade-footer"><span style="color:var(--yellow)">' + (t.closeReason || '?') + '</span><span>' + (t.openedAt || '') + (t.closedAt ? ' → ' + t.closedAt : '') + '</span></div>' + caRow(t.mint);
+            '<div class="ctrade-footer"><span style="color:var(--yellow)">' + escHtml(t.closeReason || '?') + '</span><span>' + (t.openedAt || '') + (t.closedAt ? ' → ' + t.closedAt : '') + '</span></div>' + caRow(t.mint);
           lcList.appendChild(dc);
         });
       } else { liveClosedSec.style.display = 'none'; }
@@ -2158,7 +2214,7 @@ async function loadTrades() {
       var caShort = t.mint ? t.mint.slice(0,4)+'...'+t.mint.slice(-4) : '';
       d.innerHTML='<div><div class="trade-row-name" style="color:'+pnlColor+'">'+chainIcon+' '+safeTradeName+'</div><div class="trade-row-meta">$'+f2(t.size)+' · '+(t.closedDate||'')+' · '+(t.src||'')+'</div>' +
         (t.mint ? '<div class="ca-row" onclick="copyCA(\''+t.mint+'\', event)">CA: <span class="ca-addr">'+caShort+'</span> <span class="ca-copy" id="ca-copy-'+t.mint+'">📋</span></div>' : '') + '</div>' +
-        '<div style="text-align:right;"><div class="trade-row-pnl" style="color:'+pnlColor+'">'+(pnlUnknown?'—':pSign(t.pnl||0)+'$'+f2(t.pnl||0))+'</div><div class="trade-row-reason" style="color:'+pnlColor+'">'+(pctStr2||'')+'</div><div class="trade-row-reason">'+(t.closeReason||'?')+'</div></div>';
+        '<div style="text-align:right;"><div class="trade-row-pnl" style="color:'+pnlColor+'">'+(pnlUnknown?'—':pSign(t.pnl||0)+'$'+f2(t.pnl||0))+'</div><div class="trade-row-reason" style="color:'+pnlColor+'">'+(pctStr2||'')+'</div><div class="trade-row-reason">'+escHtml(t.closeReason||'?')+'</div></div>';
       tradesEl.appendChild(d);
     });
     var pages=data.pages||1;

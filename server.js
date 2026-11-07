@@ -45,23 +45,79 @@ var P = {
   sessions: [],
 };
 
+// PAPER TRADE HISTORY: every closed paper trade is written, as one line, to its own file the moment it
+// closes. The Paper CSV and the Portfolio page read their trades from that file, so the full history is
+// kept without holding it all in memory, and the saved portfolio stays small (it used to hold every
+// trade, re-saved in full every 10 trades, which grew large enough to stall the bot). Only the newest
+// PAPER_TRADES_IN_MEMORY trades are kept in memory. Like every saved file on Render, it is wiped on a
+// deploy, so the CSV is still downloaded before pushing, as always.
+const PAPER_TRADES_FILE = path.join(__dirname, 'data', 'paper_trades.jsonl');
+var PAPER_TRADES_IN_MEMORY = 200;
+
+function ensureDataDir() {
+  var dir = path.join(__dirname, 'data');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function appendPaperTrade(t) {
+  try {
+    ensureDataDir();
+    fs.appendFileSync(PAPER_TRADES_FILE, JSON.stringify(t) + '\n');
+  } catch (e) {
+    log('PAPER HISTORY: could not write a closed trade to the history file (' + e.message + ')', 'warn');
+  }
+}
+
+// Reads the history file one line at a time, oldest trade first, calling onTrade(trade) for each. The
+// file is read in pieces, so the bot keeps working (prices, exits, real trades) while a long history is read.
+function eachPaperTrade(onTrade) {
+  return new Promise(function(resolve, reject) {
+    if (!fs.existsSync(PAPER_TRADES_FILE)) return resolve();
+    var rl = require('readline').createInterface({ input: fs.createReadStream(PAPER_TRADES_FILE, { encoding: 'utf8' }), crlfDelay: Infinity });
+    rl.on('line', function(line) {
+      if (!line) return;
+      var t;
+      try { t = JSON.parse(line); } catch (e) { return; }
+      onTrade(t);
+    });
+    rl.on('close', resolve);
+    rl.on('error', reject);
+  });
+}
+
 function loadPortfolio() {
   try {
     if (fs.existsSync(PORTFOLIO_FILE)) {
       var raw = fs.readFileSync(PORTFOLIO_FILE, 'utf8');
       P = JSON.parse(raw);
-      log('Portfolio loaded - ' + P.trades.length + ' trades in history', 'info');
+      if (!Array.isArray(P.trades)) P.trades = [];
+      if (!Array.isArray(P.sessions)) P.sessions = [];
+      // A portfolio saved by the older code holds the whole history in itself. It is moved into the history
+      // file once (oldest first, the file's order), then only the newest trades stay in memory.
+      if (typeof P.historyCount !== 'number') {
+        if (!fs.existsSync(PAPER_TRADES_FILE) && P.trades.length > 0) {
+          ensureDataDir();
+          fs.writeFileSync(PAPER_TRADES_FILE, P.trades.slice().reverse().map(function(t) { return JSON.stringify(t); }).join('\n') + '\n');
+        }
+        P.historyCount = P.trades.length;
+      }
+      if (P.trades.length > PAPER_TRADES_IN_MEMORY) P.trades = P.trades.slice(0, PAPER_TRADES_IN_MEMORY);
+      log('Portfolio loaded - ' + P.historyCount + ' trades in history', 'info');
     }
   } catch(e) {
     log('Portfolio file not found - starting fresh', 'info');
   }
+  if (typeof P.historyCount !== 'number') P.historyCount = P.trades.length;
 }
 
+// Saved compact (no indentation) and through a temporary file, so a save is quick and a half-written
+// file can never replace a good one.
 function savePortfolio() {
   try {
-    var dir = path.dirname(PORTFOLIO_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(PORTFOLIO_FILE, JSON.stringify(P, null, 2));
+    ensureDataDir();
+    var tmp = PORTFOLIO_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(P));
+    fs.renameSync(tmp, PORTFOLIO_FILE);
   } catch(e) {}
 }
 
@@ -165,6 +221,9 @@ const S = {
   liveAutoLockEnabled: false,
   liveTipsPaidUsd: 0,
   liveNetworkFeesUsd: 0,
+  liveSendRoute: 'MAX',        // 'MAX' (fastest, default) or 'SWQOS_ONLY' (cheapest) -- see liveSendRoute()
+  liveMevProtect: false,       // Helius anti-sandwich option, off by default
+  dashboardSeenAt: 0,          // when the dashboard last asked for /api/state (the wallet balance is read while it is open)
   liveLogs: [],
   liveTradingEnabled: false,
   windingDown: false,
@@ -283,12 +342,22 @@ async function refreshLiveWalletBalance() {
   }
 }
 refreshLiveWalletBalance();
-var liveWalletI = setInterval(refreshLiveWalletBalance, 30000);
+// Read every 30 seconds only while it is needed: automatic live trading on, a real coin held, or the dashboard
+// opened in the last minute. It used to be read all day, every 30 seconds, using Helius requests for nothing.
+var liveWalletI = setInterval(function() {
+  if (S.liveTradingEnabled || (S.liveOpen && S.liveOpen.length > 0) || (Date.now() - (S.dashboardSeenAt || 0)) < 60000) {
+    refreshLiveWalletBalance();
+  }
+}, 30000);
 
 // -- SOL PRICE -------------------------------------------------
 var SOL_PRICE_USD = null;   // no made-up starting value: nothing that needs the price runs until a real one has been fetched
 var SOL_PRICE_LAST_UPDATED = null; // ms timestamp of the last GENUINE successful fetch, not just "a value exists"
-var SOL_PRICE_FRESH_WINDOW_MS = 15 * 60 * 1000; // 15 min: covers the normal 10-min cycle plus one missed attempt
+var SOL_PRICE_FRESH_WINDOW_MS = 15 * 60 * 1000; // dollar figures on screen and exits keep using the latest real price up to this age
+// The price is read every SOL_PRICE_REFRESH_MS. A REAL buy (and a savings transfer) is refused when the latest
+// real price is older than SOL_PRICE_BUY_MAX_AGE_MS, so real money is never sized with an old SOL price.
+var SOL_PRICE_REFRESH_MS = 15000;
+var SOL_PRICE_BUY_MAX_AGE_MS = 60000;
 
 // The market-cap floor in dollars right now: the floor in SOL times the latest real SOL price. Null until a
 // real price has been fetched once (entries wait for it).
@@ -298,6 +367,10 @@ function mcapFloorUsd() {
 
 function isSolPriceFresh() {
   return SOL_PRICE_LAST_UPDATED !== null && (Date.now() - SOL_PRICE_LAST_UPDATED) < SOL_PRICE_FRESH_WINDOW_MS;
+}
+
+function isSolPriceFreshForBuy() {
+  return SOL_PRICE_LAST_UPDATED !== null && (Date.now() - SOL_PRICE_LAST_UPDATED) < SOL_PRICE_BUY_MAX_AGE_MS;
 }
 
 // Native fetch ignores a "timeout" option, so a stalled request could hang
@@ -314,15 +387,18 @@ async function fetchJsonWithTimeout(url, ms) {
 
 async function fetchSolPriceDexScreener() {
   var data = await fetchJsonWithTimeout('https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112', 6000);
-  var pairs = data.pairs || [];
-  if (pairs.length === 0) throw new Error('returned no pairs');
+  // Only markets where SOL itself is the coin being priced (SOL is the base token). In a market where SOL
+  // is the other side, the listed price is the OTHER coin's price, not SOL's.
+  var pairs = (data.pairs || []).filter(function(p) {
+    return p && p.baseToken && p.baseToken.address === 'So11111111111111111111111111111111111111112' && p.priceUsd;
+  });
+  if (pairs.length === 0) throw new Error('returned no market with SOL as the priced coin');
   var best = pairs[0];
   for (var i = 1; i < pairs.length; i++) {
     var liq = (pairs[i].liquidity && pairs[i].liquidity.usd) || 0;
     var bestLiq = (best.liquidity && best.liquidity.usd) || 0;
     if (liq > bestLiq) best = pairs[i];
   }
-  if (!best.priceUsd) throw new Error('best pair had no priceUsd');
   return parseFloat(best.priceUsd);
 }
 
@@ -362,13 +438,13 @@ async function updateSolPrice() {
   solPriceWasFailing = true;
   if (Date.now() - solPriceWarnAt > 300000) {
     solPriceWarnAt = Date.now();
-    liveLog('SOL PRICE: could not get a price from any source -- ' + errors.join('; ') + ' -- USD values show unavailable and real buys are refused until one works. Retrying every minute', 'warn');
+    liveLog('SOL PRICE: could not get a price from any source -- ' + errors.join('; ') + ' -- real buys are refused once the last real price is over ' + (SOL_PRICE_BUY_MAX_AGE_MS / 1000) + 's old. Retrying every ' + (SOL_PRICE_REFRESH_MS / 1000) + 's', 'warn');
   }
 }
 
 // Runs on its own, whether or not paper or live trading is on, so the price is
 // always fresh when you open the dashboard.
-setInterval(updateSolPrice, 60000);
+setInterval(updateSolPrice, SOL_PRICE_REFRESH_MS);
 
 // Real, current price for any specific token mint -- same proven
 // pattern as updateSolPrice (correct tokens endpoint, most liquid
@@ -498,6 +574,89 @@ async function checkWalletConcentration(mint) {
   }
 }
 
+// -- LIVE WALLET CHECK (on-chain, Helius) ------------------------
+// The rule: no wallet other than a burn wallet may hold more than 50% of the coin's TOTAL supply. Live reads
+// the coin's largest token accounts and its total supply straight from the chain (two requests, sent at the
+// same time, newest data), so it works on a coin only seconds old. Left out of the count: pump.fun's own
+// curve account (it holds the unsold supply -- that is the market, not a holder) and the burn address.
+// Returns { safe, unknown, reason, topPct }. unknown = the check could not measure the coin; live never buys
+// a coin it could not measure. Paper keeps its own Bitquery check (checkWalletConcentration) unchanged.
+var LIVE_HOLDER_MAX_SHARE = 0.50;
+function asPublicKeyLoose(v) {
+  var web3 = require('@solana/web3.js');
+  if (Array.isArray(v)) v = v[0];              // some SDK helpers return [address, bump]
+  if (v && v.publicKey) v = v.publicKey;       // others return { publicKey }
+  if (v instanceof web3.PublicKey) return v;
+  if (v && typeof v.toBase58 === 'function') return new web3.PublicKey(v.toBase58());
+  return new web3.PublicKey(v);
+}
+async function checkWalletConcentrationOnChain(mintStr) {
+  if (!liveWalletModule) return { safe: false, unknown: true, reason: 'the wallet module is not loaded' };
+  var web3 = require('@solana/web3.js');
+  var spl = require('@solana/spl-token');
+  var pumpSdk = require('@pump-fun/pump-sdk');
+  var mint = new web3.PublicKey(mintStr);
+  var connection = liveWalletModule.getConnection();
+  // The token accounts left out, worked out locally (no request) for both token programs, because a coin can
+  // use either one.
+  var excluded = {};
+  var owners = [asPublicKeyLoose(pumpSdk.bondingCurvePda(mint)), new web3.PublicKey(SOLANA_INCINERATOR)];
+  owners.forEach(function(owner) {
+    [spl.TOKEN_PROGRAM_ID, spl.TOKEN_2022_PROGRAM_ID].forEach(function(prog) {
+      excluded[spl.getAssociatedTokenAddressSync(mint, owner, true, prog).toBase58()] = true;
+    });
+  });
+  var replies = await rpcgate.runWithPriority(rpcgate.FAST_LANE, function() {
+    return Promise.all([
+      connection.getTokenLargestAccounts(mint, 'processed'),
+      connection.getTokenSupply(mint, 'processed'),
+    ]);
+  });
+  var accounts = (replies[0] && replies[0].value) || [];
+  var supplyRaw = Number(replies[1] && replies[1].value && replies[1].value.amount);
+  if (!(supplyRaw > 0)) return { safe: false, unknown: true, reason: 'the total supply could not be read' };
+  if (accounts.length === 0) return { safe: false, unknown: true, reason: 'the chain returned no holder accounts' };
+  var top = null;
+  accounts.forEach(function(a) {
+    var addr = a.address && a.address.toBase58 ? a.address.toBase58() : String(a.address);
+    if (excluded[addr]) return;
+    var amt = Number(a.amount);
+    if (!(amt >= 0)) return;
+    if (!top || amt > top.amount) top = { address: addr, amount: amt };
+  });
+  if (!top) return { safe: true, unknown: false, topPct: 0, reason: 'only the curve and burn accounts hold this coin' };
+  var share = top.amount / supplyRaw;
+  var pctText = (share * 100).toFixed(1) + '%';
+  if (share > LIVE_HOLDER_MAX_SHARE) {
+    return { safe: false, unknown: false, topPct: share, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the total supply' };
+  }
+  return { safe: true, unknown: false, topPct: share, reason: 'largest holder has ' + pctText + ' of the total supply' };
+}
+
+// The live entry's last word, given the wallet-check result: everything that could have changed while the
+// check was running is read again here, at the moment the check answers. Returns { go, reason }.
+var liveCheckSkipLoggedAt = new Map();
+function liveEntryVerdict(tok, c) {
+  var no = function(key, reason, logIt) {
+    trackSkip(key);
+    if (logIt) {
+      var last = liveCheckSkipLoggedAt.get(tok.mint);
+      if (!last || (Date.now() - last) > 60000) {
+        liveCheckSkipLoggedAt.set(tok.mint, Date.now());
+        if (liveCheckSkipLoggedAt.size > 500) liveCheckSkipLoggedAt.delete(liveCheckSkipLoggedAt.keys().next().value);
+        liveLog('LIVE ENTRY SKIPPED for ' + (tok.n || tok.mint) + ': ' + reason, 'warn');
+      }
+    }
+    return { go: false, reason: reason };
+  };
+  if (!c || c.unknown) return no('check_failed', 'the wallet check could not measure this coin (' + ((c && c.reason) || 'no answer') + '), so it is not traded', true);
+  if (!c.safe) return no('live_wallet_concentration', c.reason + ' -- not traded', true);
+  if (tok.devSold) return no('dev_wallet_sold_race', 'the dev wallet sold while the wallet check was running', false);
+  if (!S.liveTradingEnabled || S.liveWindingDown) return no('live_turned_off_during_check', 'live trading was turned off or is winding down', false);
+  if (rpcgate.entryPaused()) return no('rpc_slow_paused', 'the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), false);
+  return { go: true, reason: c.reason };
+}
+
 // -- DEXSCREENER PRICE -----------------------------------------
 async function getDSPrice(mint, pairAddress, chain) {
   try {
@@ -519,7 +678,18 @@ async function getDSPrice(mint, pairAddress, chain) {
 }
 
 // -- BITQUERY - REAL TIME DATA ---------------------------------
+// The last price seen for each coin. Only recent entries are ever used (an entry needs a price under 1 second
+// old; a buy notes the price at the moment it lands), so an entry nobody has traded for 5 minutes is removed.
+// It used to keep every coin ever seen, forever.
 var pumpPrices = {};
+var PUMP_PRICE_KEEP_MS = 5 * 60 * 1000;
+var pumpPriceSweepI = setInterval(function() {
+  try {
+    var cutoff = Date.now() - PUMP_PRICE_KEEP_MS;
+    Object.keys(pumpPrices).forEach(function(m) { if (pumpPrices[m].ts < cutoff) delete pumpPrices[m]; });
+  } catch (e) { /* housekeeping only */ }
+}, 60000);
+if (pumpPriceSweepI.unref) pumpPriceSweepI.unref();
 var pumpWs = null;
 var bqSubId = 1;
 var bqPairSubActive = false;
@@ -972,11 +1142,12 @@ function handleSwap(t) {
     // against the same mint the 500ms backup scanner might also be
     // checking at nearly the same moment.
     if (poolTok) {
-      tryEnterToken(poolTok, priceUsd, 'event');
+      tryEnterToken(poolTok, priceUsd, 'event').catch(function(e) { reportCaughtError('entry check (' + (poolTok.n || poolTok.mint) + ')', e); });
     }
 
     S.open.forEach(function(trade) {
-      if (trade.mint !== mint || trade.src !== 'PUMP') return;
+      // Pump.fun and LetsBonk paper trades both take their prices from this live trade stream.
+      if (trade.mint !== mint || (trade.src !== 'PUMP' && trade.src !== 'BONK')) return;
 
       if (trade.currentPrice && trade.currentPrice > 0) {
         // Directional fix: only reject a downward crash - a genuine large
@@ -1104,7 +1275,9 @@ function handleSwap(t) {
 
 // -- OPEN TRADE PRICE TRACKING ---------------------------------
 async function updateOpenTradePrices() {
-  var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.mint; });
+  // Pump.fun and LetsBonk trades are priced by the live trade stream (handleSwap); only any other source is
+  // looked up here.
+  var trades = S.open.filter(function(t) { return !t.isGrad && t.src !== 'PUMP' && t.src !== 'BONK' && t.mint; });
   if (trades.length === 0) return;
 
   for (var i = 0; i < trades.length; i++) {
@@ -1582,6 +1755,9 @@ function closeTradeReal(id, reason) {
   };
 
   P.trades.unshift(portfolioTrade);
+  if (P.trades.length > PAPER_TRADES_IN_MEMORY) P.trades.length = PAPER_TRADES_IN_MEMORY;
+  appendPaperTrade(portfolioTrade);
+  P.historyCount = (P.historyCount || 0) + 1;
   P.allTime.t++;
   P.allTime.totalPnl = parseFloat((P.allTime.totalPnl + pnl).toFixed(4));
   P.allTime.totalFees = parseFloat((P.allTime.totalFees + feePaid).toFixed(4));
@@ -1714,7 +1890,6 @@ var pendingEntryChecks = new Set();
 // bought twice, and in-flight buys count against Max Open), and live's own
 // cooldowns (paper's cooldowns never block live, and the reverse).
 var livePendingBuys = new Set();
-var liveCheckFailLoggedAt = new Map();   // coin -> when the 'wallet check could not measure it' line was last written
 var liveCooldowns = new Map();
 
 function paperSlotFree() {
@@ -1797,18 +1972,23 @@ function markWriteOff(pos, why) {
   setTimeout(function() { dispatchLiveDecision(pos, px, px); }, 50);
 }
 
-function startLiveEntry(tok, snapshot) {
+// gate: a promise settling to { go, reason } -- the live wallet check, run while the buy is built (see
+// tryEnterTokenInner). The buy is only sent if it says go.
+function startLiveEntry(tok, snapshot, gate) {
   var platformName = 'pump.fun';
   var platformKey = 'pumpfun';
   var buildBuyFn = require('./pumpfun').buildBuyInstructions;
   livePendingBuys.add(tok.mint);
-  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY', snapshot).then(function(r) {
-    // A token skipped for thin liquidity is left alone for the same cooldown
-    // as any other live exit, instead of being re-checked on every tick.
-    if (r && r.skipped) liveCooldowns.set(tok.mint, Date.now());
+  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY', snapshot, { gate: gate }).then(function(r) {
+    // Any automatic buy that did not end in a real position puts the coin on the normal cooldown: a skipped
+    // coin (thin liquidity, not SOL-paired, failed wallet check), a buy that could not be built or sent, and a
+    // buy that FAILED or EXPIRED on chain. A missed first buy on a new coin is not chased.
+    var landed = !!(r && r.ok && r.result && r.result.outcome === 'CONFIRMED');
+    if (!landed) liveCooldowns.set(tok.mint, Date.now());
     // A coin paired with something other than SOL is only noted for the Live CSV; nothing is bought.
     if (r && r.skipped && r.quoteMint) recordNonSolSkip(tok, platformName, r.quoteMint, snapshot);
   }).catch(function(e) {
+    liveCooldowns.set(tok.mint, Date.now());
     liveLog('LIVE AUTO ENTRY (' + platformName + ') unexpected error: ' + e.message, 'warn');
   }).then(function() {
     livePendingBuys.delete(tok.mint);
@@ -1919,6 +2099,39 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
 
   if (!entryPrice || entryPrice <= 0) { S.rejectCount++; trackSkip('no_price'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: no price | src='+tok.src+' pumpCache='+(pumpPrices[tok.mint]?'YES':'NO'), 'info'); return; }
 
+  // LIVE: the real buy starts here. Its wallet check reads the coin's top holders and total supply straight
+  // from the chain (Helius), and the buy is built AT THE SAME TIME as that check; it is only sent if the check
+  // passes and nothing below changed while it ran (see liveEntryVerdict). Live no longer waits on paper's
+  // Bitquery check. While the node is running slow, a real buy waits: the exit could not be sent in time
+  // either. Paper is not affected. Open positions and sells are never held back by this.
+  if (liveOk && rpcgate.entryPaused()) {
+    liveOk = false;
+    trackSkip('rpc_slow_paused');
+    if (rpcgate.noteSkippedEntry(tok.n || tok.mint.slice(0, 8))) {
+      liveLog('LIVE ENTRY SKIPPED for ' + (tok.n || tok.mint) + ': the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), 'warn');
+    }
+  }
+  // Checked again with nothing async since the top of this function, so the slot is still free; from the moment
+  // startLiveEntry runs, this buy holds its slot (livePendingBuys) until it lands or is dropped.
+  if (liveOk && !liveWantsEntry(tok)) {
+    liveOk = false;
+    trackSkip('live_max_open_reached_race');
+  }
+  if (liveOk) {
+    var liveSnap = buildLiveEntrySnapshot(tok, triggerSource, { signalPrice: entryPrice, signalAt: entryCheckStartedAt, concentrationMs: null });
+    var liveCheckT0 = Date.now();
+    var liveCheck = checkWalletConcentrationOnChain(tok.mint).catch(function(eLive) {
+      return { safe: false, unknown: true, reason: 'check errored: ' + (eLive && eLive.message ? eLive.message : eLive) };
+    }).then(function(c) {
+      liveSnap.concentrationMs = Date.now() - liveCheckT0;
+      liveSnap.topHolderPct = (c && typeof c.topPct === 'number') ? parseFloat((c.topPct * 100).toFixed(2)) : null;
+      return liveEntryVerdict(tok, c);
+    });
+    startLiveEntry(tok, liveSnap, liveCheck);
+  }
+  if (!paperOk) return;
+
+  // PAPER: unchanged -- its own Bitquery wallet check, then its own final re-checks.
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
     if (pendingConcentrationChecks.has(tok.mint)) return;
     pendingConcentrationChecks.add(tok.mint);
@@ -1938,18 +2151,6 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
       if(diag) feedLog('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
       return;
     }
-    // A real buy needs the check to have actually measured the coin. Paper carries on, as before.
-    if (concCheck.unknown && liveOk) {
-      liveOk = false;
-      trackSkip('check_failed');
-      var lastFailLog = liveCheckFailLoggedAt.get(tok.mint);
-      if (!lastFailLog || (Date.now() - lastFailLog) > 60000) {
-        liveCheckFailLoggedAt.set(tok.mint, Date.now());
-        if (liveCheckFailLoggedAt.size > 500) liveCheckFailLoggedAt.delete(liveCheckFailLoggedAt.keys().next().value);
-        liveLog('LIVE ENTRY SKIPPED for ' + (tok.n || tok.mint) + ': the wallet check could not measure this coin (' + concCheck.reason + '), so it is not traded', 'warn');
-      }
-      if (!paperOk) return;
-    }
   }
 
   // Final re-check, right before anything commits - closes the race
@@ -1959,24 +2160,10 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   // actually finishes), so the count needs to be verified again one more
   // time here, with nothing async between this check and the trade
   // actually being created, so nothing else can slip in between.
-  if (paperOk && (!paperSlotFree() || S.open.find(function(t) { return t.mint === tok.mint; }))) {
-    paperOk = false;
+  if (!paperSlotFree() || S.open.find(function(t) { return t.mint === tok.mint; })) {
     trackSkip('max_open_reached_race');
+    return;
   }
-  if (liveOk && !liveWantsEntry(tok)) {
-    liveOk = false;
-    trackSkip('live_max_open_reached_race');
-  }
-  // While the node is running slow, a real buy waits: the exit could not be sent in time
-  // either. Paper is not affected. Open positions and sells are never held back by this.
-  if (liveOk && rpcgate.entryPaused()) {
-    liveOk = false;
-    trackSkip('rpc_slow_paused');
-    if (rpcgate.noteSkippedEntry(tok.n || tok.mint.slice(0, 8))) {
-      liveLog('LIVE ENTRY SKIPPED for ' + (tok.n || tok.mint) + ': the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), 'warn');
-    }
-  }
-  if (!paperOk && !liveOk) return;
 
   // Same idea for the dev-sold filter: the early check at the top of this
   // function can pass, and then the dev's sell lands while the wallet
@@ -1989,11 +2176,6 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     trackSkip('dev_wallet_sold_race');
     return;
   }
-
-  // Live buys first, the instant every check has passed, so real money is
-  // never waiting on paper's bookkeeping below. It runs in the background.
-  if (liveOk) startLiveEntry(tok, buildLiveEntrySnapshot(tok, triggerSource, { signalPrice: entryPrice, signalAt: entryCheckStartedAt, concentrationMs: concentrationMs }));
-  if (!paperOk) return;
 
   var slip =parseFloat(
     Math.min(0.004 + (size / Math.max(tok.liq || 1000, 100)) * 2.5, 0.15).toFixed(4)
@@ -2111,7 +2293,7 @@ var exitI = null, cleanI = null, priceI = null, solPriceI = null;
 // down when both are off. Safe to call repeatedly.
 function startFeed() {
   connectBQ();
-  if (!scanI) scanI = setInterval(runScan, 500);
+  if (!scanI) scanI = setInterval(function() { runScan().catch(function(e) { reportCaughtError('backup scanner', e); }); }, 500);
   if (!cleanI) cleanI = setInterval(cleanPool, 3600000);
   updateSolPrice();
 }
@@ -2269,7 +2451,13 @@ app.get('/api/live/portfolio/trades', function(req, res) {
     return { name: t.name, mint: t.mint, size: t.size, closedDate: t.closedDate, chain: 'solana',
       src: 'PUMP', pnl: t.pnl, pnlPct: t.pnlPct, closeReason: t.closeReason };
   });
-  if (q.date) trades = trades.filter(function(t) { return t.closedDate === q.date; });
+  // Live dates are now saved as the page searches them (month/day/year, like paper). Trades saved before
+  // that used year-month-day, so those are turned into the same form before comparing.
+  var asSearchDate = function(d) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(d || ''));
+    return m ? (parseInt(m[2], 10) + '/' + parseInt(m[3], 10) + '/' + m[1]) : d;
+  };
+  if (q.date) trades = trades.filter(function(t) { return asSearchDate(t.closedDate) === q.date; });
   if (q.token) { var tok = q.token.toUpperCase(); trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; }); }
   if (q.src && q.src !== 'all') trades = trades.filter(function(t) { return t.src === q.src; });
   if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl !== null && t.pnl > 0; });
@@ -2312,6 +2500,11 @@ app.get('/api/live-log', function(req, res) {
 });
 
 app.get('/api/state', function(req, res) {
+  // The wallet balance is only read while the dashboard is open (see liveWalletI). The first look after a
+  // quiet spell starts a read at once, so the balance on screen is current.
+  var dashWasIdle = (Date.now() - (S.dashboardSeenAt || 0)) >= 60000;
+  S.dashboardSeenAt = Date.now();
+  if (dashWasIdle && !S.liveTradingEnabled && !(S.liveOpen && S.liveOpen.length > 0)) refreshLiveWalletBalance();
   res.json({
     fund: S.fund,
     savings: S.savings,
@@ -2372,6 +2565,8 @@ app.get('/api/state', function(req, res) {
     liveStartFund: S.liveStartFund,
     liveRealizedPnl: S.liveRealizedPnl,
     liveAutoLockEnabled: S.liveAutoLockEnabled,
+    liveSendRoute: liveSendRoute(),
+    liveMevProtect: !!S.liveMevProtect,
     // The long tick-by-tick path stays out of the page feed (it is in the CSV).
     liveClosedTrades: S.liveClosed.slice(-15).reverse().map(function(t) {
       var c = Object.assign({}, t); delete c.priceHistory; return c;
@@ -2405,10 +2600,10 @@ app.get('/api/state', function(req, res) {
   });
 });
 
+// Start and stop only answer a button press (POST). Simply opening the link (a GET -- a browser, a link
+// preview, a crawler) no longer starts or stops paper trading.
 app.post('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
-app.get('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
 app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
-app.get('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
 app.post('/api/lock-fund', function(req, res) {
   var oldBase = S.dayStartFund;
@@ -2590,10 +2785,24 @@ function computeLivePositionSizeUsd() {
   return size;
 }
 
-// The tip is meant to be the going rate read from Jito. If it came from anywhere else (an old number, or
-// the tier's minimum because Jito could not be read) that is said in the live log, not hidden.
+// The route every real buy, sell and savings transfer is sent on (Settings, "Send Route"):
+//   MAX        - Helius Sender on every path at once, the fastest landing (tip: the higher of 0.001 SOL
+//                and Jito's current going rate). The default.
+//   SWQOS_ONLY - the single cheap path (tip: 0.000005 SOL, always).
+function liveSendRoute() {
+  return S.liveSendRoute === 'SWQOS_ONLY' ? 'SWQOS_ONLY' : 'MAX';
+}
+
+// How long a sent buy is watched before its outcome is called unknown. A transaction can still land until
+// its blockhash expires (roughly 60 to 90 seconds after it was read); the confirm checker reports that
+// moment as EXPIRED, which is final. This limit only matters if the chain cannot be read at all.
+var BUY_WATCH_MAX_MS = 150000;
+
+// On MAX the tip is meant to be the going rate read from Jito. If it came from anywhere else (an old number, or
+// the minimum because Jito could not be read) that is said in the live log, not hidden. The SWQOS_ONLY tip is
+// fixed at its minimum on purpose ('fixed') and is not warned about.
 function warnIfTipNotLive(result, logPrefix, platformName, side) {
-  if (result && result.tipSource && result.tipSource !== 'live' && result.tipSource !== 'cached') {
+  if (result && result.tipSource && result.tipSource !== 'live' && result.tipSource !== 'cached' && result.tipSource !== 'fixed') {
     liveLog(logPrefix + ' (' + platformName + ' ' + side + '): TIP WARNING -- the tip was not the current going rate (source: ' + result.tipSource + ')', 'warn');
   }
 }
@@ -2639,13 +2848,25 @@ async function warmLiveExecution() {
   if (!liveWalletKeypair || !liveWalletModule) return;
   if (!S.liveTradingEnabled && S.liveOpen.length === 0) return;
   try {
-    require('./execution').warmTipCache();
+    // Only the MAX route follows Jito's going rate; the SWQOS_ONLY tip is fixed and needs no lookup.
+    if (liveSendRoute() === 'MAX') require('./execution').warmTipCache();
     // The connection that tells the bot the moment a buy or sell lands is opened ahead of time.
     require('./execution').warmLandingSocket(process.env[liveWalletModule.LIVE_RPC_ENV]);
     require('./pumpfun').warmCaches(liveWalletModule.getConnection()).catch(function() {});
   } catch (e) { /* warming is only a speed-up; a real trade still works without it */ }
 }
 setInterval(warmLiveExecution, 10000);
+
+// CONNECTION WARMING (Helius Sender): while live trading is on or a real coin is held, Sender's /ping is
+// called every 4 seconds, so the connection a buy or sell goes out on is never idle for the 5 seconds after
+// which Helius says it goes cold. It sends nothing on chain and costs nothing.
+setInterval(function() {
+  try {
+    if (!liveWalletKeypair) return;
+    if (!S.liveTradingEnabled && S.liveOpen.length === 0) return;
+    require('./execution').pingSender();
+  } catch (e) { /* warming only */ }
+}, 4000);
 
 // -- DAILY PUMP.FUN SDK VERSION CHECK -----------------------------
 // pump.fun has changed its on-chain accounts and fees before, and the official
@@ -2822,7 +3043,7 @@ async function maybeSendSavings() {
       savingsXfer.retryAfter = Date.now() + 300000;
       return;
     }
-    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) {
+    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFreshForBuy()) {
       savingsXfer.retryAfter = Date.now() + 60000;
       return;
     }
@@ -2842,7 +3063,7 @@ async function maybeSendSavings() {
     tx.add(web3.SystemProgram.transfer({ fromPubkey: liveWalletKeypair.publicKey, toPubkey: toKey, lamports: lamports }));
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
     // A plain transfer needs only a few hundred compute units, so its limit is small.
-    var result = await require('./execution').sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', cuLimit: 20000 });
+    var result = await require('./execution').sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: liveSendRoute(), mevProtect: !!S.liveMevProtect, cuLimit: 20000 });
     if (result.outcome === 'CONFIRMED') {
       await finishSavingsTransfer(connection, result, usd, lamports, address);
     } else if (result.outcome === 'PENDING') {
@@ -2985,9 +3206,12 @@ async function readHeldAfterBuy(connection, mint, mintStr, signature, logPrefix,
 
 // Everything a real buy asks of the node is tagged as second in line (sells come first), and
 // the longest it waited in line is written onto the new position for the CSV.
-async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot) {
+// opts (optional): sizeUsd -- buy exactly this many dollars (the Live Trade Test button's $1);
+//                  gate    -- a promise that settles to { go, reason }: the buy is built straight away but only
+//                             sent if go is true (the automatic entry's wallet check runs while the buy is built).
+async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot, opts) {
   return rpcgate.runTracked(1, async function(track) {
-    var out = await performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot);
+    var out = await performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot, opts || {});
     try {
       var sigNow = out && out.result && out.result.signature;
       var opened = sigNow ? S.liveOpen.find(function(p) { return p.id === sigNow; }) : null;
@@ -2997,7 +3221,8 @@ async function performRealBuy(mintStr, platformName, platformKey, buildBuyFn, lo
   });
 }
 
-async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot) {
+async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyFn, logPrefix, entrySnapshot, opts) {
+  opts = opts || {};
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -3008,22 +3233,33 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
     var rpcUrl = process.env[liveWalletModule.LIVE_RPC_ENV];
     var mint = new PublicKey(mintStr);
 
-    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFresh()) {
-      return { ok: false, error: 'Real SOL price is not genuinely fresh right now -- cannot safely size a real buy' };
+    if (!SOL_PRICE_USD || SOL_PRICE_USD <= 0 || !isSolPriceFreshForBuy()) {
+      return { ok: false, error: 'The real SOL price is more than ' + (SOL_PRICE_BUY_MAX_AGE_MS / 1000) + ' seconds old right now -- a real buy is not sized with an old price' };
     }
-    var sizeUsd = computeLivePositionSizeUsd();
+    var sizeUsd;
+    if (opts.sizeUsd) {
+      // The Live Trade Test button buys exactly this many dollars. The Live Fund must hold at least that much,
+      // because the real cost is taken from it like any other buy.
+      if (!(S.liveFund >= opts.sizeUsd)) {
+        return { ok: false, error: 'The Live Trading Fund must be at least $' + opts.sizeUsd.toFixed(2) + ' for this test buy -- set it in Settings first' };
+      }
+      sizeUsd = opts.sizeUsd;
+    } else {
+      sizeUsd = computeLivePositionSizeUsd();
+    }
     if (sizeUsd === null) {
       return { ok: false, error: 'Live Trading Fund is not configured or too small to size a trade -- set it in Settings first' };
     }
     var solAmountLamports = Math.round((sizeUsd / SOL_PRICE_USD) * 1000000000);
 
     var buyT0 = Date.now();
-    liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + '...', 'info');
+    liveLog(logPrefix + ' (' + platformName + ' buy): building $' + sizeUsd.toFixed(2) + ' buy for ' + mintStr + (opts.gate ? ' (the wallet check is running at the same time; it is only sent if the check passes)' : '') + '...', 'info');
     // FAST LANE: from here until the transaction is sent, this buy's node requests go ahead of all
     // other buy and background requests (sells still go first). The blockhash and tip are read at the
     // same time as the coin's accounts instead of after them. The lane is put back once the send is made.
     var laneBefore = rpcgate.setCurrentPriority(rpcgate.FAST_LANE);
-    var prefetched = execution.prefetchSendParts(connection, 'SWQOS_ONLY');
+    var buyRoute = liveSendRoute();
+    var prefetched = execution.prefetchSendParts(connection, buyRoute);
     var instructions;
     try {
       instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
@@ -3033,6 +3269,19 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
     }
     var buyBuiltMs = Date.now() - buyT0;
 
+    // The automatic entry's wallet check ran while the buy was being built. Nothing is sent unless it passed.
+    if (opts.gate) {
+      var gateT0 = Date.now();
+      var verdict;
+      try { verdict = await opts.gate; } catch (gateErr) { verdict = { go: false, reason: 'the entry check errored: ' + gateErr.message }; }
+      if (!verdict || !verdict.go) {
+        rpcgate.setCurrentPriority(laneBefore);
+        liveLog(logPrefix + ' (' + platformName + ' buy): NOT SENT for ' + mintStr + ' -- ' + ((verdict && verdict.reason) || 'the entry check did not pass') + ' (the built buy was thrown away)', 'info');
+        return { ok: false, skipped: true, notSent: true, error: (verdict && verdict.reason) || 'entry check did not pass' };
+      }
+      if (entrySnapshot) entrySnapshot.buyWaitedForCheckMs = Date.now() - gateT0;
+    }
+
     var tx = new Transaction();
     instructions.forEach(function(ix) { tx.add(ix); });
 
@@ -3041,7 +3290,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
     var realSolAtBuy = (instructions && instructions.pumpBuyInfo && typeof instructions.pumpBuyInfo.realQuoteLamports === 'number') ? instructions.pumpBuyInfo.realQuoteLamports / 1000000000 : null;
     var result;
     try {
-      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', prefetched: prefetched, onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: buyRoute, mevProtect: !!S.liveMevProtect, maxPollMs: BUY_WATCH_MAX_MS, prefetched: prefetched, onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
     } catch (sendErr) {
       // The list of accounts the trade used is written only when something went wrong, to compare with one that worked.
       liveLog(logPrefix + ' (' + platformName + ' buy) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
@@ -3050,6 +3299,17 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
       if (!sendErr.mayHaveSent) throw sendErr;
       liveLog(logPrefix + ' (' + platformName + ' buy) ERROR: ' + sendErr.message + ' -- the buy may have been sent', 'warn');
       result = { outcome: 'UNKNOWN', signature: null, error: sendErr.message };
+      // Its signature is known (the transaction was signed before sending), so it is watched exactly like a
+      // normal send -- until it lands, fails, or its window closes -- instead of being guessed at.
+      if (sendErr.signature && sendErr.latest) {
+        liveLog(logPrefix + ' (' + platformName + ' buy): watching signature ' + sendErr.signature + ' until it lands or its window closes', 'info');
+        try {
+          var watched = await execution.watchSentTransaction(sendErr.signature, connection, sendErr.latest, rpcUrl, BUY_WATCH_MAX_MS);
+          result = Object.assign({}, watched, { error: watched.error || sendErr.message, tipLamports: sendErr.tipLamports, tipSource: sendErr.tipSource, senderRoute: sendErr.senderRoute, mevProtect: sendErr.mevProtect, senderHost: sendErr.senderHost });
+        } catch (watchErr) {
+          result = { outcome: 'UNKNOWN', signature: sendErr.signature, error: sendErr.message + ' | watching failed: ' + watchErr.message };
+        }
+      }
     }
     var buySendMs = Date.now() - buySendT0;
     rpcgate.setCurrentPriority(laneBefore);
@@ -3190,6 +3450,8 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             signalPriceUsd: (entrySnapshot && entrySnapshot.signalPrice) || null,
             signalAt: (entrySnapshot && entrySnapshot.signalAt) || null,
             concentrationMs: (entrySnapshot && entrySnapshot.concentrationMs !== undefined) ? entrySnapshot.concentrationMs : null,
+            buyWaitedForCheckMs: (entrySnapshot && typeof entrySnapshot.buyWaitedForCheckMs === 'number') ? entrySnapshot.buyWaitedForCheckMs : null,
+            topHolderPct: (entrySnapshot && typeof entrySnapshot.topHolderPct === 'number') ? entrySnapshot.topHolderPct : null,
             feedLagMs: (entrySnapshot && typeof entrySnapshot.feedLagMs === 'number') ? entrySnapshot.feedLagMs : null,
             landPriceUsd: landSnap ? landSnap.price : null,
             landPriceAgeMs: landSnap ? landSnap.ageMs : null,
@@ -3201,6 +3463,8 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             buyLandSource: result.landSource || null,
             buyLandTimes: result.landTimes || null,
             buyTipSource: result.tipSource || null,
+            buySendRoute: result.senderRoute || null,
+            buyMevProtect: (typeof result.mevProtect === 'boolean') ? result.mevProtect : null,
             buyResends: (typeof result.resends === 'number') ? result.resends : null,
             realSolAtBuy: realSolAtBuy,
             buyPreSendMs: buySendT0 - buyT0,
@@ -3285,7 +3549,8 @@ async function executeRealBuy(req, res, platformName, platformKey, buildBuyFn) {
   if (!mintStr) {
     return res.json({ ok: false, error: 'Provide a real token mint address in the request body as "mint"' });
   }
-  var outcome = await performRealBuy(mintStr, platformName, platformKey, buildBuyFn, 'LIVE TRADE TEST');
+  // The test button buys a real $1 (not the automatic trade size).
+  var outcome = await performRealBuy(mintStr, platformName, platformKey, buildBuyFn, 'LIVE TRADE TEST', null, { sizeUsd: 1 });
   res.json(outcome);
 }
 
@@ -3425,7 +3690,7 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
     var sellSendT0 = Date.now();
     var result;
     try {
-      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: 'SWQOS_ONLY', onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: liveSendRoute(), mevProtect: !!S.liveMevProtect, onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
     } catch (sendErr2) {
       // The list of accounts the trade used is written only when something went wrong, to compare with one that worked.
       liveLog(logPrefix + ' (' + platformName + ' sell) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
@@ -3461,7 +3726,7 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
 
     return { ok: true, result: result, cappedSale: cappedSale, sellInfo: sellInfo, error6024: error6024,
       sellBalanceMs: sellBalanceMs, sellBuildMs: sellBuildMs, sellPreSendMs: sellSendT0 - sellT0,
-      sendMs: Date.now() - sellSendT0, confirmChecks: (typeof result.checks === 'number') ? result.checks : 0, soldAmount: sellAmount, remainingAmount: remainingAmount, tipSource: result.tipSource || null, resends: (typeof result.resends === 'number') ? result.resends : null, computeUnits: settled ? settled.costs.computeUnits : null, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
+      sendMs: Date.now() - sellSendT0, confirmChecks: (typeof result.checks === 'number') ? result.checks : 0, soldAmount: sellAmount, remainingAmount: remainingAmount, tipSource: result.tipSource || null, senderRoute: result.senderRoute || null, mevProtect: (typeof result.mevProtect === 'boolean') ? result.mevProtect : null, resends: (typeof result.resends === 'number') ? result.resends : null, computeUnits: settled ? settled.costs.computeUnits : null, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
   } catch (e) {
     liveLog(logPrefix + ' (' + platformName + ' sell) ERROR: ' + e.message, 'warn');
     invalidateBuilderCaches();
@@ -3718,7 +3983,7 @@ function closeLiveOutsideBot(pos, priceUsd, prefix) {
     closeReason: 'Closed outside bot',
     openedAt: new Date(pos.openedAt).toLocaleString('en-US', { timeZone: 'America/New_York' }),
     closedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
-    closedDate: new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
+    closedDate: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
     holdTimeSec: Math.round((Date.now() - pos.openedAt) / 1000),
     takeProfitMode: pos.tpl, stopLossPct: (pos.slPct !== undefined && pos.slPct !== null) ? pos.slPct : S.liveStopLossPct,
     buyImpactUsd: pos.buyImpactUsd, totalSellProceedsUsd: null,
@@ -3889,6 +4154,12 @@ function liveTimingExtras(pos) {
     realSolAtBuy: nz(pos.realSolAtBuy),
     buyTipSource: nz(pos.buyTipSource),
     sellTipSource: nz(pos.sellTipSource),
+    buySendRoute: nz(pos.buySendRoute),
+    sellSendRoute: nz(pos.sellSendRoute),
+    buyAntiSandwich: (typeof pos.buyMevProtect === 'boolean') ? (pos.buyMevProtect ? 'On' : 'Off') : null,
+    sellAntiSandwich: (typeof pos.sellMevProtect === 'boolean') ? (pos.sellMevProtect ? 'On' : 'Off') : null,
+    buyWaitedForCheckMs: nz(pos.buyWaitedForCheckMs),
+    topHolderPct: nz(pos.topHolderPct),
     buyResends: nz(pos.buyResends),
     sellResends: nz(pos.sellResends),
     buyComputeUnits: nz(pos.buyComputeUnits),
@@ -4287,6 +4558,8 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       if (outcome.result && outcome.result.landSource) pos.sellLandSource = outcome.result.landSource;
       if (outcome.result && outcome.result.landTimes) pos.sellLandTimes = outcome.result.landTimes;
       if (outcome.tipSource) pos.sellTipSource = outcome.tipSource;
+      if (outcome.senderRoute) pos.sellSendRoute = outcome.senderRoute;
+      if (typeof outcome.mevProtect === 'boolean') pos.sellMevProtect = outcome.mevProtect;
       if (typeof outcome.resends === 'number') pos.sellResends = outcome.resends;
       if (typeof outcome.computeUnits === 'number') pos.sellComputeUnits = outcome.computeUnits;
       pos.sellConfirmChecks = (pos.sellConfirmChecks || 0) + (outcome.confirmChecks || 0);
@@ -4363,7 +4636,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
         closeReason: closeReason,
         openedAt: new Date(pos.openedAt).toLocaleString('en-US', { timeZone: 'America/New_York' }),
         closedAt: nowEst,
-        closedDate: new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
+        closedDate: new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' }),
         holdTimeSec: Math.round((Date.now() - pos.openedAt) / 1000),
         takeProfitMode: pos.tpl, stopLossPct: (pos.slPct !== undefined && pos.slPct !== null) ? pos.slPct : S.liveStopLossPct,
         buyImpactUsd: pos.buyImpactUsd, totalSellProceedsUsd: realKnown ? parseFloat(pos.sellImpactUsd.toFixed(4)) : null,
@@ -4530,6 +4803,89 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 
 // What the request gate sees right now: requests per second, what they are for, slow-node
 // pauses. Readable from a link, so the rate can be checked without waiting for a CSV.
+// -- LIBRARY INFO PAGE (read only) ----------------------------------------
+// Shows exactly which version of every library Render installed, and the real code of the pump.fun and
+// PumpSwap functions the next build needs, so that build is written from the installed code instead of from
+// documents that disagree. It reads files that are already on the server; it changes nothing and shows no
+// keys or secrets.
+function libraryInfoText() {
+  var out = [];
+  var line = function(s) { out.push(s); };
+  line('BUNKERBUSTER LIBRARY INFO -- ' + new Date().toISOString());
+  line('node ' + process.version);
+  line('');
+  line('== INSTALLED VERSIONS (name: wanted in package.json -> installed) ==');
+  var pkg = {};
+  try { pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')); } catch (e) { line('package.json could not be read: ' + e.message); }
+  var deps = pkg.dependencies || {};
+  Object.keys(deps).forEach(function(name) {
+    line(name + ': ' + deps[name] + ' -> ' + (readInstalledPackageVersion(name) || 'NOT FOUND'));
+  });
+  var codeOf = function(fn) {
+    try { var src = Function.prototype.toString.call(fn); return src.length > 6000 ? src.slice(0, 6000) + '\n...[cut at 6000 characters]' : src; }
+    catch (e) { return '(source not readable: ' + e.message + ')'; }
+  };
+  var methodsOf = function(obj) {
+    var names = {};
+    var o = obj;
+    for (var depth = 0; o && o !== Object.prototype && depth < 4; depth++) {
+      Object.getOwnPropertyNames(o).forEach(function(n) { if (n !== 'constructor') names[n] = true; });
+      o = Object.getPrototypeOf(o);
+    }
+    return Object.keys(names).sort();
+  };
+  var dumpLibrary = function(label, modName, pattern) {
+    line('');
+    line('== ' + label + ' (' + modName + ' ' + (readInstalledPackageVersion(modName) || '?') + ') ==');
+    var mod;
+    try { mod = require(modName); } catch (e) { line('could not load: ' + e.message); return; }
+    var names = Object.keys(mod).sort();
+    line('EXPORTS (' + names.length + '): ' + names.join(', '));
+    names.forEach(function(n) {
+      var v = mod[n];
+      if (typeof v === 'function' && /^[A-Z]/.test(n) && v.prototype) {
+        var ms = methodsOf(v.prototype);
+        if (ms.length) line('');
+        if (ms.length) line('-- class ' + n + ' methods: ' + ms.join(', '));
+        ms.forEach(function(m) {
+          if (pattern.test(m)) {
+            line('');
+            line('---- ' + n + '.prototype.' + m + ' ----');
+            line(codeOf(v.prototype[m]));
+          }
+        });
+      } else if (typeof v === 'function' && pattern.test(n)) {
+        line('');
+        line('---- function ' + n + ' ----');
+        line(codeOf(v));
+      } else if (v && typeof v === 'object' && /SDK$/.test(n)) {
+        var ms2 = methodsOf(v);
+        line('');
+        line('-- object ' + n + ' methods: ' + ms2.join(', '));
+        ms2.forEach(function(m) {
+          if (typeof v[m] === 'function' && pattern.test(m)) {
+            line('');
+            line('---- ' + n + '.' + m + ' ----');
+            line(codeOf(v[m]));
+          }
+        });
+      }
+    });
+  };
+  dumpLibrary('PUMP.FUN SDK', '@pump-fun/pump-sdk', /^(get(Buy|Sell)\w*(Amount|Quote)\w*|fetchBuyState|fetchSellState|bondingCurvePda|buyV3Instructions|sellV3Instructions)$/);
+  dumpLibrary('PUMPSWAP SDK', '@pump-fun/pump-swap-sdk', /(sell|swapSolanaState|PoolPda|poolPda|supportsTradeV2|decodePool|fetchPool|canonical)/i);
+  return out.join('\n');
+}
+
+app.get('/api/library-info', function(req, res) {
+  try {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(libraryInfoText());
+  } catch (e) {
+    res.status(500).send('library info failed: ' + e.message);
+  }
+});
+
 app.get('/api/rpc-stats', function(req, res) {
   var now = Date.now();
   res.json({
@@ -4554,7 +4910,8 @@ app.get('/api/live/export', function(req, res) {
     'SignalToSendMs','BuyPreSendMs','FeedLagMs',
     'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
     'BuySenderHost','SellSenderHost',
-    'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits'];
+    'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
+    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4580,7 +4937,9 @@ app.get('/api/live/export', function(req, res) {
       csvSafe(t.buySenderHost || ''), csvSafe(t.sellSenderHost || ''),
       csvSafe(t.buyLandSource || ''), csvSafe(t.sellLandSource || ''), t.postBuyReadMs, t.landedToOpenMs, t.buyBookkeepingMs, t.sellBalanceMs, t.sellBuildMs, t.sellPreSendMs, t.sellCappedParts, t.sell6024Count,
       t.buyListenerMs, t.buyCheckerMs, t.sellListenerMs, t.sellCheckerMs,
-      t.realSolAtBuy, csvSafe(t.buyTipSource || ''), csvSafe(t.sellTipSource || ''), t.buyResends, t.sellResends, t.buyComputeUnits, t.sellComputeUnits
+      t.realSolAtBuy, csvSafe(t.buyTipSource || ''), csvSafe(t.sellTipSource || ''), t.buyResends, t.sellResends, t.buyComputeUnits, t.sellComputeUnits,
+      csvSafe(t.buySendRoute || ''), csvSafe(t.sellSendRoute || ''), csvSafe(t.buyAntiSandwich || ''), csvSafe(t.sellAntiSandwich || ''),
+      t.buyWaitedForCheckMs, t.topHolderPct
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -4634,7 +4993,7 @@ app.get('/api/live/export', function(req, res) {
   }
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_live_trades_' + Date.now() + '.csv"');
-  res.send(rows.join('\n'));
+  writeCsvInBatches(res, rows);
 });
 
 // On-demand real price refresh -- triggers an immediate, genuine fetch
@@ -4714,11 +5073,22 @@ app.post('/api/settings', function(req, res) {
       S.liveDayStartFund = S.liveFund;
       S.liveStartFund = S.liveFund;
       S.liveSessionHighFund = S.liveFund;
-      S.liveSavings = 0;
+      // Savings are real money already set aside from winning trades, so setting the fund never resets them
+      // (it used to zero the Savings total but not the amount waiting to be sent, so the two stopped matching).
       S.liveRealizedPnl = 0;
       S.liveWindingDown = false;
       liveLog('LIVE TRADING FUND set to $' + S.liveFund, 'info');
     }
+  }
+  if (req.body.liveSendRoute !== undefined) {
+    if (req.body.liveSendRoute === 'MAX' || req.body.liveSendRoute === 'SWQOS_ONLY') {
+      S.liveSendRoute = req.body.liveSendRoute;
+      liveLog('LIVE SEND ROUTE: ' + (S.liveSendRoute === 'MAX' ? 'MAX -- every path at once, fastest (tip: the higher of 0.001 SOL and Jito\'s going rate)' : 'SWQOS ONLY -- one path, cheapest (tip: 0.000005 SOL)'), 'info');
+    }
+  }
+  if (req.body.liveMevProtect !== undefined) {
+    S.liveMevProtect = req.body.liveMevProtect === true || req.body.liveMevProtect === 'true';
+    liveLog('LIVE ANTI-SANDWICH (Helius mev-protect): ' + (S.liveMevProtect ? 'ON' : 'OFF'), 'info');
   }
   if (req.body.liveTradingEnabled !== undefined) {
     S.liveTradingEnabled = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
@@ -4798,36 +5168,87 @@ app.post('/api/settings', function(req, res) {
 app.get('/api/portfolio', function(req, res) {
   res.json({
     allTime: P.allTime, bestTrade: P.bestTrade, worstTrade: P.worstTrade,
-    sessions: P.sessions.slice(0, 50), totalSessions: P.sessions.length, totalTrades: P.trades.length,
+    sessions: P.sessions.slice(0, 50), totalSessions: P.sessions.length, totalTrades: P.historyCount || 0,
   });
 });
 
-app.get('/api/portfolio/trades', function(req, res) {
-  var trades = P.trades;
+// Filters and pages read the full history from the history file (newest first, as before). The file is
+// read twice, in pieces: once to count the matching trades, once to pick out the requested page, so only
+// one page of trades is ever held at a time.
+app.get('/api/portfolio/trades', async function(req, res) {
   var q = req.query;
-  if (q.date) trades = trades.filter(function(t) { return t.closedDate === q.date; });
-  if (q.token) { var tok = q.token.toUpperCase(); trades = trades.filter(function(t) { return t.name && t.name.toUpperCase().indexOf(tok) >= 0; }); }
-  if (q.chain && q.chain !== 'all') trades = trades.filter(function(t) { return t.chain === q.chain; });
-  if (q.src && q.src !== 'all') trades = trades.filter(function(t) { return t.src === q.src; });
-  if (q.result === 'win') trades = trades.filter(function(t) { return t.pnl > 0; });
-  if (q.result === 'loss') trades = trades.filter(function(t) { return t.pnl <= 0; });
-  if (q.exit && q.exit !== 'all') trades = trades.filter(function(t) { return t.closeReason && t.closeReason.toLowerCase().indexOf(q.exit.toLowerCase()) >= 0; });
-  var page = parseInt(q.page) || 0;
-  var limit = parseInt(q.limit) || 50;
-  if (limit > 99999) limit = trades.length;
-  var total = trades.length;
-  trades = trades.slice(page * limit, (page + 1) * limit);
-  res.json({ trades: trades, total: total, page: page, pages: Math.ceil(total / limit) });
+  var tokQ = q.token ? String(q.token).toUpperCase() : null;
+  var exitQ = (q.exit && q.exit !== 'all') ? String(q.exit).toLowerCase() : null;
+  var matches = function(t) {
+    if (q.date && t.closedDate !== q.date) return false;
+    if (tokQ && !(t.name && t.name.toUpperCase().indexOf(tokQ) >= 0)) return false;
+    if (q.chain && q.chain !== 'all' && t.chain !== q.chain) return false;
+    if (q.src && q.src !== 'all' && t.src !== q.src) return false;
+    if (q.result === 'win' && !(t.pnl > 0)) return false;
+    if (q.result === 'loss' && !(t.pnl <= 0)) return false;
+    if (exitQ && !(t.closeReason && t.closeReason.toLowerCase().indexOf(exitQ) >= 0)) return false;
+    return true;
+  };
+  try {
+    var total = 0;
+    await eachPaperTrade(function(t) { if (matches(t)) total++; });
+    var page = parseInt(q.page) || 0;
+    var limit = parseInt(q.limit) || 50;
+    if (limit > 99999) limit = Math.max(total, 1);
+    // Newest first: page 0 is the last `limit` matches in the file.
+    var fromNewest = page * limit;
+    var hi = total - fromNewest;            // exclusive end, counted in file order
+    var lo = Math.max(0, hi - limit);
+    var picked = [];
+    if (hi > 0) {
+      var n = 0;
+      await eachPaperTrade(function(t) {
+        if (!matches(t)) return;
+        if (n >= lo && n < hi) picked.push(t);
+        n++;
+      });
+    }
+    picked.reverse();
+    res.json({ trades: picked, total: total, page: page, pages: Math.ceil(total / limit) });
+  } catch (e) {
+    res.json({ trades: [], total: 0, page: 0, pages: 0, error: 'could not read the trade history: ' + e.message });
+  }
 });
 
-app.get('/api/portfolio/export', function(req, res) {
+// Writes CSV lines to the download a few hundred at a time, letting the bot carry on between batches,
+// so a large CSV never stalls prices, exits or real trades while it is built.
+function writeCsvInBatches(res, lines, done) {
+  var i = 0;
+  var BATCH = 300;
+  (function next() {
+    if (i >= lines.length) { res.end(); if (done) done(); return; }
+    var chunk = lines.slice(i, i + BATCH).join('\n');
+    i += BATCH;
+    res.write(chunk + (i < lines.length ? '\n' : ''));
+    setImmediate(next);
+  })();
+}
+
+app.get('/api/portfolio/export', async function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
-  var rows = [
-    ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt'].join(',')
-  ];
-  P.trades.forEach(function(t) {
-    rows.push([
+  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt'].join(',');
+  // The file holds the oldest trade first; the CSV lists the newest first, as it always has.
+  var body = [];
+  try {
+    await eachPaperTrade(function(t) { body.push(paperCsvRow(t, sessionStartedAtStr, sessionEndedAtStr)); });
+  } catch (e) {
+    return res.status(500).send('Could not read the paper trade history: ' + e.message);
+  }
+  body.reverse();
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_trades_' + Date.now() + '.csv"');
+  writeCsvInBatches(res, [header].concat(body));
+});
+
+// One Paper CSV line: the same columns, in the same order, written exactly as before.
+function paperCsvRow(t, sessionStartedAtStr, sessionEndedAtStr) {
+    return [
       csvSafe(t.name),
       t.mint || '',
       t.chain || '',
@@ -4890,13 +5311,8 @@ app.get('/api/portfolio/export', function(req, res) {
       t.tier2RealizedPct !== null && t.tier2RealizedPct !== undefined ? t.tier2RealizedPct : '',
       t.tier2RealizedPnl !== null && t.tier2RealizedPnl !== undefined ? t.tier2RealizedPnl : '',
       csvSafe(t.tier2ClosedAt || ''),
-    ].join(','));
-  });
-  var csv = rows.join('\n');
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="bunkerbuster_trades_' + Date.now() + '.csv"');
-  res.send(csv);
-});
+    ].join(',');
+}
 
 function csvSafe(val) {
   var s = (val === undefined || val === null) ? '' : String(val);
@@ -4907,7 +5323,8 @@ function csvSafe(val) {
 }
 
 app.post('/api/portfolio/clear', function(req, res) {
-  P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [] };
+  P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [], historyCount: 0 };
+  try { if (fs.existsSync(PAPER_TRADES_FILE)) fs.unlinkSync(PAPER_TRADES_FILE); } catch (e) { log('PAPER HISTORY: could not delete the history file (' + e.message + ')', 'warn'); }
   savePortfolio();
   res.json({ success: true });
 });
@@ -4923,9 +5340,156 @@ app.get('/', function(req, res) {
   res.sendFile(__dirname + '/index.html');
 });
 
+// -- LIVE STATE ACROSS A RESTART -----------------------------------------
+// Everything about live trading that is not closed history (which live_history.json already keeps) is saved
+// to live_state.json: the real coins held (with entry price and peak), the Live Fund, savings (including the
+// amount waiting to be sent), and the live settings. It is written within a second of any change. If the
+// server restarts (a crash, running out of memory, Render maintenance), the bot reads it back, checks the real
+// wallet for every coin, and goes straight back to managing each one with its stop loss and trail. Automatic
+// live buying stays OFF after a restart until it is turned back on. Like every saved file on Render, a deploy
+// wipes it, so the close-everything-before-pushing routine stays.
+const LIVE_STATE_FILE = path.join(__dirname, 'data', 'live_state.json');
+var LIVE_STATE_FIELDS = ['liveFund', 'liveDayStartFund', 'liveStartFund', 'liveSessionHighFund', 'liveMaxOpen', 'liveFundStopLossPct',
+  'liveStopLossPct', 'liveTakeProfitMode', 'liveTakeProfitPct', 'liveAutoLockEnabled', 'liveWindingDown', 'liveSavings', 'livePendingSavings',
+  'liveSavingsSent', 'liveSavingsTransfers', 'liveRentLockedUsd', 'liveRentReclaimedUsd', 'liveRealizedPnl', 'liveTipsPaidUsd',
+  'liveNetworkFeesUsd', 'liveSendRoute', 'liveMevProtect', 'liveTradingEnabled', 'liveSession', 'liveRejectReasons', 'liveSessionBest',
+  'liveLastStopTime', 'liveTierSales'];
+var liveStateRestored = false;     // nothing is saved until the saved state has been read back, so it is never overwritten by an empty one
+var liveStateLastWritten = null;
+
+function liveStateSnapshot() {
+  var out = { savedAt: Date.now(), fields: {}, positions: [], cooldowns: [] };
+  LIVE_STATE_FIELDS.forEach(function(k) { out.fields[k] = S[k]; });
+  out.positions = (S.liveOpen || []).map(function(p) {
+    var c = Object.assign({}, p);
+    delete c.bookkeepingPromise;   // a running task, not data
+    return c;
+  });
+  liveCooldowns.forEach(function(at, mint) { if (Date.now() - at < CFG.COOLDOWN_MS) out.cooldowns.push([mint, at]); });
+  return out;
+}
+
+function saveLiveStateNow() {
+  if (!liveStateRestored) return;
+  try {
+    var snap = liveStateSnapshot();
+    var compare = JSON.stringify({ fields: snap.fields, positions: snap.positions, cooldowns: snap.cooldowns });
+    if (compare === liveStateLastWritten) return;
+    ensureDataDir();
+    var tmp = LIVE_STATE_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(snap));
+    fs.renameSync(tmp, LIVE_STATE_FILE);
+    liveStateLastWritten = compare;
+  } catch (e) {
+    liveLog('LIVE STATE: could not save (' + e.message + ')', 'warn');
+  }
+}
+setInterval(saveLiveStateNow, 1000);
+
+async function restoreLiveState() {
+  try {
+    if (!fs.existsSync(LIVE_STATE_FILE)) { liveLog('LIVE STATE: no saved live state (normal after a deploy) - starting fresh', 'info'); return; }
+    var d = JSON.parse(fs.readFileSync(LIVE_STATE_FILE, 'utf8'));
+    var wasOn = !!(d.fields && d.fields.liveTradingEnabled);
+    LIVE_STATE_FIELDS.forEach(function(k) { if (d.fields && d.fields[k] !== undefined) S[k] = d.fields[k]; });
+    // Automatic live buying never restarts on its own. If it was on, its session is closed the same way the
+    // Settings switch closes it.
+    S.liveTradingEnabled = false;
+    if (wasOn) {
+      S.liveLastStopTime = Date.now();
+      endLiveSession();
+      S.liveAutoLockEnabled = false;
+    }
+    (d.cooldowns || []).forEach(function(c) { if (Array.isArray(c) && c.length === 2) liveCooldowns.set(c[0], c[1]); });
+    var saved = Array.isArray(d.positions) ? d.positions : [];
+    liveLog('LIVE STATE: restored from ' + new Date(d.savedAt || Date.now()).toLocaleTimeString('en-US', { timeZone: 'America/New_York' }) +
+      ' -- Live Fund $' + (S.liveFund || 0).toFixed(4) + ', savings waiting to send $' + (S.livePendingSavings || 0).toFixed(2) + ', ' + saved.length + ' real coin(s) held' +
+      (wasOn ? '. Automatic live trading was ON before the restart and is now OFF until you turn it back on' : ''), 'warn');
+    if (saved.length === 0) return;
+    var connection = null;
+    try { connection = liveWalletModule && liveWalletKeypair ? liveWalletModule.getConnection() : null; } catch (e) { connection = null; }
+    var kept = [];
+    for (var i = 0; i < saved.length; i++) {
+      var p = saved[i];
+      p.busy = false;
+      p.bookkeepingPromise = null;
+      p.retryAfter = 0;
+      p.lastPriceChange = Date.now();   // the stale exit counts from the restart, not from before it
+      p.restoredAt = Date.now();
+      if (p.bookkeepingPending) {
+        p.bookkeepingPending = false;
+        liveLog('LIVE STATE: ' + (p.name || p.mint) + ' was restored before its buy cost had been recorded -- check the Live Fund', 'warn');
+      }
+      if (!connection) { kept.push(p); liveLog('LIVE STATE: ' + (p.name || p.mint) + ' restored without a wallet check (no node connection)', 'warn'); continue; }
+      try {
+        var bal = await liveWalletModule.getTokenBalance(connection, new (require('@solana/web3.js').PublicKey)(p.mint), liveWalletKeypair.publicKey);
+        if (bal && parseFloat(bal.amount) > 0) {
+          if (String(bal.amount) !== String(p.tokenAmountRaw)) {
+            liveLog('LIVE STATE: ' + (p.name || p.mint) + ' -- the wallet holds ' + bal.amount + ' raw units (saved: ' + p.tokenAmountRaw + '); using the wallet amount', 'warn');
+            p.tokenAmountRaw = String(bal.amount);
+          }
+          kept.push(p);
+          liveLog('LIVE STATE: managing ' + (p.name || p.mint) + ' again | entry $' + p.entryPriceUsd + ' | peak $' + p.peakPriceUsd + ' -- stop loss and trail are back on', 'info');
+        } else if (p.pendingSell) {
+          // A sale was in flight when the server stopped; the normal pending-sale check settles it.
+          kept.push(p);
+          liveLog('LIVE STATE: ' + (p.name || p.mint) + ' had a sale in flight -- its result is being checked', 'warn');
+        } else {
+          liveLog('LIVE STATE: ' + (p.name || p.mint) + ' (' + p.mint + ') is no longer in the wallet -- not restored. Check the Live Fund, it may have been sold outside the bot', 'warn');
+        }
+      } catch (e) {
+        kept.push(p);
+        liveLog('LIVE STATE: could not read the wallet for ' + (p.name || p.mint) + ' (' + e.message + ') -- restored as saved', 'warn');
+      }
+    }
+    S.liveOpen = kept;
+    if (S.liveOpen.length > 0) {
+      startFeed();
+      syncOnchainPrices();
+    }
+  } catch (e) {
+    liveLog('LIVE STATE: could not read the saved live state (' + e.message + ') - starting fresh', 'warn');
+  } finally {
+    liveStateRestored = true;
+    saveLiveStateNow();
+  }
+}
+
+// -- UNEXPECTED ERRORS ----------------------------------------------------
+// A small unexpected error (a promise nobody caught) is written to both logs and the bot carries on. A serious
+// one (an error that escaped everything) leaves the program in an unknown state, so the bot saves its live
+// state, paper portfolio and live history, writes what happened, and stops; Render starts it again, and the
+// live state above is read back. Each kind of message is written at most once every 10 seconds.
+var caughtErrorLoggedAt = {};
+function reportCaughtError(where, e) {
+  try {
+    var msg = (e && e.message) ? e.message : String(e);
+    var key = where + '|' + msg.slice(0, 80);
+    if (caughtErrorLoggedAt[key] && Date.now() - caughtErrorLoggedAt[key] < 10000) return;
+    caughtErrorLoggedAt[key] = Date.now();
+    var where1 = (e && e.stack) ? String(e.stack).split('\n').slice(1, 2).join('').trim() : '';
+    var line = 'UNEXPECTED ERROR caught in ' + where + ': ' + msg + (where1 ? ' (' + where1 + ')' : '') + ' -- the bot carries on';
+    log(line, 'warn');
+    liveLog(line, 'warn');
+  } catch (e2) { /* reporting must never throw */ }
+}
+process.on('unhandledRejection', function(reason) { reportCaughtError('a background task', reason); });
+process.on('uncaughtException', function(err) {
+  try {
+    var msg = (err && err.stack) ? String(err.stack).split('\n').slice(0, 3).join(' | ') : String(err);
+    console.log('[FATAL] ' + msg);
+    liveLog('SERIOUS ERROR: ' + msg + ' -- saving the live state and restarting', 'warn');
+    saveLiveStateNow();
+    savePortfolio();
+    saveLiveHistory();
+  } catch (e) { /* stopping anyway */ }
+  setTimeout(function() { process.exit(1); }, 500);
+});
+
 app.listen(PORT, function() {
   console.log('BunkerBuster - Sniper Bot - running on port ' + PORT);
   loadPortfolio();
   loadLiveHistory();
+  restoreLiveState();
   updateSolPrice();
 });

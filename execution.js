@@ -46,17 +46,23 @@ function randomTipAccount() {
   return new PublicKey(address);
 }
 
-// Sender's two tiers, with their documented minimum tip in lamports.
+// Sender's two tiers, with their documented minimum tip in lamports (Helius Sender docs):
+//   MAX        - sent on every path at once (Helius, Jito and others), the fastest landing. Minimum
+//                tip 0.001 SOL; Helius says a higher tip lands first, so the tip is the higher of the
+//                minimum and Jito's current 75th-percentile landed tip.
+//   SWQOS_ONLY - one path only, the cheapest. Minimum tip 0.000005 SOL. Helius says any tip up to
+//                0.001 SOL stays on that same single path, so a bigger tip buys nothing: the
+//                minimum is always paid.
 const SENDER_TIERS = {
-  SWQOS_ONLY: { minLamports: 5000, queryParam: 'swqos_only=true' },      // 0.000005 SOL
-  MAX: { minLamports: 1000000, queryParam: '' },                         // 0.001 SOL
+  SWQOS_ONLY: { name: 'SWQOS_ONLY', minLamports: 5000, queryParam: 'swqos_only=true', followsJito: false },   // 0.000005 SOL
+  MAX: { name: 'MAX', minLamports: 1000000, queryParam: '', followsJito: true },                             // 0.001 SOL
 };
 
 // Fetches the real, current 75th-percentile landed tip from Jito's own
-// public endpoint -- a genuine, current number, not a guess. Falls
-// back to the tier's documented minimum if the fetch fails or the
-// response shape isn't what's expected, rather than ever blocking a
-// real trade on this being unavailable.
+// public endpoint -- a genuine, current number, not a guess. Used only for the
+// MAX tier. Falls back to the tier's documented minimum if the fetch fails or
+// the response shape isn't what's expected, rather than ever blocking a real
+// trade on this being unavailable.
 //
 // The number is kept for TIP_CACHE_TTL_MS and refreshed in the background
 // (warmTipCache), so a real buy or sell no longer waits on this outside web
@@ -97,47 +103,36 @@ async function fetchTipFloorLamports(tier) {
   }
 }
 
-// Where the tip number of the most recent read came from: 'live' (just fetched from Jito), 'cached'
-// (a recent fetch), 'stale' (the last good one, after a failed fetch) or 'minimum' (the tier's documented
-// minimum, because Jito could not be read). Recorded on every trade so a tip that is not the real going
-// rate shows up in the data instead of being hidden.
-var lastTipSource = 'none';
-async function fetchCurrentTipLamports(tier, forceRefresh) {
+// Returns { lamports, source } for this one trade. source says where the tip number came from:
+// 'live' (just fetched from Jito), 'cached' (a recent fetch), 'stale' (the last good one, after a failed
+// fetch), 'minimum' (the MAX minimum, because Jito could not be read) or 'fixed' (the SWQOS_ONLY tier,
+// which always pays its documented minimum). It is returned with the number, not kept in a shared
+// variable, so each trade records its own source.
+async function fetchCurrentTip(tier, forceRefresh) {
+  if (!tier.followsJito) return { lamports: tier.minLamports, source: 'fixed' };
   var key = String(tier.minLamports);
   var cached = tipCache[key];
-  if (!forceRefresh && cached && (Date.now() - cached.at) < TIP_CACHE_TTL_MS) { lastTipSource = 'cached'; return cached.lamports; }
+  if (!forceRefresh && cached && (Date.now() - cached.at) < TIP_CACHE_TTL_MS) return { lamports: cached.lamports, source: 'cached' };
   var fresh = await fetchTipFloorLamports(tier);
   if (fresh !== null) {
     tipCache[key] = { lamports: fresh, at: Date.now() };
-    lastTipSource = 'live';
-    return fresh;
+    return { lamports: fresh, source: 'live' };
   }
-  if (cached && (Date.now() - cached.at) < TIP_CACHE_STALE_MS) { lastTipSource = 'stale'; return cached.lamports; }
-  lastTipSource = 'minimum';
-  return tier.minLamports;
+  if (cached && (Date.now() - cached.at) < TIP_CACHE_STALE_MS) return { lamports: cached.lamports, source: 'stale' };
+  return { lamports: tier.minLamports, source: 'minimum' };
 }
 
-// Keeps the tip number fresh while live trading is on.
+// Keeps the MAX tip number fresh while live trading is on (the SWQOS_ONLY tip is fixed and needs no fetch).
 function warmTipCache() {
-  return fetchCurrentTipLamports(SENDER_TIERS.SWQOS_ONLY, true).catch(function() {});
-}
-
-// Pulls the api-key out of the already-configured LIVE_RPC_URL rather
-// than needing a separate secret -- Sender authenticates with the same
-// key as the regular RPC connection.
-function extractApiKey(rpcUrl) {
-  var match = /[?&]api-key=([^&]+)/.exec(rpcUrl || '');
-  if (!match) {
-    var err = new Error('could not find api-key in LIVE_RPC_URL');
-    err.code = 'NO_API_KEY';
-    throw err;
-  }
-  return match[1];
+  return fetchCurrentTip(SENDER_TIERS.MAX, true).catch(function() {});
 }
 
 // Where buys and sells are submitted: Helius Sender, Newark (plain http, the address Helius documents for a
 // backend program; the bot runs in Ohio). The live trades measured so far all went through Newark.
+// No API key is sent: Helius documents that Sender needs one only for accounts given a raised send limit,
+// and sending the node key in a plain http address exposed it.
 var SENDER_NEWARK = 'http://ewr-sender.helius-rpc.com/fast';
+var SENDER_NEWARK_PING = 'http://ewr-sender.helius-rpc.com/ping';
 function hostOf(url) {
   return String(url || '').replace(/^https?:\/\//i, '').replace(/[\/?].*$/, '');
 }
@@ -145,10 +140,33 @@ function senderHost() {
   return hostOf(SENDER_NEWARK);
 }
 
-function buildSenderUrl(rpcUrl, tier) {
-  var apiKey = extractApiKey(rpcUrl);
-  var query = 'api-key=' + apiKey + (tier.queryParam ? '&' + tier.queryParam : '');
-  return SENDER_NEWARK + '?' + query;
+// mevProtect: Helius's option that avoids validators linked to sandwich attacks.
+function buildSenderUrl(tier, mevProtect) {
+  var params = [];
+  if (tier.queryParam) params.push(tier.queryParam);
+  if (mevProtect) params.push('mev-protect=true');
+  return SENDER_NEWARK + (params.length ? '?' + params.join('&') : '');
+}
+
+// CONNECTION WARMING: Helius asks for a call to Sender's /ping during idle spells longer than 5 seconds,
+// so the connection is already open when a trade goes out. Called every few seconds while live trading is
+// on. It sends nothing on chain and costs nothing; a failed ping changes nothing.
+var pingStats = { sent: 0, ok: 0, failed: 0, lastMs: null, lastError: null };
+function pingSender() {
+  var t0 = Date.now();
+  pingStats.sent++;
+  return fetchWithTimeout(SENDER_NEWARK_PING, { method: 'GET' }, 3000).then(function(res) {
+    return res.text().then(function() {
+      if (res.ok) { pingStats.ok++; pingStats.lastMs = Date.now() - t0; }
+      else { pingStats.failed++; pingStats.lastError = 'HTTP ' + res.status; }
+    });
+  }).catch(function(e) {
+    pingStats.failed++;
+    pingStats.lastError = String((e && e.message) || e).slice(0, 120);
+  });
+}
+function senderPingStatus() {
+  return { sent: pingStats.sent, ok: pingStats.ok, failed: pingStats.failed, lastMs: pingStats.lastMs, lastError: pingStats.lastError };
 }
 
 function describe(label, value) {
@@ -627,7 +645,7 @@ var RESEND_MAX = 6;
 
 async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl, options) {
   options = options || {};
-  var tierName = options.tier || 'SWQOS_ONLY';
+  var tierName = options.tier;
   var tier = SENDER_TIERS[tierName];
   if (!tier) throw new Error('unknown Sender tier: ' + tierName);
   var microLamportsPerCu = options.microLamportsPerCu || 100000;
@@ -645,10 +663,16 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     try { tipAndHash = await options.prefetched; } catch (e) { tipAndHash = null; }
     if (!tipAndHash || !tipAndHash[1] || !tipAndHash[1].blockhash) tipAndHash = null;
   }
-  if (!tipAndHash) tipAndHash = await Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]);
-  var tipLamports = tipAndHash[0];
-  var tipSource = lastTipSource;
+  // A prefetch made for a different tier is not used (its tip would follow the other tier's rule).
+  if (tipAndHash && tipAndHash.tierName !== tier.name) tipAndHash = null;
+  if (!tipAndHash) {
+    tipAndHash = await Promise.all([fetchCurrentTip(tier), getBlockhashShared(connection)]);
+    tipAndHash.tierName = tier.name;
+  }
+  var tipLamports = tipAndHash[0].lamports;
+  var tipSource = tipAndHash[0].source;
   var latest = tipAndHash[1];
+  var mevProtect = !!options.mevProtect;
 
   transaction.instructions.unshift(
     ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit }),
@@ -676,7 +700,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   transaction.sign(keypair);
 
   var serialized = transaction.serialize();
-  var senderUrl = buildSenderUrl(rpcUrl, tier);
+  var senderUrl = buildSenderUrl(tier, mevProtect);
   var senderUsed = hostOf(senderUrl);
   var body = {
     jsonrpc: '2.0',
@@ -698,6 +722,11 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   } catch (sendErr) {
     forgetBlockhash();
     sendErr.mayHaveSent = true;
+    // The transaction is already signed, so its signature is known without Sender's reply. It is handed back
+    // with the blockhash it was built on, so the caller can keep watching it until it lands or its window
+    // closes (watchSentTransaction), instead of guessing.
+    try { sendErr.signature = signatureOf(transaction); sendErr.latest = latest; } catch (sigErr) { /* left unknown */ }
+    sendErr.tipLamports = tipLamports; sendErr.tipSource = tipSource; sendErr.senderRoute = tier.name; sendErr.mevProtect = mevProtect; sendErr.senderHost = senderUsed;
     throw sendErr;
   }
   if (json.error) {
@@ -713,6 +742,8 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
     );
     err2.code = 'SENDER_NO_SIGNATURE';
     err2.mayHaveSent = true;
+    try { err2.signature = signatureOf(transaction); err2.latest = latest; } catch (sigErr2) { /* left unknown */ }
+    err2.tipLamports = tipLamports; err2.tipSource = tipSource; err2.senderRoute = tier.name; err2.mevProtect = mevProtect; err2.senderHost = senderUsed;
     throw err2;
   }
   // The same signed transaction is sent again every RESEND_EVERY_MS until its outcome is known (at most
@@ -734,18 +765,38 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   outcome.tipLamports = tipLamports;
   outcome.tipSource = tipSource;
   outcome.senderHost = senderUsed;
+  outcome.senderRoute = tier.name;
+  outcome.mevProtect = mevProtect;
   outcome.resends = resends;
   outcome.cuLimit = cuLimit;
   return outcome;
 }
 
+// The base-58 signature of a signed legacy transaction (its first signature is the fee payer's).
+function signatureOf(transaction) {
+  var raw = require('bs58');
+  var bs58 = (raw && typeof raw.encode === 'function') ? raw : raw.default;
+  if (!transaction.signature) throw new Error('transaction is not signed');
+  return bs58.encode(transaction.signature);
+}
+
+// Keeps watching a transaction that was sent but whose send reply was lost, with the same confirm checker
+// as every trade: CONFIRMED, FAILED, EXPIRED (its window closed, nothing landed -- final) or PENDING.
+function watchSentTransaction(signature, connection, latest, rpcUrl, maxPollMs) {
+  return pollForOutcome(signature, connection, latest, { maxPollMs: maxPollMs || 30000, wsUrl: toWsUrl(rpcUrl) });
+}
+
 // Starts the two reads a send needs (the tip number and the latest blockhash) right now, so the
 // caller can run them while the transaction is still being built. Pass the returned promise to
-// sendAndConfirmViaSender as options.prefetched. Never rejects (a failed read is read again at send time).
+// sendAndConfirmViaSender as options.prefetched, with the same tier. Never rejects (a failed read is
+// read again at send time).
 function prefetchSendParts(connection, tierName) {
-  var tier = SENDER_TIERS[tierName || 'SWQOS_ONLY'];
+  var tier = SENDER_TIERS[tierName];
   if (!tier) return Promise.resolve(null);
-  return Promise.all([fetchCurrentTipLamports(tier), getBlockhashShared(connection)]).catch(function() { return null; });
+  return Promise.all([fetchCurrentTip(tier), getBlockhashShared(connection)]).then(function(r) {
+    r.tierName = tier.name;
+    return r;
+  }).catch(function() { return null; });
 }
 
 module.exports = {
@@ -756,8 +807,11 @@ module.exports = {
   warmLandingSocket,
   landingStatus,
   senderHost,
-  fetchCurrentTipLamports,
+  fetchCurrentTip,
   warmTipCache,
+  pingSender,
+  senderPingStatus,
+  watchSentTransaction,
   HELIUS_SENDER_TIP_ACCOUNTS,
   SENDER_TIERS,
 };
