@@ -2059,6 +2059,9 @@ function setPortSource(src) {
   ptSource = src;
   document.getElementById('btn-src-paper').classList.toggle('active', src === 'paper');
   document.getElementById('btn-src-live').classList.toggle('active', src === 'live');
+  // The export button downloads the history that is on screen: the Live CSV when LIVE is chosen.
+  var ptExport = document.getElementById('pt-export-link');
+  if (ptExport) ptExport.setAttribute('href', src === 'live' ? '/api/live/export' : '/api/portfolio/export');
   document.querySelectorAll('.pt-paper-only').forEach(function(b) { b.style.display = src === 'paper' ? '' : 'none'; });
   document.querySelectorAll('.pt-live-only').forEach(function(b) { b.style.display = src === 'live' ? '' : 'none'; });
   ptFilters = { chain: 'all', src: 'all', result: 'all', exit: 'all' };
@@ -2144,7 +2147,7 @@ async function loadPortfolioPage() {
 
     if (data.bestTrade) {
       document.getElementById('pt-best-name').textContent=data.bestTrade.name||'?';
-      document.getElementById('pt-best-pnl').textContent='+$'+f2(data.bestTrade.pnl);
+      document.getElementById('pt-best-pnl').textContent=(data.bestTrade.pnl<0?'-':'+')+'$'+f2(Math.abs(data.bestTrade.pnl||0));
       document.getElementById('pt-best-pct').textContent=pSign(data.bestTrade.pnlPct||0)+f2(data.bestTrade.pnlPct||0)+'%';
       document.getElementById('pt-best-size').textContent='$'+f2(data.bestTrade.size||0);
       document.getElementById('pt-best-prices').textContent='$'+f8(data.bestTrade.entryPrice||0)+' → $'+f8(data.bestTrade.exitPrice||0);
@@ -2155,8 +2158,8 @@ async function loadPortfolioPage() {
     }
     if (data.worstTrade) {
       document.getElementById('pt-worst-name').textContent=data.worstTrade.name||'?';
-      document.getElementById('pt-worst-pnl').textContent='-$'+f2(Math.abs(data.worstTrade.pnl));
-      document.getElementById('pt-worst-pct').textContent=f2(data.worstTrade.pnlPct||0)+'%';
+      document.getElementById('pt-worst-pnl').textContent=(data.worstTrade.pnl<0?'-':'+')+'$'+f2(Math.abs(data.worstTrade.pnl||0));
+      document.getElementById('pt-worst-pct').textContent=pSign(data.worstTrade.pnlPct||0)+f2(data.worstTrade.pnlPct||0)+'%';
       document.getElementById('pt-worst-size').textContent='$'+f2(data.worstTrade.size||0);
       document.getElementById('pt-worst-prices').textContent='$'+f8(data.worstTrade.entryPrice||0)+' → $'+f8(data.worstTrade.exitPrice||0);
       document.getElementById('pt-worst-reason').textContent=data.worstTrade.closeReason||'?';

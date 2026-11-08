@@ -3421,7 +3421,9 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             tokenDecimals: heldBalance.decimals,
             sizeUsd: sizeUsd,
             openedAt: Date.now(),
-            name: ((S.tokens && S.tokens.get(mintStr)) || {}).n || '',
+            // A coin the bot has not seen in its feed (a test buy) has no name here, so a short form of its
+            // address is used instead of leaving it blank.
+            name: ((S.tokens && S.tokens.get(mintStr)) || {}).n || (mintStr.slice(0, 6) + '...' + mintStr.slice(-4)),
             // The money side is filled in by applyBuyBookkeeping a moment later. Until then the
             // position is not counted as deployed (the fund has not been lowered by it yet), and no
             // sale records its result (it waits on bookkeepingPromise).
@@ -4482,7 +4484,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     var pumpfun = require('./pumpfun');
     var platformName = 'pump.fun';
     // A coin that graduated off the bonding curve while held is sold on
-    // PumpSwap instead (UNVERIFIED on chain -- never exercised live yet).
+    // PumpSwap instead (pumpswap.js, written from the installed 2.1.0 code; not yet used on a real sale).
     var buildSellFn = async function(conn, mintPk, userPk, amt, slip) {
       try {
         return await pumpfun.buildSellInstructions(conn, mintPk, userPk, amt, slip);
@@ -4844,6 +4846,12 @@ function libraryInfoText() {
     names.forEach(function(n) {
       var v = mod[n];
       if (typeof v === 'function' && /^[A-Z]/.test(n) && v.prototype) {
+        // For the two online readers, the start of the class itself (how one is created).
+        if (/^Online/.test(n)) {
+          line('');
+          line('---- class ' + n + ' (start of its code) ----');
+          line(codeOf(v));
+        }
         var ms = methodsOf(v.prototype);
         if (ms.length) line('');
         if (ms.length) line('-- class ' + n + ' methods: ' + ms.join(', '));
@@ -4872,7 +4880,7 @@ function libraryInfoText() {
       }
     });
   };
-  dumpLibrary('PUMP.FUN SDK', '@pump-fun/pump-sdk', /^(get(Buy|Sell)\w*(Amount|Quote)\w*|fetchBuyState|fetchSellState|bondingCurvePda|buyV3Instructions|sellV3Instructions)$/);
+  dumpLibrary('PUMP.FUN SDK', '@pump-fun/pump-sdk', /^(get(Buy|Sell)\w*(Amount|Quote)\w*|fetchBuyState|fetchSellState|bondingCurvePda|buyV3Instructions|sellV3Instructions|curveQuote|quoteMintHint|fetchGlobal|fetchFeeConfig|fetchMint|fetchQuoteTransferFee|quoteTransferFee|getFee|computeFeesBps)$/);
   dumpLibrary('PUMPSWAP SDK', '@pump-fun/pump-swap-sdk', /(sell|swapSolanaState|PoolPda|poolPda|supportsTradeV2|decodePool|fetchPool|canonical)/i);
   return out.join('\n');
 }
