@@ -111,9 +111,35 @@ function quoteSolForTokens(bondingCurve, tokensInBN) {
 // So a sell is sized to what the curve can actually pay: if the quote is above SELL_RESERVE_SHARE_PCT
 // percent of the real SOL, only as many tokens as that amount buys are sold now, and the rest stay in
 // the wallet to be sold next (the caller keeps the position open and sells the remainder).
-// The percentage is a safety margin for the reserves moving while the sale is in flight; it is not
-// tuned from data.
-const SELL_RESERVE_SHARE_PCT = 85;
+// The percentage is a safety margin for the reserves moving while the sale is in flight.
+// It was 85%, which split every sale of a coin nobody else had bought into many small parts (each
+// paying its own tip): in that case the sale wants almost all of the curve's real SOL, because that SOL
+// is the bot's own buy. Now: when the curve's real SOL covers the whole sale, it is sold in one piece;
+// when it does not, 99% of the real SOL is sold now and the rest next. A coin whose sale still fails with
+// error 6024 goes back to the older 85% for as long as it is held (noteSell6024), so the cause the 85%
+// guarded against stays covered.
+const SELL_RESERVE_SHARE_PCT = 99;
+const SELL_RESERVE_SHARE_SAFE_PCT = 85;
+var safeShareMints = new Map();   // mint -> time a 6024 was seen on it
+
+function mintKey(mint) {
+  return (mint && typeof mint.toBase58 === 'function') ? mint.toBase58() : String(mint);
+}
+
+// Called by the bot when a sale of this coin failed with error 6024.
+function noteSell6024(mint) {
+  safeShareMints.set(mintKey(mint), Date.now());
+  if (safeShareMints.size > 500) safeShareMints.delete(safeShareMints.keys().next().value);
+}
+
+// Called when the position is closed, so a later trade of the same coin starts at 99% again.
+function clearSellShare(mint) {
+  safeShareMints.delete(mintKey(mint));
+}
+
+function sellSharePctFor(mint) {
+  return safeShareMints.has(mintKey(mint)) ? SELL_RESERVE_SHARE_SAFE_PCT : SELL_RESERVE_SHARE_PCT;
+}
 
 function realQuoteOf(bc) {
   var r = bc && bc.realQuoteReserves;
@@ -123,14 +149,20 @@ function realQuoteOf(bc) {
 }
 
 // Returns { tokens, capped, wanted, real, limit }. tokens is the amount to sell now.
-function capSellToRealReserves(bc, tokensBN) {
+function capSellToRealReserves(bc, tokensBN, sharePct) {
   var wanted = quoteSolForTokens(bc, tokensBN);
   var real = realQuoteOf(bc);
-  var out = { tokens: tokensBN, capped: false, wanted: wanted, real: real, limit: null };
+  var share = (sharePct > 0 && sharePct <= 100) ? sharePct : SELL_RESERVE_SHARE_PCT;
+  var out = { tokens: tokensBN, capped: false, wanted: wanted, real: real, limit: null, sharePct: share };
   if (!real) return out;
-  var limit = real.muln(SELL_RESERVE_SHARE_PCT).divn(100);
+  var limit = real.muln(share).divn(100);
   out.limit = limit;
   if (wanted.lte(limit)) return out;
+  // The curve holds enough real SOL to pay the whole sale: it is sold in one piece. This is the common case
+  // of a coin the bot is the main buyer of, where the sale wants almost all of the curve's real SOL (its
+  // own buy) -- any limit under 100% would split it into many parts, each paying its own tip. Not after a
+  // 6024 on this coin: then the 85% limit applies on its own, as before.
+  if (share >= SELL_RESERVE_SHARE_PCT && wanted.lte(real)) { out.wholeSaleFits = true; return out; }
   if (limit.isZero() || limit.gte(bc.virtualQuoteReserves)) {
     var emptyErr = new Error('the curve holds almost no real SOL (' + real.toString() + ' lamports) -- it cannot pay for this sale right now');
     emptyErr.code = 'CURVE_EMPTY';
@@ -338,7 +370,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   var solAmount;
   var cap;
   try {
-    cap = capSellToRealReserves(bc, tokenAmountBN);
+    cap = capSellToRealReserves(bc, tokenAmountBN, sellSharePctFor(mint));
     tokenAmountBN = cap.tokens;
     solAmount = quoteSolForTokens(bc, tokenAmountBN);
   } catch (e) {
@@ -357,6 +389,7 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
     wantedLamports: cap.wanted.toString(),
     realQuoteLamports: cap.real ? cap.real.toString() : null,
     limitLamports: cap.limit ? cap.limit.toString() : null,
+    sharePct: cap.sharePct,
     virtualQuoteLamports: bc.virtualQuoteReserves.toString(),
     virtualTokens: bc.virtualTokenReserves.toString(),
     cashbackCoin: !!bc.isCashbackCoin,
@@ -435,6 +468,10 @@ module.exports = {
   quoteSolForTokens,
   capSellToRealReserves,
   SELL_RESERVE_SHARE_PCT,
+  SELL_RESERVE_SHARE_SAFE_PCT,
+  noteSell6024,
+  clearSellShare,
+  sellSharePctFor,
   isGraduated,
   warmCaches,
   clearCaches,

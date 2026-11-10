@@ -575,13 +575,27 @@ async function checkWalletConcentration(mint) {
 }
 
 // -- LIVE WALLET CHECK (on-chain, Helius) ------------------------
-// The rule: no wallet other than a burn wallet may hold more than 50% of the coin's TOTAL supply. Live reads
-// the coin's largest token accounts and its total supply straight from the chain (two requests, sent at the
-// same time, newest data), so it works on a coin only seconds old. Left out of the count: pump.fun's own
-// curve account (it holds the unsold supply -- that is the market, not a holder) and the burn address.
-// Returns { safe, unknown, reason, topPct }. unknown = the check could not measure the coin; live never buys
-// a coin it could not measure. Paper keeps its own Bitquery check (checkWalletConcentration) unchanged.
+// The rule: no wallet other than a burn wallet may hold 50% or more of the coin. Live reads the coin's largest
+// token accounts and its total supply straight from the chain (two requests, sent at the same time, newest
+// data), so it works on a coin only seconds old. Left out of the count: pump.fun's own curve account (it holds
+// the unsold supply -- that is the market, not a holder) and the burn address.
+//
+// MAYHEM COINS: a creator can launch a coin in pump.fun's "Mayhem Mode". pump.fun then mints an extra billion
+// tokens (2 billion in all) to its own AI trading agent, which trades the coin for 24 hours and has what it has
+// not sold burned afterwards. That agent always starts with half the supply, so it is left out of the count as
+// well, and on a Mayhem coin the largest real wallet is measured against the coin's normal billion. A Mayhem
+// coin is recognised by its supply (2 billion), from the reply the check already gets -- no extra request.
+// The agent's account address is worked out from pump.fun's official program description (the mayhem
+// program's "sol-vault" account) and, where the library has it, the library's own getTokenVaultPda. If a
+// Mayhem coin's agent account is not among its largest accounts, the address is not the right one, so the coin
+// is treated as unmeasured and not bought (the log lists the largest accounts so it can be checked).
+//
+// Returns { safe, unknown, reason, topPct, mayhem }. unknown = the check could not measure the coin; live never
+// buys a coin it could not measure. Paper keeps its own Bitquery check (checkWalletConcentration) unchanged.
 var LIVE_HOLDER_MAX_SHARE = 0.50;
+var MAYHEM_PROGRAM_ADDRESS = 'MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e';
+var MAYHEM_SUPPLY_TOKENS = 1.5e9;          // a supply above this (normal coins: 1 billion) is a Mayhem coin
+var mayhemFoundLogged = 0;
 function asPublicKeyLoose(v) {
   var web3 = require('@solana/web3.js');
   if (Array.isArray(v)) v = v[0];              // some SDK helpers return [address, bump]
@@ -606,6 +620,21 @@ async function checkWalletConcentrationOnChain(mintStr) {
       excluded[spl.getAssociatedTokenAddressSync(mint, owner, true, prog).toBase58()] = true;
     });
   });
+  // The Mayhem agent's possible accounts (see above). Each way of working it out is tried on its own, so one
+  // that fails does not stop the others.
+  var agentAccounts = {};
+  var agentOwners = [];
+  try {
+    agentOwners.push(web3.PublicKey.findProgramAddressSync([Buffer.from('sol-vault')], new web3.PublicKey(MAYHEM_PROGRAM_ADDRESS))[0]);
+  } catch (e) { /* the library's own helpers below may still give it */ }
+  try { if (typeof pumpSdk.getSolVaultPda === 'function') agentOwners.push(asPublicKeyLoose(pumpSdk.getSolVaultPda())); } catch (e) {}
+  agentOwners.forEach(function(owner) {
+    [spl.TOKEN_PROGRAM_ID, spl.TOKEN_2022_PROGRAM_ID].forEach(function(prog) {
+      try { agentAccounts[spl.getAssociatedTokenAddressSync(mint, owner, true, prog).toBase58()] = true; } catch (e) {}
+    });
+  });
+  try { if (typeof pumpSdk.getTokenVaultPda === 'function') agentAccounts[asPublicKeyLoose(pumpSdk.getTokenVaultPda(mint)).toBase58()] = true; } catch (e) {}
+
   var replies = await rpcgate.runWithPriority(rpcgate.FAST_LANE, function() {
     return Promise.all([
       connection.getTokenLargestAccounts(mint, 'processed'),
@@ -613,24 +642,46 @@ async function checkWalletConcentrationOnChain(mintStr) {
     ]);
   });
   var accounts = (replies[0] && replies[0].value) || [];
-  var supplyRaw = Number(replies[1] && replies[1].value && replies[1].value.amount);
+  var supplyValue = (replies[1] && replies[1].value) || {};
+  var supplyRaw = Number(supplyValue.amount);
+  var decimals = Number(supplyValue.decimals);
   if (!(supplyRaw > 0)) return { safe: false, unknown: true, reason: 'the total supply could not be read' };
   if (accounts.length === 0) return { safe: false, unknown: true, reason: 'the chain returned no holder accounts' };
+  var supplyTokens = (decimals >= 0) ? supplyRaw / Math.pow(10, decimals) : NaN;
+  var mayhem = supplyTokens > MAYHEM_SUPPLY_TOKENS;
+
   var top = null;
+  var agent = null;
   accounts.forEach(function(a) {
     var addr = a.address && a.address.toBase58 ? a.address.toBase58() : String(a.address);
-    if (excluded[addr]) return;
     var amt = Number(a.amount);
     if (!(amt >= 0)) return;
+    if (agentAccounts[addr]) { agent = { address: addr, amount: amt }; return; }
+    if (excluded[addr]) return;
     if (!top || amt > top.amount) top = { address: addr, amount: amt };
   });
-  if (!top) return { safe: true, unknown: false, topPct: 0, reason: 'only the curve and burn accounts hold this coin' };
-  var share = top.amount / supplyRaw;
-  var pctText = (share * 100).toFixed(1) + '%';
-  if (share > LIVE_HOLDER_MAX_SHARE) {
-    return { safe: false, unknown: false, topPct: share, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the total supply' };
+
+  if (mayhem && !agent) {
+    var listed = accounts.slice(0, 3).map(function(a) {
+      var addr = a.address && a.address.toBase58 ? a.address.toBase58() : String(a.address);
+      return addr + ' ' + (Number(a.amount) / supplyRaw * 100).toFixed(1) + '%';
+    }).join(', ');
+    return { safe: false, unknown: true, mayhem: true, reason: 'Mayhem coin, but its AI agent account was not found among the largest holders (largest: ' + listed + ') -- not traded until the agent address is confirmed' };
   }
-  return { safe: true, unknown: false, topPct: share, reason: 'largest holder has ' + pctText + ' of the total supply' };
+  // On a Mayhem coin the real wallets are measured against the coin's normal billion (half the supply).
+  var base = mayhem ? supplyRaw / 2 : supplyRaw;
+  var agentText = (mayhem && agent) ? ' (Mayhem coin: AI agent account ' + agent.address + ' left out)' : '';
+  if (mayhem && agent && mayhemFoundLogged < 5) {
+    mayhemFoundLogged++;
+    liveLog('LIVE WALLET CHECK: Mayhem coin ' + mintStr + ' -- AI agent account ' + agent.address + ' holds ' + (agent.amount / supplyRaw * 100).toFixed(1) + '% of the 2 billion supply and is left out of the count', 'info');
+  }
+  if (!top) return { safe: true, unknown: false, topPct: 0, mayhem: mayhem, reason: 'only the curve, burn and agent accounts hold this coin' + agentText };
+  var share = top.amount / base;
+  var pctText = (share * 100).toFixed(1) + '%';
+  if (share >= LIVE_HOLDER_MAX_SHARE) {
+    return { safe: false, unknown: false, topPct: share, mayhem: mayhem, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
+  }
+  return { safe: true, unknown: false, topPct: share, mayhem: mayhem, reason: 'largest holder has ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
 }
 
 // The live entry's last word, given the wallet-check result: everything that could have changed while the
@@ -2072,7 +2123,13 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) paperOk = false;
   if (!paperOk && !liveOk) { trackSkip('cooldown_active'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
 
-  if (tok.buys < 3) { trackSkip('buys_below_3'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buys='+tok.buys+' (need 3)', 'info'); return; }
+  // At least 3 DIFFERENT wallets must have bought the coin, not counting the dev (live and paper). Counting
+  // buys let a coin through with only the dev and one other wallet buying (one of them twice); those coins
+  // then had nobody left to buy after the bot and went stale. When the dev wallet is not known, every buyer
+  // counts.
+  var realBuyers = 0;
+  if (tok.uniqueBuyers) tok.uniqueBuyers.forEach(function(addr) { if (!tok.devWallet || addr !== tok.devWallet) realBuyers++; });
+  if (realBuyers < 3) { trackSkip('buyers_below_3'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buyers='+realBuyers+' (need 3, dev not counted'+(tok.devWallet ? '' : ' -- dev wallet unknown, all buyers counted')+') | buys='+tok.buys, 'info'); return; }
 
   // Paper's size check applies to paper only; live sizes its own buy.
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
@@ -2125,6 +2182,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     }).then(function(c) {
       liveSnap.concentrationMs = Date.now() - liveCheckT0;
       liveSnap.topHolderPct = (c && typeof c.topPct === 'number') ? parseFloat((c.topPct * 100).toFixed(2)) : null;
+      liveSnap.mayhemCoin = (c && typeof c.mayhem === 'boolean') ? c.mayhem : null;
       return liveEntryVerdict(tok, c);
     });
     startLiveEntry(tok, liveSnap, liveCheck);
@@ -3454,6 +3512,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             concentrationMs: (entrySnapshot && entrySnapshot.concentrationMs !== undefined) ? entrySnapshot.concentrationMs : null,
             buyWaitedForCheckMs: (entrySnapshot && typeof entrySnapshot.buyWaitedForCheckMs === 'number') ? entrySnapshot.buyWaitedForCheckMs : null,
             topHolderPct: (entrySnapshot && typeof entrySnapshot.topHolderPct === 'number') ? entrySnapshot.topHolderPct : null,
+            mayhemCoin: (entrySnapshot && typeof entrySnapshot.mayhemCoin === 'boolean') ? entrySnapshot.mayhemCoin : null,
             feedLagMs: (entrySnapshot && typeof entrySnapshot.feedLagMs === 'number') ? entrySnapshot.feedLagMs : null,
             landPriceUsd: landSnap ? landSnap.price : null,
             landPriceAgeMs: landSnap ? landSnap.ageMs : null,
@@ -3590,15 +3649,17 @@ async function settleConfirmedRealSell(connection, result, logPrefix, platformNa
 // of being sold a second time.
 // Everything a real sell asks of the node is tagged first in line, and the longest it waited
 // in line is returned for the CSV.
-async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride) {
+// routeOverride: the send route for this one sale instead of the Settings choice. Used so the follow-up
+// parts of a split sale go on the cheap route (see runLiveExit).
+async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride) {
   return rpcgate.runTracked(0, async function(track) {
-    var out = await performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride);
+    var out = await performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride);
     if (out && typeof out === 'object') out.queueWaitMs = Math.max(track.maxWait, (out.result && out.result.pollWaitMs) || 0);
     return out;
   });
 }
 
-async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride) {
+async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride) {
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -3692,7 +3753,8 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
     var sellSendT0 = Date.now();
     var result;
     try {
-      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: liveSendRoute(), mevProtect: !!S.liveMevProtect, onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
+      var sellRoute = (routeOverride === 'SWQOS_ONLY' || routeOverride === 'MAX') ? routeOverride : liveSendRoute();
+      result = await execution.sendAndConfirmViaSender(tx, liveWalletKeypair, connection, rpcUrl, { tier: sellRoute, mevProtect: !!S.liveMevProtect, onDiagnostic: function(summary) { liveLog(logPrefix + ' (' + platformName + '): ' + summary, 'info'); } });
     } catch (sendErr2) {
       // The list of accounts the trade used is written only when something went wrong, to compare with one that worked.
       liveLog(logPrefix + ' (' + platformName + ' sell) ACCOUNTS: ' + describeIxAccounts(instructions), 'info');
@@ -3712,6 +3774,12 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
     // happens, everything known about the sale is written down so the cause can be read, not guessed.
     var error6024 = !!(result.error && /6024|0x1788/.test(String(result.error)));
     if (error6024) {
+      // From now on this coin's sales are sized to 85% of the curve's real SOL again (pumpfun.js).
+      try {
+        var pumpfunModule = require('./pumpfun');
+        pumpfunModule.noteSell6024(mintStr);
+        liveLog(logPrefix + ' (' + platformName + ' sell) error 6024: the next sales of this coin are sized to ' + pumpfunModule.SELL_RESERVE_SHARE_SAFE_PCT + '% of what the curve holds (was ' + pumpfunModule.SELL_RESERVE_SHARE_PCT + '%) -- ' + mintStr, 'warn');
+      } catch (e6024) { /* the evidence line below is still written */ }
       liveLog(logPrefix + ' (' + platformName + ' sell) ERROR 6024 EVIDENCE: ' + JSON.stringify(sellInfo || { note: 'no curve numbers (not built by the pump.fun curve builder)' }) + ' | sold ' + sellAmount + ' of wallet balance ' + balance.amount + ' | signature ' + result.signature, 'warn');
     }
 
@@ -4162,6 +4230,7 @@ function liveTimingExtras(pos) {
     sellAntiSandwich: (typeof pos.sellMevProtect === 'boolean') ? (pos.sellMevProtect ? 'On' : 'Off') : null,
     buyWaitedForCheckMs: nz(pos.buyWaitedForCheckMs),
     topHolderPct: nz(pos.topHolderPct),
+    mayhemCoin: pos.mayhemCoin === true ? 'Yes' : (pos.mayhemCoin === false ? 'No' : ''),
     buyResends: nz(pos.buyResends),
     sellResends: nz(pos.sellResends),
     buyComputeUnits: nz(pos.buyComputeUnits),
@@ -4544,7 +4613,11 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     }
     if (!outcome) {
       pos.sellAttemptsTotal = (pos.sellAttemptsTotal || 0) + 1;
-      outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage);
+      // Once a sale has been split by the curve limit, the parts after the first go on the cheap route:
+      // each part would otherwise pay a full MAX tip.
+      var partRoute = (pos.cappedLegs || 0) > 0 ? 'SWQOS_ONLY' : undefined;
+      if (partRoute && liveSendRoute() !== 'SWQOS_ONLY') liveLog(prefix + ': part ' + (pos.cappedLegs + 1) + ' of a split sale goes on the cheap route (no MAX tip) -- ' + pos.mint, 'info');
+      outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage, partRoute);
     }
     // The position is opened before the buy's cost is recorded (see performRealBuyInner). A sale never
     // records its result, and a position is never closed as "outside the bot", before that has finished.
@@ -4622,6 +4695,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     } else if (confirmed) {
       var idx = S.liveOpen.indexOf(pos);
       if (idx !== -1) S.liveOpen.splice(idx, 1);
+      try { require('./pumpfun').clearSellShare(pos.mint); } catch (eShare) { /* nothing to clear */ }
 
       // Closed-trade record for the Live CSV. PnL is the REAL wallet result:
       // what the buy cost plus everything every sale brought back, including
@@ -4880,7 +4954,7 @@ function libraryInfoText() {
       }
     });
   };
-  dumpLibrary('PUMP.FUN SDK', '@pump-fun/pump-sdk', /^(get(Buy|Sell)\w*(Amount|Quote)\w*|fetchBuyState|fetchSellState|bondingCurvePda|buyV3Instructions|sellV3Instructions|curveQuote|quoteMintHint|fetchGlobal|fetchFeeConfig|fetchMint|fetchQuoteTransferFee|quoteTransferFee|getFee|computeFeesBps)$/);
+  dumpLibrary('PUMP.FUN SDK', '@pump-fun/pump-sdk', /^(get(Buy|Sell)\w*(Amount|Quote)\w*|fetchBuyState|fetchSellState|bondingCurvePda|buyV3Instructions|sellV3Instructions|curveQuote|quoteMintHint|fetchGlobal|fetchFeeConfig|fetchMint|fetchQuoteTransferFee|quoteTransferFee|getFee|computeFeesBps|getTokenVaultPda|getSolVaultPda|getMayhemStatePda|getGlobalParamsPda)$/);
   dumpLibrary('PUMPSWAP SDK', '@pump-fun/pump-swap-sdk', /(sell|swapSolanaState|PoolPda|poolPda|supportsTradeV2|decodePool|fetchPool|canonical)/i);
   return out.join('\n');
 }
@@ -4919,7 +4993,7 @@ app.get('/api/live/export', function(req, res) {
     'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
-    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct'];
+    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -4947,7 +5021,7 @@ app.get('/api/live/export', function(req, res) {
       t.buyListenerMs, t.buyCheckerMs, t.sellListenerMs, t.sellCheckerMs,
       t.realSolAtBuy, csvSafe(t.buyTipSource || ''), csvSafe(t.sellTipSource || ''), t.buyResends, t.sellResends, t.buyComputeUnits, t.sellComputeUnits,
       csvSafe(t.buySendRoute || ''), csvSafe(t.sellSendRoute || ''), csvSafe(t.buyAntiSandwich || ''), csvSafe(t.sellAntiSandwich || ''),
-      t.buyWaitedForCheckMs, t.topHolderPct
+      t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || '')
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
