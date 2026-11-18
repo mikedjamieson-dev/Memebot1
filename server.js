@@ -228,6 +228,9 @@ const S = {
   liveTradingEnabled: false,
   windingDown: false,
   maxPool: 10000,
+  // Paper's own fresh pool: set by NEW PAPER TEST. Paper only trades coins added to the pool at or after this
+  // moment (0 = every coin, as after a restart). The pool itself is shared with live and is never emptied.
+  paperPoolSince: 0,
   autoLockEnabled: false,
   sessionHighFund: 0,
   bestTrade: null,
@@ -2069,6 +2072,8 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   // The filters below are shared and unchanged; each side only acts if it
   // wanted the token to begin with and still does after the last async check.
   var paperOk = paperSlotFree() && !S.open.find(function(t) { return t.mint === tok.mint; });
+  // After a NEW PAPER TEST, paper sees only coins found since then (live is not affected).
+  if (S.paperPoolSince > 0 && !((tok.addedAt || 0) >= S.paperPoolSince)) paperOk = false;
   var liveOk = liveWantsEntry(tok);
   if (!paperOk && !liveOk) return;
 
@@ -2279,7 +2284,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     openedAt: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }),
     startTime: Date.now(),
     entrySlipCost: entrySlipCost,
-    poolSizeAtEntry: S.tokens.size,
+    poolSizeAtEntry: paperPoolSize(),
     scanCountAtEntry: S.scanCount,
     entryUniqueBuyers: tok.uniqueBuyers ? tok.uniqueBuyers.size : 0,
     entryUniqueSellers: tok.uniqueSellers ? tok.uniqueSellers.size : 0,
@@ -2572,6 +2577,7 @@ app.get('/api/state', function(req, res) {
     pumpCount: S.pumpCount,
     bonkCount: S.bonkCount,
     poolSize: S.tokens.size,
+    paperPoolSize: paperPoolSize(),
     scanCount: S.scanCount,
     rejectCount: S.rejectCount,
     rejectReasons: S.rejectReasons,
@@ -5504,6 +5510,14 @@ function csvSafe(val) {
   return s;
 }
 
+// How many pool coins paper can see: all of them, or after a NEW PAPER TEST only those found since.
+function paperPoolSize() {
+  if (!(S.paperPoolSince > 0)) return S.tokens.size;
+  var n = 0;
+  S.tokens.forEach(function(tok) { if ((tok.addedAt || 0) >= S.paperPoolSince) n++; });
+  return n;
+}
+
 // -- NEW PAPER TEST ------------------------------------------------
 // Puts paper back to a clean start, as a Render restart would, without restarting anything. Paper only:
 // open paper trades are dropped (not counted), and paper's history, Portfolio, session numbers, counters,
@@ -5538,11 +5552,12 @@ app.post('/api/paper/new-test', function(req, res) {
     S.pumpCount = 0;
     S.bonkCount = 0;
     S.cooldowns.clear();
+    S.paperPoolSince = Date.now();
     S.logs = [];
     P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [], historyCount: 0 };
     try { if (fs.existsSync(PAPER_TRADES_FILE)) fs.unlinkSync(PAPER_TRADES_FILE); } catch (e) { log('PAPER HISTORY: could not delete the history file (' + e.message + ')', 'warn'); }
     savePortfolio();
-    log('NEW PAPER TEST: paper reset to a clean start' + (dropped ? ' (' + dropped + ' open paper trade' + (dropped === 1 ? '' : 's') + ' dropped)' : '') + ' | Fund: $' + S.sessionFund + ' | settings kept', 'info');
+    log('NEW PAPER TEST: paper reset to a clean start' + (dropped ? ' (' + dropped + ' open paper trade' + (dropped === 1 ? '' : 's') + ' dropped)' : '') + ' | paper starts with a fresh, empty pool (' + S.tokens.size + ' older coins ignored by paper; live unchanged) | Fund: $' + S.sessionFund + ' | settings kept', 'info');
     if (wasRunning) startBot();
     res.json({ success: true, restarted: wasRunning, dropped: dropped });
   } catch (e) {

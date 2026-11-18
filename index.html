@@ -317,7 +317,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
     <div class="settings-sub" id="sub-newtest">
       <button class="settings-back" onclick="closeSub('sub-newtest')">← BACK</button>
       <div class="settings-sub-title">NEW PAPER TEST</div>
-      <div class="settings-hint">Starts paper over from a clean slate, like a restart on Render. Clears open paper trades (not counted), paper history and Portfolio, session numbers, counters, cooldowns and the paper log. Your settings stay. Nothing live is touched. If paper is running it starts again straight away.<br><br><b>Download your paper CSV first</b> -- the history is deleted.</div>
+      <div class="settings-hint">Starts paper over from a clean slate, like a restart on Render. Clears open paper trades (not counted), paper history and Portfolio, session numbers, counters, cooldowns and the paper log, and paper starts with a fresh, empty pool (it ignores every coin found before the reset). Your settings stay. Nothing live is touched -- live keeps its own full pool. If paper is running it starts again straight away.<br><br><b>Download your paper CSV first</b> -- the history is deleted.</div>
       <button class="settings-save" id="btn-newtest" onclick="newPaperTest()">🔄 NEW PAPER TEST</button>
       <div class="settings-status" id="status-newtest"></div>
     </div>
@@ -1613,7 +1613,7 @@ async function fetchState() {
     else { wsbar.textContent = '⚡ PUMP.FUN: CONNECTING...'; wsbar.style.color = 'var(--yellow)'; }
 
     // Pool stats
-    document.getElementById('pool').textContent = data.poolSize;
+    document.getElementById('pool').textContent = (data.paperPoolSize !== undefined ? data.paperPoolSize : data.poolSize);
     document.getElementById('scanned').textContent = data.scanCount;
     document.getElementById('pump-cnt').textContent = data.pumpCount;
     document.getElementById('bonk-cnt').textContent = data.bonkCount || 0;
@@ -1863,7 +1863,7 @@ async function fetchState() {
     var closed = data.closedTrades || [];
     var slips = closed.map(function(t) { return t.slip||0; }).filter(function(v) { return v>0; });
     var avgSlip = slips.length ? ((slips.reduce(function(a,b){return a+b;},0)/slips.length)*100).toFixed(2) : '0.00';
-    document.getElementById('ss-pool').textContent = data.poolSize;
+    document.getElementById('ss-pool').textContent = (data.paperPoolSize !== undefined ? data.paperPoolSize : data.poolSize);
     document.getElementById('ss-slip').textContent = avgSlip + '%';
     document.getElementById('ss-fees').textContent = '$' + f2(data.totalFees||0);
     document.getElementById('ss-skip').textContent = data.rejectCount||0;
