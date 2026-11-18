@@ -443,6 +443,56 @@ async function buildSellInstructions(connection, mint, user, tokenAmount, slippa
   return builtSell;
 }
 
+// -- READY-MADE SALE (built from chain data the bot already has) ------
+// Builds the same sale as buildSellInstructions -- same sellV3Instructions call, same quote, same slippage,
+// same curve limit, same buyback recipients -- but from bonding-curve data the price watcher already
+// received from the chain, so it needs NO request. tokenProgram comes from the wallet module's memory
+// (saved at the buy). The bot rebuilds it on every curve update and sends it the moment an urgent exit
+// fires. Anything this cannot build exactly as the normal path would (a cashback coin, a graduated coin, a
+// sale the curve cannot pay in full) is refused with code NOT_PREBUILDABLE, and the normal sell is used.
+async function buildSellFromCurveData(curveData, mint, user, tokenAmount, slippagePercent, tokenProgram) {
+  assertSdk();
+  var bc = sdk.PUMP_SDK.decodeBondingCurve({ data: curveData });
+  if (!bc || !bc.virtualQuoteReserves || !bc.virtualTokenReserves) {
+    throw new Error('bonding curve data could not be read -- ' + describe('bondingCurve', bc));
+  }
+  var refuse = function(why) { var e = new Error(why); e.code = 'NOT_PREBUILDABLE'; return e; };
+  if (bc.complete) throw refuse('the coin has graduated');
+  if (bc.isCashbackCoin) throw refuse('cashback coin (its sale needs data that is read at the moment of the sale)');
+  checkSolPaired(bc, null);
+  var tokenAmountBN = new BN(String(tokenAmount));
+  var cap = capSellToRealReserves(bc, tokenAmountBN, sellSharePctFor(mint));
+  if (cap.capped) throw refuse('the curve cannot pay for the whole sale');
+  var solAmount = quoteSolForTokens(bc, tokenAmountBN);
+  var ixs = await sdk.PUMP_SDK.sellV3Instructions({
+    bondingCurve: bc,
+    mint: mint,
+    user: user,
+    amount: tokenAmountBN,
+    quoteAmount: solAmount,
+    slippage: slippagePercent,
+    tokenProgram: tokenProgram,
+    buybackFeeRecipient: pickBuybackRecipient(),
+  });
+  var built = tagBuiltWith(checkInstructions(ixs, 'sellV3Instructions (ready-made)'), 'v3-ready-made');
+  annotate(built, 'pumpSellAmount', tokenAmountBN.toString());
+  annotate(built, 'pumpSellInfo', {
+    asked: tokenAmountBN.toString(),
+    selling: tokenAmountBN.toString(),
+    capped: false,
+    quoteLamports: solAmount.toString(),
+    wantedLamports: cap.wanted.toString(),
+    realQuoteLamports: cap.real ? cap.real.toString() : null,
+    limitLamports: cap.limit ? cap.limit.toString() : null,
+    sharePct: cap.sharePct,
+    virtualQuoteLamports: bc.virtualQuoteReserves.toString(),
+    virtualTokens: bc.virtualTokenReserves.toString(),
+    cashbackCoin: false,
+    readyMade: true,
+  });
+  return built;
+}
+
 // Checks whether a pump.fun token has graduated off its bonding curve
 // to PumpSwap. Uses the exact same fetchBuyState call buildSellInstructions
 // already makes -- confirmed from six independent raw Rust account-layout
@@ -464,6 +514,7 @@ async function isGraduated(connection, mint, userPublicKey) {
 module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
+  buildSellFromCurveData,
   quoteTokensForSol,
   quoteSolForTokens,
   capSellToRealReserves,

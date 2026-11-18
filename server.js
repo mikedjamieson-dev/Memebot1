@@ -3651,15 +3651,18 @@ async function settleConfirmedRealSell(connection, result, logPrefix, platformNa
 // in line is returned for the CSV.
 // routeOverride: the send route for this one sale instead of the Settings choice. Used so the follow-up
 // parts of a split sale go on the cheap route (see runLiveExit).
-async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride) {
+// readyMade: a ready-made sale ({ ixs, amount, ageMs, buildMs }) to send as it is -- see takeReadyMadeSell.
+// skipFastBuild: true on a retry after a zero balance read, so retries every 0.1s do not each build a sale.
+async function performRealSell(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride, readyMade, skipFastBuild) {
   return rpcgate.runTracked(0, async function(track) {
-    var out = await performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride);
+    var out = await performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride, readyMade, skipFastBuild);
     if (out && typeof out === 'object') out.queueWaitMs = Math.max(track.maxWait, (out.result && out.result.pollWaitMs) || 0);
     return out;
   });
 }
 
-async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride) {
+async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefix, fraction, expectedRaw, slippageOverride, routeOverride, readyMade, skipFastBuild) {
+  if (readyMade && (fraction !== undefined && fraction !== null)) readyMade = null;   // only ever a full sale
   if (!liveWalletKeypair) {
     return { ok: false, error: liveWalletState.configError || 'Live wallet not configured' };
   }
@@ -3677,19 +3680,29 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
     // waiting for the read first. If the read shows a different amount, the sell is
     // simply built again with the real one, exactly as before.
     var fastBuildPromise = null;
-    if (typeof slippageOverride === 'number' && (fraction === undefined || fraction === null) &&
+    if (!readyMade && !skipFastBuild && typeof slippageOverride === 'number' && (fraction === undefined || fraction === null) &&
         expectedRaw && /^[0-9]+$/.test(String(expectedRaw)) && BigInt(String(expectedRaw)) > BigInt(0)) {
       var fastBuildT0 = Date.now();
       fastBuildPromise = Promise.resolve().then(function() {
         return buildSellFn(connection, mint, liveWalletKeypair.publicKey, String(expectedRaw), slippageOverride);
       }).then(function(v) { return { value: v, ms: Date.now() - fastBuildT0 }; }, function(e) { return { error: e }; });
     }
-    liveLog(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
-    var balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey);
+    var balance;
+    var diag = null;
+    if (readyMade) {
+      // The ready-made sale sells the amount the buy delivered (read when the position opened); the
+      // first full sale of a position has nothing else to sell.
+      balance = { amount: String(readyMade.amount) };
+      liveLog(logPrefix + ' (' + platformName + ' sell): sending the READY-MADE sale (built from chain data ' + readyMade.ageMs + 'ms old, built in ' + readyMade.buildMs + 'ms) -- no balance read, no build', 'info');
+    } else {
+      liveLog(logPrefix + ' (' + platformName + ' sell): reading real token balance...', 'info');
+      // The newest state of the chain ('processed'), so a coin bought a moment ago does not read as zero.
+      balance = await liveWalletModule.getTokenBalance(connection, mint, liveWalletKeypair.publicKey, 'processed');
+      diag = balance && balance.diagnostic;
+      liveLog(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
+        (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
+    }
     var sellBalanceMs = Date.now() - sellT0;
-    var diag = balance && balance.diagnostic;
-    liveLog(logPrefix + ' (' + platformName + ' sell) balance check: amount=' + (balance && balance.amount) +
-      (diag ? ' | tokenProgram=' + diag.tokenProgram + ' | tokenAccount=' + diag.tokenAccount + (diag.rawError ? ' | rawError=' + diag.rawError : '') : ''), 'info');
     if (!balance || balance.amount === '0') {
       return { ok: false, zeroBalance: true, error: 'Real balance for this token is zero -- nothing to sell', diagnostic: diag };
     }
@@ -3720,7 +3733,10 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
     var sellSlippage = (typeof slippageOverride === 'number') ? slippageOverride : 15;
     var instructions;
     var sellBuildMs;
-    if (fastBuildPromise && String(balance.amount) === String(expectedRaw)) {
+    if (readyMade) {
+      instructions = readyMade.ixs;
+      sellBuildMs = 0;
+    } else if (fastBuildPromise && String(balance.amount) === String(expectedRaw)) {
       var fastBuilt = await fastBuildPromise;
       if (fastBuilt.error) throw fastBuilt.error;
       instructions = fastBuilt.value;
@@ -3794,7 +3810,7 @@ async function performRealSellInner(mintStr, platformName, buildSellFn, logPrefi
       settled = await settleConfirmedRealSell(connection, result, logPrefix, platformName);
     }
 
-    return { ok: true, result: result, cappedSale: cappedSale, sellInfo: sellInfo, error6024: error6024,
+    return { ok: true, result: result, cappedSale: cappedSale, sellInfo: sellInfo, error6024: error6024, readyMade: !!readyMade,
       sellBalanceMs: sellBalanceMs, sellBuildMs: sellBuildMs, sellPreSendMs: sellSendT0 - sellT0,
       sendMs: Date.now() - sellSendT0, confirmChecks: (typeof result.checks === 'number') ? result.checks : 0, soldAmount: sellAmount, remainingAmount: remainingAmount, tipSource: result.tipSource || null, senderRoute: result.senderRoute || null, mevProtect: (typeof result.mevProtect === 'boolean') ? result.mevProtect : null, resends: (typeof result.resends === 'number') ? result.resends : null, computeUnits: settled ? settled.costs.computeUnits : null, liveFund: S.liveFund, realImpactUsd: settled ? settled.changeUsd : null, tipUsd: settled ? settled.costs.tipUsd : null, feeUsd: settled ? settled.costs.feeUsd : null };
   } catch (e) {
@@ -3992,6 +4008,7 @@ function getOnchainWatcher() {
       getSolPrice: function() { return isSolPriceFresh() ? SOL_PRICE_USD : null; },
       getConnection: function() { return liveWalletModule.getConnection(); },
       onPrice: function(mint, priceUsd) { handleLiveTick(mint, priceUsd, true); },
+      onCurveData: function(mint, buf) { prepareReadyMadeSell(mint, buf); },
       log: function(msg, type) { liveLog(msg, type || 'info'); },
     });
   } catch (e) {
@@ -4025,10 +4042,71 @@ function feedNeeded() {
 // position is removed from the bot. A zero real balance is retried more slowly (5s) since
 // it is counted separately, see closeLiveOutsideBot.
 var SELL_WRITE_OFF_AFTER = 30;
+// -- READY-MADE SALES (live, pump.fun) ------------------------------
+// For every pump.fun coin held, a finished sale of the whole position is kept in memory. It is rebuilt from
+// each bonding-curve update the chain sends (handed over by the price watcher BEFORE that update's price, so
+// the exit check and the sale come from the same update), with no request at all (pumpfun.js
+// buildSellFromCurveData). When a stop loss, trail, stale or manual exit fires on the first sale attempt of
+// a full position, that sale goes straight out: no balance read, no build. Anything else -- a tier sale, a
+// retry, a part sale, a cashback or graduated coin, a sale the curve cannot pay in full, curve data more
+// than READY_SELL_MAX_AGE_MS old -- uses the normal sale, exactly as before.
+var READY_SELL_MAX_AGE_MS = 5000;
+var READY_SELL_SLIPPAGE = 95;            // the same limit urgent exits already use
+var readyMadeSells = new Map();          // mint -> { at, amount, promise, ixs, error, buildMs }
+
+// duringExit: true when asked from inside the exit itself, which has already marked the position busy.
+function readyMadeSellAllowed(pos, duringExit) {
+  return !!(pos && pos.platform === 'pumpfun' && (duringExit || (!pos.busy && !pos.closingAt)) && pos.tokenAmountRaw &&
+    String(pos.tokenAmountRaw) === String(pos.startTokenAmountRaw) && !pos.tier1Done && !pos.tier2Done &&
+    !(pos.cappedLegs > 0) && !(pos.sellFails > 0) && liveWalletKeypair && liveWalletModule);
+}
+
+function prepareReadyMadeSell(mint, buf) {
+  var pos = S.liveOpen.find(function(p) { return p.mint === mint; });
+  if (!readyMadeSellAllowed(pos)) { readyMadeSells.delete(mint); return; }
+  var entry = { at: Date.now(), amount: String(pos.tokenAmountRaw), ixs: null, error: null, buildMs: null };
+  var t0 = Date.now();
+  entry.promise = Promise.resolve().then(function() {
+    var web3 = require('@solana/web3.js');
+    var mintPk = new web3.PublicKey(mint);
+    return liveWalletModule.getTokenProgramId(liveWalletModule.getConnection(), mintPk).then(function(tokenProgram) {
+      return require('./pumpfun').buildSellFromCurveData(buf, mintPk, liveWalletKeypair.publicKey, entry.amount, READY_SELL_SLIPPAGE, tokenProgram);
+    });
+  }).then(function(ixs) {
+    entry.ixs = ixs; entry.buildMs = Date.now() - t0; return ixs;
+  }, function(e) {
+    entry.error = e; entry.buildMs = Date.now() - t0; return null;
+  });
+  readyMadeSells.set(mint, entry);
+}
+
+// The ready-made sale for an urgent exit, or null with the reason it cannot be used.
+async function takeReadyMadeSell(pos) {
+  var entry = readyMadeSells.get(pos.mint);
+  readyMadeSells.delete(pos.mint);   // used once at most; a retry builds normally
+  if (!readyMadeSellAllowed(pos, true)) return { sale: null, why: 'not the first full sale of this position' };
+  if (!entry) return { sale: null, why: 'no chain update for this coin yet' };
+  var ageMs = Date.now() - entry.at;
+  if (ageMs > READY_SELL_MAX_AGE_MS) return { sale: null, why: 'its chain data is ' + ageMs + 'ms old' };
+  if (entry.amount !== String(pos.tokenAmountRaw)) return { sale: null, why: 'the token amount changed' };
+  var ixs = await entry.promise;
+  if (!ixs) return { sale: null, why: (entry.error && entry.error.message) || 'it could not be built' };
+  return { sale: { ixs: ixs, amount: entry.amount, ageMs: ageMs, buildMs: entry.buildMs }, why: null };
+}
+
+// A balance that reads zero this soon after the buy landed is the node not having caught up with the buy
+// yet, not an empty wallet.
+var JUST_BOUGHT_MS = 30000;
+var JUST_BOUGHT_RETRY_MS = 100;
+
 function noteLiveSellFailure(pos, zeroBalance) {
   pos.sellFails = (pos.sellFails || 0) + 1;
-  pos.zeroFails = zeroBalance ? (pos.zeroFails || 0) + 1 : 0;
-  if (zeroBalance) pos.retryAfter = Date.now() + 5000;
+  var justBought = zeroBalance && pos.landedAt && (Date.now() - pos.landedAt) < JUST_BOUGHT_MS;
+  // Zero reads right after the buy are tried again every 0.1 seconds and do not count toward the
+  // "read zero 3 times: the tokens left the wallet" rule until the buy is JUST_BOUGHT_MS old.
+  pos.zeroFails = zeroBalance ? (justBought ? 0 : (pos.zeroFails || 0) + 1) : 0;
+  if (justBought) pos.retryAfter = Date.now() + JUST_BOUGHT_RETRY_MS;
+  else if (zeroBalance) pos.retryAfter = Date.now() + 5000;
   else pos.retryAfter = Date.now() + (pos.sellFails <= 3 ? 250 : (pos.sellFails <= 10 ? 1500 : 10000));
   if (pos.sellFails >= SELL_WRITE_OFF_AFTER && !zeroBalance) {
     markWriteOff(pos, pos.sellFails + ' real sell attempts in a row have failed');
@@ -4220,6 +4298,7 @@ function liveTimingExtras(pos) {
     sellBuildMs: nz(pos.sellBuildMs),
     sellPreSendMs: nz(pos.sellPreSendMs),
     sellCappedParts: pos.cappedLegs || 0,
+    sellPrebuilt: pos.sellReadyMade === true ? 'Yes' : 'No',
     sell6024Count: pos.sell6024Count || 0,
     realSolAtBuy: nz(pos.realSolAtBuy),
     buyTipSource: nz(pos.buyTipSource),
@@ -4617,7 +4696,15 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       // each part would otherwise pay a full MAX tip.
       var partRoute = (pos.cappedLegs || 0) > 0 ? 'SWQOS_ONLY' : undefined;
       if (partRoute && liveSendRoute() !== 'SWQOS_ONLY') liveLog(prefix + ': part ' + (pos.cappedLegs + 1) + ' of a split sale goes on the cheap route (no MAX tip) -- ' + pos.mint, 'info');
-      outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage, partRoute);
+      // Urgent exits on a full position send the ready-made sale when there is one (see takeReadyMadeSell).
+      var readyMade = null;
+      if (urgentExit && (action.fraction === undefined || action.fraction === null) && pos.platform === 'pumpfun') {
+        var taken = await takeReadyMadeSell(pos);
+        readyMade = taken.sale;
+        if (!readyMade) liveLog(prefix + ': ready-made sale not used (' + taken.why + ') -- normal sale -- ' + pos.mint, 'info');
+      }
+      pos.sellReadyMade = !!readyMade;
+      outcome = await performRealSell(pos.mint, platformName, buildSellFn, prefix, action.fraction, pos.tokenAmountRaw, exitSlippage, partRoute, readyMade, pos.lastSellZero === true);
     }
     // The position is opened before the buy's cost is recorded (see performRealBuyInner). A sale never
     // records its result, and a position is never closed as "outside the bot", before that has finished.
@@ -4627,7 +4714,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
 
     // Real wallet change from this sale, added to the position's running total.
     if (confirmed) {
-      pos.sellFails = 0; pos.zeroFails = 0;
+      pos.sellFails = 0; pos.zeroFails = 0; pos.lastSellZero = false;
       pos.sellLandMs = Math.max(pos.sellLandMs || 0, outcome.sendMs || 0);
       if (outcome.result && outcome.result.senderHost) pos.sellSenderHost = outcome.result.senderHost;
       if (outcome.result && outcome.result.landSource) pos.sellLandSource = outcome.result.landSource;
@@ -4696,6 +4783,7 @@ async function runLiveExit(pos, action, priceUsd, pct) {
       var idx = S.liveOpen.indexOf(pos);
       if (idx !== -1) S.liveOpen.splice(idx, 1);
       try { require('./pumpfun').clearSellShare(pos.mint); } catch (eShare) { /* nothing to clear */ }
+      readyMadeSells.delete(pos.mint);
 
       // Closed-trade record for the Live CSV. PnL is the REAL wallet result:
       // what the buy cost plus everything every sale brought back, including
@@ -4838,6 +4926,14 @@ async function runLiveExit(pos, action, priceUsd, pct) {
     } else {
       if (outcome.error6024) pos.sell6024Count = (pos.sell6024Count || 0) + 1;
       noteLiveSellFailure(pos, outcome.zeroBalance === true);
+      pos.lastSellZero = outcome.zeroBalance === true;
+      // A coin bought moments ago that still reads zero is tried again in 0.1 seconds, without waiting
+      // for its next price update.
+      if (outcome.zeroBalance === true && pos.landedAt && (Date.now() - pos.landedAt) < JUST_BOUGHT_MS) {
+        setTimeout(function() {
+          if (S.liveOpen.indexOf(pos) !== -1 && pos.currentPriceUsd > 0) dispatchLiveDecision(pos, pos.currentPriceUsd, pos.currentPriceUsd);
+        }, JUST_BOUGHT_RETRY_MS + 2);
+      }
       // The curve itself has nothing left to pay a sale with: twice in a row means the coin is dead.
       if (outcome.curveEmpty) {
         pos.curveEmptyCount = (pos.curveEmptyCount || 0) + 1;
@@ -4993,7 +5089,7 @@ app.get('/api/live/export', function(req, res) {
     'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
-    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin'];
+    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -5021,7 +5117,7 @@ app.get('/api/live/export', function(req, res) {
       t.buyListenerMs, t.buyCheckerMs, t.sellListenerMs, t.sellCheckerMs,
       t.realSolAtBuy, csvSafe(t.buyTipSource || ''), csvSafe(t.sellTipSource || ''), t.buyResends, t.sellResends, t.buyComputeUnits, t.sellComputeUnits,
       csvSafe(t.buySendRoute || ''), csvSafe(t.sellSendRoute || ''), csvSafe(t.buyAntiSandwich || ''), csvSafe(t.sellAntiSandwich || ''),
-      t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || '')
+      t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || ''), csvSafe(t.sellPrebuilt || '')
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other

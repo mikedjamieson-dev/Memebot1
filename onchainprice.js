@@ -139,6 +139,10 @@ function createWatcher(opts) {
   var getSolPrice = opts.getSolPrice;       // returns USD per SOL, or null if not fresh
   var getConnection = opts.getConnection;
   var onPrice = opts.onPrice;               // (mint, priceUsd)
+  // (mint, rawCurveData) -- a pump.fun coin's full bonding-curve data, handed over the moment it arrives
+  // and BEFORE its price, so the bot can rebuild that coin's ready-made sale from the same update the
+  // exit check then uses.
+  var onCurveData = opts.onCurveData || null;
   var log = opts.log || function() {};
 
   // One entry per watched coin. An entry has one or more subscriptions ("subs"): one for a coin still on
@@ -267,6 +271,9 @@ function createWatcher(opts) {
       }
       if (entry.platform !== 'letsbonk') startGraduation(entry);
       return;
+    }
+    if (onCurveData && entry.platform !== 'letsbonk') {
+      try { onCurveData(entry.mint, buf); } catch (e) { log('ONCHAIN curve hand-over error: ' + e.message, 'warn'); }
     }
     var solUsd = getSolPrice();
     if (!solUsd || !(solUsd > 0)) return;     // no trustworthy SOL price right now: skip this tick, old feed covers it

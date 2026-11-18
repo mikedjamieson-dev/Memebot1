@@ -150,7 +150,10 @@ async function getTradingWalletBalance(publicKey) {
 // exist yet -- that's a real, valid state (never held this token),
 // not a failure. Any other failure throws, same no-fallback rule as
 // the SOL balance reader above.
-async function getTokenBalance(connection, mint, ownerPublicKey) {
+// commitment (optional): which state of the chain to read. Left out it is the connection's default
+// ('confirmed'), exactly as before. Sells pass 'processed' -- the newest state, the same one the bot's
+// buys land at -- so a coin bought a moment ago no longer reads as a zero balance.
+async function getTokenBalance(connection, mint, ownerPublicKey, commitment) {
   const { getAssociatedTokenAddress } = require('@solana/spl-token');
   var tokenProgram = await getTokenProgramId(connection, mint);
   var tokenAccount = await getAssociatedTokenAddress(mint, ownerPublicKey, false, tokenProgram);
@@ -159,7 +162,7 @@ async function getTokenBalance(connection, mint, ownerPublicKey) {
     tokenAccount: tokenAccount.toString(),
   };
   try {
-    var balance = await connection.getTokenAccountBalance(tokenAccount);
+    var balance = commitment ? await connection.getTokenAccountBalance(tokenAccount, commitment) : await connection.getTokenAccountBalance(tokenAccount);
     return { amount: balance.value.amount, decimals: balance.value.decimals, diagnostic: diagnostic };
   } catch (e) {
     // Only treat this as a genuine zero balance for the specific,
