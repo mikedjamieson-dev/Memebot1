@@ -2998,7 +2998,11 @@ setTimeout(function() {
   } catch (e) { /* status line only */ }
 }, 6000);
 setTimeout(function() {
-  try { liveLog('SENDER: buys and sells are submitted through ' + require('./execution').senderHost(), 'info'); } catch (e) { /* status line only */ }
+  try {
+    var exe = require('./execution');
+    var hasKey = !!exe.apiKeyFromRpcUrl(liveWalletModule ? process.env[liveWalletModule.LIVE_RPC_ENV] : '');
+    liveLog('SENDER: buys and sells are submitted through ' + exe.senderHost() + (hasKey ? ' with your Helius API key (up to 50 per second)' : ' WITHOUT an API key -- only 1 per second; LIVE_RPC_URL has no ?api-key= part'), hasKey ? 'info' : 'warn');
+  } catch (e) { /* status line only */ }
 }, 6500);
 setTimeout(checkPumpSdkVersion, 30000);
 setInterval(checkPumpSdkVersion, PUMP_SDK_CHECK_MS);
@@ -5499,6 +5503,53 @@ function csvSafe(val) {
   }
   return s;
 }
+
+// -- NEW PAPER TEST ------------------------------------------------
+// Puts paper back to a clean start, as a Render restart would, without restarting anything. Paper only:
+// open paper trades are dropped (not counted), and paper's history, Portfolio, session numbers, counters,
+// cooldowns and log are cleared. Settings are kept. Nothing live is touched -- coins held, the Live Fund,
+// live history, savings and live settings -- and neither is anything live shares: the coin feed, the coin
+// pool and the coin bans (a ban also protects live, so it stays). If paper was running it starts again
+// straight away as a new session; if it was stopped it stays stopped.
+app.post('/api/paper/new-test', function(req, res) {
+  try {
+    var wasRunning = S.running;
+    if (wasRunning) {
+      // Stopped without saving a session: the old test is being thrown away.
+      S.running = false;
+      if (exitI) { clearInterval(exitI); exitI = null; }
+      if (priceI) { clearInterval(priceI); priceI = null; }
+      if (S.windDownCheckInterval) { clearInterval(S.windDownCheckInterval); S.windDownCheckInterval = null; }
+    }
+    var dropped = S.open.length;
+    S.open = [];
+    S.closed = [];
+    S.stats = { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0, mcapCeiling: 0 };
+    S.fund = S.sessionFund;
+    S.dayStartFund = S.sessionFund;
+    S.sessionHighFund = S.sessionFund;
+    S.savings = 0;
+    S.totalFees = 0;
+    S.bestTrade = null;
+    S.windingDown = false;
+    S.scanCount = 0;
+    S.rejectCount = 0;
+    S.rejectReasons = {};
+    S.pumpCount = 0;
+    S.bonkCount = 0;
+    S.cooldowns.clear();
+    S.logs = [];
+    P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [], historyCount: 0 };
+    try { if (fs.existsSync(PAPER_TRADES_FILE)) fs.unlinkSync(PAPER_TRADES_FILE); } catch (e) { log('PAPER HISTORY: could not delete the history file (' + e.message + ')', 'warn'); }
+    savePortfolio();
+    log('NEW PAPER TEST: paper reset to a clean start' + (dropped ? ' (' + dropped + ' open paper trade' + (dropped === 1 ? '' : 's') + ' dropped)' : '') + ' | Fund: $' + S.sessionFund + ' | settings kept', 'info');
+    if (wasRunning) startBot();
+    res.json({ success: true, restarted: wasRunning, dropped: dropped });
+  } catch (e) {
+    reportCaughtError('new paper test', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 app.post('/api/portfolio/clear', function(req, res) {
   P = { allTime: { t: 0, w: 0, l: 0, totalPnl: 0, totalFees: 0, bestPnl: 0, worstPnl: 0 }, bestTrade: null, worstTrade: null, trades: [], sessions: [], historyCount: 0 };

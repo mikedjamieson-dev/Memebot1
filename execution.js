@@ -141,11 +141,66 @@ function senderHost() {
 }
 
 // mevProtect: Helius's option that avoids validators linked to sandwich attacks.
-function buildSenderUrl(tier, mevProtect) {
+// The Helius API key is put on the Sender address. Without it Sender allows only 1 request per second per
+// server (refused requests counting too), which refused sales that came close behind another sale or a
+// resend; with it the limit is 50 per second. Sender does not use API credits. The key is the one already in
+// LIVE_RPC_URL (its ?api-key= part), so nothing new has to be set up. It is never written to a log.
+function apiKeyFromRpcUrl(rpcUrl) {
+  try {
+    var key = new URL(String(rpcUrl)).searchParams.get('api-key');
+    return key && key.trim() ? key.trim() : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Removes an API key from any text before it can reach a log or an error message.
+function hideApiKey(text) {
+  return String(text == null ? '' : text).replace(/api-key=[^&\s"']+/gi, 'api-key=***');
+}
+
+var noKeyWarned = false;
+function buildSenderUrl(tier, mevProtect, apiKey) {
   var params = [];
   if (tier.queryParam) params.push(tier.queryParam);
   if (mevProtect) params.push('mev-protect=true');
+  if (apiKey) params.push('api-key=' + encodeURIComponent(apiKey));
+  else if (!noKeyWarned) {
+    noKeyWarned = true;
+    console.warn('[LIVE-WARN] SENDER: no api-key found in LIVE_RPC_URL -- Sender then allows only 1 transaction per second');
+  }
   return SENDER_NEWARK + (params.length ? '?' + params.join('&') : '');
+}
+
+// One submission to Sender, read as text first so a reply that is not JSON (an error page) is reported with
+// its HTTP status and start, instead of "not valid JSON". Returns { json } or throws with:
+//   code SENDER_REFUSED  -- Sender answered with an error page (e.g. 429 too many requests, 502): the
+//                           transaction was not taken, so the same signed transaction can be sent again;
+//   anything else        -- a timeout or broken connection: it may or may not have arrived.
+async function postToSender(senderUrl, body, timeoutMs) {
+  var res = await fetchWithTimeout(senderUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, timeoutMs);
+  var text = await res.text();
+  try {
+    var json = JSON.parse(text);
+    // A JSON "too many requests" reply is a refusal too: the transaction was not taken.
+    if (res.status === 429 || res.status >= 500) {
+      var r = new Error('Sender replied HTTP ' + res.status + ': ' + hideApiKey(JSON.stringify(json.error || json).slice(0, 160)));
+      r.code = 'SENDER_REFUSED';
+      r.httpStatus = res.status;
+      throw r;
+    }
+    return { json: json, status: res.status };
+  } catch (parseErr) {
+    if (parseErr.code === 'SENDER_REFUSED') throw parseErr;
+    var e = new Error('Sender replied HTTP ' + res.status + ' with no JSON: ' + hideApiKey(text.replace(/\s+/g, ' ').slice(0, 160)));
+    e.code = 'SENDER_REFUSED';
+    e.httpStatus = res.status;
+    throw e;
+  }
 }
 
 // CONNECTION WARMING: Helius asks for a call to Sender's /ping during idle spells longer than 5 seconds,
@@ -640,6 +695,8 @@ async function sendAndConfirm(transaction, keypair, connection, options) {
 // priority fee specifically -- unlike the tip, this has not been
 // built to fetch a live recommended value yet. That is a reasonable
 // next refinement, not something this build claims to already do.
+var SEND_TRIES = 3;           // first submission plus up to 2 immediate re-sends of the same signed transaction
+var SEND_RETRY_GAP_MS = 60;   // pause between those tries
 var RESEND_EVERY_MS = 1500;
 var RESEND_MAX = 6;
 
@@ -700,7 +757,7 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   transaction.sign(keypair);
 
   var serialized = transaction.serialize();
-  var senderUrl = buildSenderUrl(tier, mevProtect);
+  var senderUrl = buildSenderUrl(tier, mevProtect, apiKeyFromRpcUrl(rpcUrl));
   var senderUsed = hostOf(senderUrl);
   var body = {
     jsonrpc: '2.0',
@@ -711,17 +768,30 @@ async function sendAndConfirmViaSender(transaction, keypair, connection, rpcUrl,
   // From here on the transaction may already be on its way. A timeout or a broken reply does
   // NOT prove it was not received, so such errors are marked (mayHaveSent) and the caller
   // checks the wallet before treating the trade as not having happened.
+  // If Sender refuses (an error page) or the connection breaks, the SAME signed transaction is sent again
+  // straight away, up to SEND_TRIES times in all. It has one signature, so however many copies arrive it can
+  // only ever run once -- this cannot buy or sell twice. Nothing is rebuilt and no balance is read again.
   var json;
+  var sendTries = 0;
+  var refusals = [];
   try {
-    var res = await fetchWithTimeout(senderUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }, 10000);
-    json = await res.json();
+    for (;;) {
+      sendTries++;
+      try {
+        json = (await postToSender(senderUrl, body, 10000)).json;
+        break;
+      } catch (tryErr) {
+        tryErr.message = hideApiKey(tryErr.message);
+        refusals.push(tryErr.message);
+        if (sendTries >= SEND_TRIES) throw tryErr;
+        await new Promise(function(r) { setTimeout(r, SEND_RETRY_GAP_MS); });
+      }
+    }
   } catch (sendErr) {
     forgetBlockhash();
-    sendErr.mayHaveSent = true;
+    if (refusals.length > 1) sendErr.message = sendErr.message + ' (' + refusals.length + ' tries: ' + refusals.join(' | ').slice(0, 400) + ')';
+    // Every try was refused with an error page: Sender did not take it. Anything else may have arrived.
+    sendErr.mayHaveSent = !(sendErr.code === 'SENDER_REFUSED' && refusals.every(function(m) { return /^Sender replied HTTP/.test(m); }));
     // The transaction is already signed, so its signature is known without Sender's reply. It is handed back
     // with the blockhash it was built on, so the caller can keep watching it until it lands or its window
     // closes (watchSentTransaction), instead of guessing.
@@ -807,6 +877,7 @@ module.exports = {
   warmLandingSocket,
   landingStatus,
   senderHost,
+  apiKeyFromRpcUrl,
   fetchCurrentTip,
   warmTipCache,
   pingSender,

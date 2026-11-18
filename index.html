@@ -222,6 +222,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-newtest')"><span>🔄 NEW PAPER TEST</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
     <!-- Trading Fund -->
@@ -310,6 +311,15 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-poolsize-display">10000</span>. Range: 1,000-50,000.</div>
       <button class="settings-save" onclick="savePoolSize()">SAVE POOL SIZE</button>
       <div class="settings-status" id="status-poolsize"></div>
+    </div>
+
+    <!-- New Paper Test -->
+    <div class="settings-sub" id="sub-newtest">
+      <button class="settings-back" onclick="closeSub('sub-newtest')">← BACK</button>
+      <div class="settings-sub-title">NEW PAPER TEST</div>
+      <div class="settings-hint">Starts paper over from a clean slate, like a restart on Render. Clears open paper trades (not counted), paper history and Portfolio, session numbers, counters, cooldowns and the paper log. Your settings stay. Nothing live is touched. If paper is running it starts again straight away.<br><br><b>Download your paper CSV first</b> -- the history is deleted.</div>
+      <button class="settings-save" id="btn-newtest" onclick="newPaperTest()">🔄 NEW PAPER TEST</button>
+      <div class="settings-status" id="status-newtest"></div>
     </div>
 
       </div>
@@ -1492,6 +1502,33 @@ function startTimer(st) {
       Math.floor((s%3600)/60).toString().padStart(2,'0') + ':' +
       (s%60).toString().padStart(2,'0');
   }, 1000);
+}
+
+// Two taps: the first arms the button for 5 seconds, the second resets paper.
+var newTestArmedUntil = 0;
+var newTestTimer = null;
+async function newPaperTest() {
+  var btn = document.getElementById('btn-newtest');
+  var st = document.getElementById('status-newtest');
+  if (Date.now() > newTestArmedUntil) {
+    newTestArmedUntil = Date.now() + 5000;
+    btn.textContent = 'TAP AGAIN TO CONFIRM (download your paper CSV first)';
+    if (newTestTimer) clearTimeout(newTestTimer);
+    newTestTimer = setTimeout(function() { newTestArmedUntil = 0; btn.textContent = '🔄 NEW PAPER TEST'; }, 5000);
+    return;
+  }
+  newTestArmedUntil = 0;
+  if (newTestTimer) { clearTimeout(newTestTimer); newTestTimer = null; }
+  btn.textContent = '🔄 NEW PAPER TEST';
+  st.textContent = 'Resetting...';
+  try {
+    var r = await fetch(BASE + '/api/paper/new-test', { method: 'POST' });
+    var d = await r.json();
+    if (d && d.success) st.textContent = 'Done -- paper is starting fresh' + (d.restarted ? ' and running.' : '. Press START when ready.');
+    else st.textContent = 'Reset failed: ' + ((d && d.error) || 'unknown error');
+  } catch (e) {
+    st.textContent = 'Reset failed: ' + e.message;
+  }
 }
 
 async function toggleBot() {
