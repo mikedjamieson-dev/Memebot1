@@ -222,6 +222,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-minbuyers')"><span>👥 MIN BUYERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-newtest')"><span>🔄 NEW PAPER TEST</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -311,6 +312,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-poolsize-display">10000</span>. Range: 1,000-50,000.</div>
       <button class="settings-save" onclick="savePoolSize()">SAVE POOL SIZE</button>
       <div class="settings-status" id="status-poolsize"></div>
+    </div>
+
+    <!-- Min Buyers -->
+    <div class="settings-sub" id="sub-minbuyers">
+      <button class="settings-back" onclick="closeSub('sub-minbuyers')">← BACK</button>
+      <div class="settings-sub-title">MIN BUYERS</div>
+      <div class="settings-lbl">DIFFERENT WALLETS BEFORE ENTRY</div>
+      <input class="settings-input" id="input-minbuyers" type="number" min="3" max="50" step="1" placeholder="e.g. 10"/>
+      <div class="settings-hint">Current: <span id="current-minbuyers-display">10</span>. How many different wallets (the dev not counted) must have bought a coin before the bot enters. Applies to paper and live. Range: 3-50. Resets to 10 on a deploy.</div>
+      <button class="settings-save" onclick="saveMinBuyers()">SAVE MIN BUYERS</button>
+      <div class="settings-status" id="status-minbuyers"></div>
     </div>
 
     <!-- New Paper Test -->
@@ -1256,6 +1268,14 @@ async function savePoolSize() {
   el.textContent = ok ? '✅ Pool set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveMinBuyers() {
+  var el = document.getElementById('status-minbuyers');
+  var n = parseInt(document.getElementById('input-minbuyers').value);
+  if (isNaN(n) || n < 3 || n > 50) { el.textContent = 'Enter 3-50'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ minBuyers: n });
+  el.textContent = ok ? '✅ Min buyers set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function runPumpfunQuoteTest() {
   var el = document.getElementById('status-pumpfun-test');
   var mint = document.getElementById('pumpfun-test-mint').value.trim();
@@ -1720,6 +1740,8 @@ async function fetchState() {
     if (fundLiveDisp) fundLiveDisp.textContent = f2(data.fund || 0);
     var poolSizeDisp = document.getElementById('current-poolsize-display');
     if (poolSizeDisp) poolSizeDisp.textContent = data.maxPool || 10000;
+    var minBuyersDisp = document.getElementById('current-minbuyers-display');
+    if (minBuyersDisp && data.minBuyers) minBuyersDisp.textContent = data.minBuyers;
 
     // Open trades
     var openTrades = data.openTrades || [];

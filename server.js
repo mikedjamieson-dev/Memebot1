@@ -228,6 +228,10 @@ const S = {
   liveTradingEnabled: false,
   windingDown: false,
   maxPool: 10000,
+  // Different wallets that must have bought a coin before the bot enters it (paper and live), the dev not
+  // counted. 10 from the data of 408 paper trades: coins with 10+ different buyers won 63% (+$20.59 after
+  // fees over 35 trades) while 3-9 buyers lost. Settable from 3 to 50 (Paper Settings -> MIN BUYERS).
+  minBuyers: 10,
   // Paper's own fresh pool: set by NEW PAPER TEST. Paper only trades coins added to the pool at or after this
   // moment (0 = every coin, as after a restart). The pool itself is shared with live and is never emptied.
   paperPoolSince: 0,
@@ -2128,13 +2132,12 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   if (lastCooldown && (Date.now() - lastCooldown) < CFG.COOLDOWN_MS) paperOk = false;
   if (!paperOk && !liveOk) { trackSkip('cooldown_active'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: cooldown active', 'info'); return; }
 
-  // At least 3 DIFFERENT wallets must have bought the coin, not counting the dev (live and paper). Counting
-  // buys let a coin through with only the dev and one other wallet buying (one of them twice); those coins
-  // then had nobody left to buy after the bot and went stale. When the dev wallet is not known, every buyer
-  // counts.
+  // At least S.minBuyers DIFFERENT wallets must have bought the coin, not counting the dev (live and paper).
+  // Counting buys instead let a coin through with only the dev and one other wallet buying; those coins then
+  // had nobody left to buy after the bot. When the dev wallet is not known, every buyer counts.
   var realBuyers = 0;
   if (tok.uniqueBuyers) tok.uniqueBuyers.forEach(function(addr) { if (!tok.devWallet || addr !== tok.devWallet) realBuyers++; });
-  if (realBuyers < 3) { trackSkip('buyers_below_3'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buyers='+realBuyers+' (need 3, dev not counted'+(tok.devWallet ? '' : ' -- dev wallet unknown, all buyers counted')+') | buys='+tok.buys, 'info'); return; }
+  if (realBuyers < S.minBuyers) { trackSkip('buyers_below_min'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buyers='+realBuyers+' (need '+S.minBuyers+', dev not counted'+(tok.devWallet ? '' : ' -- dev wallet unknown, all buyers counted')+') | buys='+tok.buys, 'info'); return; }
 
   // Paper's size check applies to paper only; live sizes its own buy.
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
@@ -2609,6 +2612,7 @@ app.get('/api/state', function(req, res) {
       ? parseFloat(((S.dayStartFund - S.fund) / S.dayStartFund * 100).toFixed(2)) : 0,
     autoLockEnabled: S.autoLockEnabled,
     maxPool: S.maxPool,
+    minBuyers: S.minBuyers,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -5341,6 +5345,10 @@ app.post('/api/settings', function(req, res) {
   if (req.body.fundStopLossPct !== undefined) {
     var fl = parseFloat(req.body.fundStopLossPct);
     if (!isNaN(fl) && fl >= 1 && fl <= 100) { S.fundStopLossPct = parseFloat(fl.toFixed(1)); log('Fund SL: ' + S.fundStopLossPct + '%', 'info'); }
+  }
+  if (req.body.minBuyers !== undefined) {
+    var mb = parseInt(req.body.minBuyers);
+    if (!isNaN(mb) && mb >= 3 && mb <= 50) { S.minBuyers = mb; log('Min buyers: ' + S.minBuyers + ' different wallets (dev not counted)', 'info'); }
   }
   if (req.body.maxPool !== undefined) {
     var mp = parseInt(req.body.maxPool);
