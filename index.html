@@ -223,6 +223,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-minbuyers')"><span>👥 MIN BUYERS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-maxsellers')"><span>🚪 MAX SELLERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-newtest')"><span>🔄 NEW PAPER TEST</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -323,6 +324,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-minbuyers-display">10</span>. How many different wallets (the dev not counted) must have bought a coin before the bot enters. Applies to paper and live. Range: 3-50. Resets to 10 on a deploy.</div>
       <button class="settings-save" onclick="saveMinBuyers()">SAVE MIN BUYERS</button>
       <div class="settings-status" id="status-minbuyers"></div>
+    </div>
+
+    <!-- Max Sellers -->
+    <div class="settings-sub" id="sub-maxsellers">
+      <button class="settings-back" onclick="closeSub('sub-maxsellers')">← BACK</button>
+      <div class="settings-sub-title">MAX SELLERS</div>
+      <div class="settings-lbl">MOST DIFFERENT SELLERS BEFORE ENTRY</div>
+      <input class="settings-input" id="input-maxsellers" type="number" min="0" max="20" step="1" placeholder="e.g. 1"/>
+      <div class="settings-hint">Current: <span id="current-maxsellers-display">1</span>. The bot skips a coin if more than this many different wallets (the dev not counted) have already sold it before entry. 0 = skip any coin anyone has sold. Applies to paper and live. Range: 0-20. Resets to 1 on a deploy.</div>
+      <button class="settings-save" onclick="saveMaxSellers()">SAVE MAX SELLERS</button>
+      <div class="settings-status" id="status-maxsellers"></div>
     </div>
 
     <!-- New Paper Test -->
@@ -1276,6 +1288,15 @@ async function saveMinBuyers() {
   el.textContent = ok ? '✅ Min buyers set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveMaxSellers() {
+  var el = document.getElementById('status-maxsellers');
+  var raw = document.getElementById('input-maxsellers').value;
+  var n = parseInt(raw);
+  if (raw === '' || isNaN(n) || n < 0 || n > 20) { el.textContent = 'Enter 0-20'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ maxSellers: n });
+  el.textContent = ok ? '✅ Max sellers set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function runPumpfunQuoteTest() {
   var el = document.getElementById('status-pumpfun-test');
   var mint = document.getElementById('pumpfun-test-mint').value.trim();
@@ -1742,6 +1763,8 @@ async function fetchState() {
     if (poolSizeDisp) poolSizeDisp.textContent = data.maxPool || 10000;
     var minBuyersDisp = document.getElementById('current-minbuyers-display');
     if (minBuyersDisp && data.minBuyers) minBuyersDisp.textContent = data.minBuyers;
+    var maxSellersDisp = document.getElementById('current-maxsellers-display');
+    if (maxSellersDisp && data.maxSellers !== undefined) maxSellersDisp.textContent = data.maxSellers;
 
     // Open trades
     var openTrades = data.openTrades || [];
