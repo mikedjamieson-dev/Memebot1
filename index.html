@@ -224,6 +224,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-poolsize')"><span>🏊 POOL SIZE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-minbuyers')"><span>👥 MIN BUYERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-maxsellers')"><span>🚪 MAX SELLERS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-maxholder')"><span>🐋 MAX HOLDER %</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-newtest')"><span>🔄 NEW PAPER TEST</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -335,6 +336,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-maxsellers-display">1</span>. The bot skips a coin if more than this many different wallets (the dev not counted) have already sold it before entry. 0 = skip any coin anyone has sold. Applies to paper and live. Range: 0-20. Resets to 1 on a deploy.</div>
       <button class="settings-save" onclick="saveMaxSellers()">SAVE MAX SELLERS</button>
       <div class="settings-status" id="status-maxsellers"></div>
+    </div>
+
+    <!-- Max Holder % -->
+    <div class="settings-sub" id="sub-maxholder">
+      <button class="settings-back" onclick="closeSub('sub-maxholder')">← BACK</button>
+      <div class="settings-sub-title">MAX HOLDER %</div>
+      <div class="settings-lbl">MOST ONE WALLET MAY HOLD (%)</div>
+      <input class="settings-input" id="input-maxholder" type="number" min="5" max="50" step="1" placeholder="e.g. 20"/>
+      <div class="settings-hint">Current: <span id="current-maxholder-display">20</span>%. The bot skips a coin if any one real wallet holds this share of it or more (the bonding curve, burn wallet, Mayhem agent and LetsBonk pool are not counted). Checked on-chain right before entry. If the check can't be done, the coin is skipped. Applies to paper and live. Range: 5-50. Resets to 20 on a deploy.</div>
+      <button class="settings-save" onclick="saveMaxHolder()">SAVE MAX HOLDER %</button>
+      <div class="settings-status" id="status-maxholder"></div>
     </div>
 
     <!-- New Paper Test -->
@@ -1297,6 +1309,15 @@ async function saveMaxSellers() {
   el.textContent = ok ? '✅ Max sellers set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveMaxHolder() {
+  var el = document.getElementById('status-maxholder');
+  var raw = document.getElementById('input-maxholder').value;
+  var n = parseInt(raw);
+  if (raw === '' || isNaN(n) || n < 5 || n > 50) { el.textContent = 'Enter 5-50'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ maxHolderPct: n });
+  el.textContent = ok ? '✅ Max holder set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function runPumpfunQuoteTest() {
   var el = document.getElementById('status-pumpfun-test');
   var mint = document.getElementById('pumpfun-test-mint').value.trim();
@@ -1765,6 +1786,8 @@ async function fetchState() {
     if (minBuyersDisp && data.minBuyers) minBuyersDisp.textContent = data.minBuyers;
     var maxSellersDisp = document.getElementById('current-maxsellers-display');
     if (maxSellersDisp && data.maxSellers !== undefined) maxSellersDisp.textContent = data.maxSellers;
+    var maxHolderDisp = document.getElementById('current-maxholder-display');
+    if (maxHolderDisp && data.maxHolderPct !== undefined) maxHolderDisp.textContent = data.maxHolderPct;
 
     // Open trades
     var openTrades = data.openTrades || [];

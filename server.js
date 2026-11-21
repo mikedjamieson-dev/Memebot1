@@ -237,6 +237,14 @@ const S = {
   // 0-1 sellers at entry the bot won 53% (+$6.69 after fees), with 2+ sellers 35% (-$12.45). Settable 0-20
   // (Paper Settings -> MAX SELLERS).
   maxSellers: 1,
+  // Most of the supply one wallet may hold before a coin is skipped (paper and live), in %. The curve, the
+  // burn wallet, the Mayhem agent and a LetsBonk pool's vault are not wallets and are left out. 20 from the
+  // live data: 5 of the 6 one-move crashes of 40%+ on normal coins had one wallet holding 25-30%.
+  // Settable 5-50 (Paper Settings -> MAX HOLDER %).
+  maxHolderPct: 20,
+  // Dev wallets banned for DEV_BAN_MS after one of their coins, held by the bot, dropped DEV_BAN_DROP or more
+  // in a single price move (paper or live). wallet -> time the ban ends. Cleared by a deploy.
+  devBans: new Map(),
   // Paper's own fresh pool: set by NEW PAPER TEST. Paper only trades coins added to the pool at or after this
   // moment (0 = every coin, as after a restart). The pool itself is shared with live and is never emptied.
   paperPoolSince: 0,
@@ -603,8 +611,12 @@ async function checkWalletConcentration(mint) {
 // is treated as unmeasured and not bought (the log lists the largest accounts so it can be checked).
 //
 // Returns { safe, unknown, reason, topPct, mayhem }. unknown = the check could not measure the coin; live never
-// buys a coin it could not measure. Paper keeps its own Bitquery check (checkWalletConcentration) unchanged.
-var LIVE_HOLDER_MAX_SHARE = 0.50;
+// buys a coin it could not measure. Paper now uses this same check (see walletCheckShared); the Bitquery
+// check (checkWalletConcentration) is no longer used for entries.
+//
+// The limit is S.maxHolderPct (MAX HOLDER %). LetsBonk coins: their unsold supply sits in the LetsBonk pool's
+// vault (Raydium LaunchLab, seeds ["pool_vault", pool, mint]), which is left out too. The result also gives
+// top10Pct: the 10 largest real wallets together, recorded for research only.
 var MAYHEM_PROGRAM_ADDRESS = 'MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e';
 var MAYHEM_SUPPLY_TOKENS = 1.5e9;          // a supply above this (normal coins: 1 billion) is a Mayhem coin
 var mayhemFoundLogged = 0;
@@ -616,7 +628,7 @@ function asPublicKeyLoose(v) {
   if (v && typeof v.toBase58 === 'function') return new web3.PublicKey(v.toBase58());
   return new web3.PublicKey(v);
 }
-async function checkWalletConcentrationOnChain(mintStr) {
+async function checkWalletConcentrationOnChain(mintStr, src) {
   if (!liveWalletModule) return { safe: false, unknown: true, reason: 'the wallet module is not loaded' };
   var web3 = require('@solana/web3.js');
   var spl = require('@solana/spl-token');
@@ -646,6 +658,17 @@ async function checkWalletConcentrationOnChain(mintStr) {
     });
   });
   try { if (typeof pumpSdk.getTokenVaultPda === 'function') agentAccounts[asPublicKeyLoose(pumpSdk.getTokenVaultPda(mint)).toBase58()] = true; } catch (e) {}
+  // A LetsBonk coin's unsold supply: its LaunchLab pool vault.
+  if (src === 'BONK') {
+    try {
+      var raydium = require('@raydium-io/raydium-sdk-v2');
+      var launchProgram = asPublicKeyLoose(raydium.LAUNCHPAD_PROGRAM);
+      var bonkPool = asPublicKeyLoose(raydium.getPdaLaunchpadPoolId(launchProgram, mint, spl.NATIVE_MINT));
+      excluded[web3.PublicKey.findProgramAddressSync([Buffer.from('pool_vault'), bonkPool.toBuffer(), mint.toBuffer()], launchProgram)[0].toBase58()] = true;
+    } catch (eBonk) {
+      return { safe: false, unknown: true, reason: 'the LetsBonk pool vault address could not be worked out: ' + eBonk.message };
+    }
+  }
 
   var replies = await rpcgate.runWithPriority(rpcgate.FAST_LANE, function() {
     return Promise.all([
@@ -664,14 +687,18 @@ async function checkWalletConcentrationOnChain(mintStr) {
 
   var top = null;
   var agent = null;
+  var realAmounts = [];
   accounts.forEach(function(a) {
     var addr = a.address && a.address.toBase58 ? a.address.toBase58() : String(a.address);
     var amt = Number(a.amount);
     if (!(amt >= 0)) return;
     if (agentAccounts[addr]) { agent = { address: addr, amount: amt }; return; }
     if (excluded[addr]) return;
+    realAmounts.push(amt);
     if (!top || amt > top.amount) top = { address: addr, amount: amt };
   });
+  realAmounts.sort(function(x, y) { return y - x; });
+  var top10Raw = realAmounts.slice(0, 10).reduce(function(sum, v) { return sum + v; }, 0);
 
   if (mayhem && !agent) {
     var listed = accounts.slice(0, 3).map(function(a) {
@@ -687,13 +714,29 @@ async function checkWalletConcentrationOnChain(mintStr) {
     mayhemFoundLogged++;
     liveLog('LIVE WALLET CHECK: Mayhem coin ' + mintStr + ' -- AI agent account ' + agent.address + ' holds ' + (agent.amount / supplyRaw * 100).toFixed(1) + '% of the 2 billion supply and is left out of the count', 'info');
   }
-  if (!top) return { safe: true, unknown: false, topPct: 0, mayhem: mayhem, reason: 'only the curve, burn and agent accounts hold this coin' + agentText };
+  var top10Pct = top10Raw / base;
+  if (!top) return { safe: true, unknown: false, topPct: 0, top10Pct: 0, mayhem: mayhem, reason: 'only the curve, burn and agent accounts hold this coin' + agentText };
   var share = top.amount / base;
   var pctText = (share * 100).toFixed(1) + '%';
-  if (share >= LIVE_HOLDER_MAX_SHARE) {
-    return { safe: false, unknown: false, topPct: share, mayhem: mayhem, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
+  if (share >= S.maxHolderPct / 100) {
+    return { safe: false, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + ' (limit ' + S.maxHolderPct + '%)' + agentText };
   }
-  return { safe: true, unknown: false, topPct: share, mayhem: mayhem, reason: 'largest holder has ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
+  return { safe: true, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'largest holder has ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
+}
+
+// One wallet check per coin, shared by paper and live: a second request for the same coin within
+// WALLET_CHECK_SHARE_MS gets the first one's answer instead of asking the chain again.
+var WALLET_CHECK_SHARE_MS = 3000;
+var walletCheckCache = new Map();   // mint -> { at, promise }
+function walletCheckShared(mintStr, src) {
+  var hit = walletCheckCache.get(mintStr);
+  if (hit && (Date.now() - hit.at) < WALLET_CHECK_SHARE_MS) return hit.promise;
+  var promise = checkWalletConcentrationOnChain(mintStr, src).catch(function(e) {
+    return { safe: false, unknown: true, reason: 'check errored: ' + (e && e.message ? e.message : e) };
+  });
+  walletCheckCache.set(mintStr, { at: Date.now(), promise: promise });
+  if (walletCheckCache.size > 300) walletCheckCache.delete(walletCheckCache.keys().next().value);
+  return promise;
 }
 
 // The live entry's last word, given the wallet-check result: everything that could have changed while the
@@ -1226,6 +1269,7 @@ function handleSwap(t) {
         var drop = (trade.currentPrice - priceUsd) / trade.currentPrice;
         if (drop > 0.90) {
           log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
+          noteOneMoveDrop(trade.mint, trade.currentPrice, priceUsd, trade.tok && trade.tok.n, false);
           return;
         }
       }
@@ -1237,6 +1281,7 @@ function handleSwap(t) {
       // us tell "one violent trade" apart from "a series of smaller ticks
       // adding up" for well-covered trades that still overshoot badly.
       var priceBeforeThisTick = trade.currentPrice || trade.entryPrice;
+      noteOneMoveDrop(trade.mint, priceBeforeThisTick, priceUsd, trade.tok && trade.tok.n, false);
 
       trade.currentPrice = priceUsd;
       trade.currentMcap = mcap;
@@ -1352,11 +1397,13 @@ async function updateOpenTradePrices() {
       var drop = (trade.currentPrice - price) / trade.currentPrice;
       if (drop > 0.90) {
         log('PRICE SANITY REJECT ' + trade.tok.n + ' | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
+        noteOneMoveDrop(trade.mint, trade.currentPrice, price, trade.tok && trade.tok.n, false);
         continue;
       }
     }
 
     var priceBeforeThisTick = trade.currentPrice || trade.entryPrice;
+    noteOneMoveDrop(trade.mint, priceBeforeThisTick, price, trade.tok && trade.tok.n, false);
 
     trade.currentPrice = price;
     trade.priceUpdates = (trade.priceUpdates || 0) + 1;
@@ -1781,6 +1828,9 @@ function closeTradeReal(id, reason) {
     entryDevBought: tr.entryDevBought || 'No',
     entryDevSold: tr.entryDevSold || 'No',
     hasDevWalletData: tr.hasDevWalletData || 'No',
+    topHolderPct: tr.topHolderPct !== undefined ? tr.topHolderPct : null,
+    top10Pct: tr.top10Pct !== undefined ? tr.top10Pct : null,
+    mayhemCoin: tr.mayhemCoin || '',
     // New - Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
     // tiered trades be reviewed with the same rigor as everything else ?
@@ -2146,6 +2196,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   // Several sellers this early usually means early buyers cashing out, and the coin dumping after entry.
   var realSellers = 0;
   if (tok.uniqueSellers) tok.uniqueSellers.forEach(function(addr) { if (!tok.devWallet || addr !== tok.devWallet) realSellers++; });
+  if (devIsBanned(tok.devWallet)) { trackSkip('dev_banned'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: dev wallet banned (a coin of theirs dropped 40%+ in one move)', 'info'); return; }
   if (realSellers > S.maxSellers) { trackSkip('sellers_above_max'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: sellers='+realSellers+' (max '+S.maxSellers+', dev not counted) | sells='+(tok.sells||0), 'info'); return; }
   if (realBuyers < S.minBuyers) { trackSkip('buyers_below_min'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buyers='+realBuyers+' (need '+S.minBuyers+', dev not counted'+(tok.devWallet ? '' : ' -- dev wallet unknown, all buyers counted')+') | buys='+tok.buys, 'info'); return; }
 
@@ -2195,11 +2246,10 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   if (liveOk) {
     var liveSnap = buildLiveEntrySnapshot(tok, triggerSource, { signalPrice: entryPrice, signalAt: entryCheckStartedAt, concentrationMs: null });
     var liveCheckT0 = Date.now();
-    var liveCheck = checkWalletConcentrationOnChain(tok.mint).catch(function(eLive) {
-      return { safe: false, unknown: true, reason: 'check errored: ' + (eLive && eLive.message ? eLive.message : eLive) };
-    }).then(function(c) {
+    var liveCheck = walletCheckShared(tok.mint, tok.src).then(function(c) {
       liveSnap.concentrationMs = Date.now() - liveCheckT0;
       liveSnap.topHolderPct = (c && typeof c.topPct === 'number') ? parseFloat((c.topPct * 100).toFixed(2)) : null;
+      liveSnap.top10Pct = (c && typeof c.top10Pct === 'number') ? parseFloat((c.top10Pct * 100).toFixed(2)) : null;
       liveSnap.mayhemCoin = (c && typeof c.mayhem === 'boolean') ? c.mayhem : null;
       return liveEntryVerdict(tok, c);
     });
@@ -2207,20 +2257,27 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   }
   if (!paperOk) return;
 
-  // PAPER: unchanged -- its own Bitquery wallet check, then its own final re-checks.
+  // PAPER: the same on-chain wallet check as live (shared with live's when both want this coin), then its own
+  // final re-checks. A coin the check cannot measure is not traded, exactly as in live.
+  var paperCheck = null;
   if (tok.src === 'PUMP' || tok.src === 'BONK') {
     if (pendingConcentrationChecks.has(tok.mint)) return;
     pendingConcentrationChecks.add(tok.mint);
     var concT0 = Date.now();
     var concCheck;
     try {
-      concCheck = await checkWalletConcentration(tok.mint);
-    } catch (eConc) {
-      concCheck = { safe: true, unknown: true, reason: 'check errored, allowing through' };
+      concCheck = await walletCheckShared(tok.mint, tok.src);
     } finally {
       pendingConcentrationChecks.delete(tok.mint);
     }
     concentrationMs = Date.now() - concT0;
+    paperCheck = concCheck;
+    if (!concCheck || concCheck.unknown) {
+      S.rejectCount++;
+      trackSkip('wallet_check_failed');
+      if(diag) feedLog('DIAG '+tok.n+' | SKIP: wallet check could not measure the coin ('+((concCheck && concCheck.reason) || 'no answer')+')', 'info');
+      return;
+    }
     if (!concCheck.safe) {
       S.rejectCount++;
       trackSkip('wallet_concentration');
@@ -2311,6 +2368,9 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     hasDevWalletData: tok.devWallet ? 'Yes' : 'No',
     entryPreVolTickCount: tok.recentPrices ? tok.recentPrices.length : 0,
     entryTrigger: triggerSource || 'scanner',
+    topHolderPct: (paperCheck && typeof paperCheck.topPct === 'number') ? parseFloat((paperCheck.topPct * 100).toFixed(2)) : null,
+    top10Pct: (paperCheck && typeof paperCheck.top10Pct === 'number') ? parseFloat((paperCheck.top10Pct * 100).toFixed(2)) : null,
+    mayhemCoin: (paperCheck && typeof paperCheck.mayhem === 'boolean') ? (paperCheck.mayhem ? 'Yes' : 'No') : '',
   };
 
   S.open.push(trade);
@@ -2624,6 +2684,7 @@ app.get('/api/state', function(req, res) {
     maxPool: S.maxPool,
     minBuyers: S.minBuyers,
     maxSellers: S.maxSellers,
+    maxHolderPct: S.maxHolderPct,
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -3538,6 +3599,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             buyWaitedForCheckMs: (entrySnapshot && typeof entrySnapshot.buyWaitedForCheckMs === 'number') ? entrySnapshot.buyWaitedForCheckMs : null,
             topHolderPct: (entrySnapshot && typeof entrySnapshot.topHolderPct === 'number') ? entrySnapshot.topHolderPct : null,
             mayhemCoin: (entrySnapshot && typeof entrySnapshot.mayhemCoin === 'boolean') ? entrySnapshot.mayhemCoin : null,
+            top10Pct: (entrySnapshot && typeof entrySnapshot.top10Pct === 'number') ? entrySnapshot.top10Pct : null,
             feedLagMs: (entrySnapshot && typeof entrySnapshot.feedLagMs === 'number') ? entrySnapshot.feedLagMs : null,
             landPriceUsd: landSnap ? landSnap.price : null,
             landPriceAgeMs: landSnap ? landSnap.ageMs : null,
@@ -3897,6 +3959,7 @@ function handleLiveTick(mint, priceUsd, fromChain, feedLagMs) {
       var drop = (pos.currentPriceUsd - priceUsd) / pos.currentPriceUsd;
       if (drop > 0.90) {
         liveLog('LIVE PRICE SANITY REJECT ' + mint.slice(0, 8) + '... | ' + (drop * 100).toFixed(0) + '% single-tick crash', 'warn');
+        noteOneMoveDrop(mint, pos.currentPriceUsd, priceUsd, null, true);
         continue;
       }
     }
@@ -3904,6 +3967,7 @@ function handleLiveTick(mint, priceUsd, fromChain, feedLagMs) {
     // The price before this tick is applied, so the size of the single tick that
     // triggers an exit can be recorded (paper's TriggerTickJumpPct).
     var priceBeforeThisTick = pos.currentPriceUsd || pos.entryPriceUsd;
+    noteOneMoveDrop(mint, priceBeforeThisTick, priceUsd, null, true);
 
     pos.currentPriceUsd = priceUsd;
     pos.lastTickAt = Date.now();          // when this price reached the bot, and from where (for the exit-timing columns)
@@ -4335,6 +4399,7 @@ function liveTimingExtras(pos) {
     buyWaitedForCheckMs: nz(pos.buyWaitedForCheckMs),
     topHolderPct: nz(pos.topHolderPct),
     mayhemCoin: pos.mayhemCoin === true ? 'Yes' : (pos.mayhemCoin === false ? 'No' : ''),
+    top10Pct: nz(pos.top10Pct),
     buyResends: nz(pos.buyResends),
     sellResends: nz(pos.sellResends),
     buyComputeUnits: nz(pos.buyComputeUnits),
@@ -5114,7 +5179,7 @@ app.get('/api/live/export', function(req, res) {
     'ExitTriggerPrice','ExitTickAgeMs','ExitFeedSource','ExitFeedLagMs','ExitDecisionToSaleMs','ExitSaleVsTriggerPct',
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
-    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt'];
+    'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt','Top10Pct'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -5142,7 +5207,7 @@ app.get('/api/live/export', function(req, res) {
       t.buyListenerMs, t.buyCheckerMs, t.sellListenerMs, t.sellCheckerMs,
       t.realSolAtBuy, csvSafe(t.buyTipSource || ''), csvSafe(t.sellTipSource || ''), t.buyResends, t.sellResends, t.buyComputeUnits, t.sellComputeUnits,
       csvSafe(t.buySendRoute || ''), csvSafe(t.sellSendRoute || ''), csvSafe(t.buyAntiSandwich || ''), csvSafe(t.sellAntiSandwich || ''),
-      t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || ''), csvSafe(t.sellPrebuilt || '')
+      t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || ''), csvSafe(t.sellPrebuilt || ''), t.top10Pct
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -5357,6 +5422,10 @@ app.post('/api/settings', function(req, res) {
     var fl = parseFloat(req.body.fundStopLossPct);
     if (!isNaN(fl) && fl >= 1 && fl <= 100) { S.fundStopLossPct = parseFloat(fl.toFixed(1)); log('Fund SL: ' + S.fundStopLossPct + '%', 'info'); }
   }
+  if (req.body.maxHolderPct !== undefined) {
+    var mh = parseFloat(req.body.maxHolderPct);
+    if (!isNaN(mh) && mh >= 5 && mh <= 50) { S.maxHolderPct = parseFloat(mh.toFixed(1)); log('Max holder: ' + S.maxHolderPct + '% of supply for any one wallet', 'info'); }
+  }
   if (req.body.maxSellers !== undefined) {
     var ms = parseInt(req.body.maxSellers);
     if (!isNaN(ms) && ms >= 0 && ms <= 20) { S.maxSellers = ms; log('Max sellers: ' + S.maxSellers + ' different wallets before entry (dev not counted)', 'info'); }
@@ -5443,7 +5512,7 @@ function writeCsvInBatches(res, lines, done) {
 app.get('/api/portfolio/export', async function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
-  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt'].join(',');
+  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin'].join(',');
   // The file holds the oldest trade first; the CSV lists the newest first, as it always has.
   var body = [];
   try {
@@ -5522,6 +5591,9 @@ function paperCsvRow(t, sessionStartedAtStr, sessionEndedAtStr) {
       t.tier2RealizedPct !== null && t.tier2RealizedPct !== undefined ? t.tier2RealizedPct : '',
       t.tier2RealizedPnl !== null && t.tier2RealizedPnl !== undefined ? t.tier2RealizedPnl : '',
       csvSafe(t.tier2ClosedAt || ''),
+      t.topHolderPct !== null && t.topHolderPct !== undefined ? t.topHolderPct : '',
+      t.top10Pct !== null && t.top10Pct !== undefined ? t.top10Pct : '',
+      csvSafe(t.mayhemCoin || ''),
     ].join(',');
 }
 
@@ -5531,6 +5603,35 @@ function csvSafe(val) {
     s = '"' + s.replace(/"/g, '""') + '"';
   }
   return s;
+}
+
+// -- DEV WALLET BAN ------------------------------------------------
+// A coin the bot holds that drops DEV_BAN_DROP or more in ONE price move has almost always been dumped by its
+// dev or the dev's own wallets. Its dev wallet is then banned for DEV_BAN_MS: paper and live skip every new
+// coin from it. A coin whose dev wallet is not known bans nothing.
+var DEV_BAN_DROP = 0.40;
+var DEV_BAN_MS = 24 * 60 * 60 * 1000;
+function noteOneMoveDrop(mint, priceBefore, priceNow, name, fromLive) {
+  if (!(priceBefore > 0) || !(priceNow > 0)) return;
+  var drop = (priceBefore - priceNow) / priceBefore;
+  if (drop < DEV_BAN_DROP) return;
+  var tok = S.tokens.get(mint);
+  var dev = tok && tok.devWallet;
+  if (!dev) return;
+  var until = S.devBans.get(dev);
+  if (until && until > Date.now()) return;
+  S.devBans.set(dev, Date.now() + DEV_BAN_MS);
+  if (S.devBans.size > 5000) S.devBans.delete(S.devBans.keys().next().value);
+  var line = 'DEV BANNED 24h: wallet ' + dev + ', ' + (name || (tok && tok.n) || mint) + ' dropped ' + (drop * 100).toFixed(0) + '% in one move';
+  if (fromLive) liveLog(line, 'warn'); else log(line, 'rug');
+}
+
+function devIsBanned(dev) {
+  if (!dev) return false;
+  var until = S.devBans.get(dev);
+  if (!until) return false;
+  if (until <= Date.now()) { S.devBans.delete(dev); return false; }
+  return true;
 }
 
 // How many pool coins paper can see: all of them, or after a NEW PAPER TEST only those found since.
