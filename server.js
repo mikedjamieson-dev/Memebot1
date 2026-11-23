@@ -246,6 +246,10 @@ const S = {
   // in a single price move (paper or live). wallet -> time the ban ends. Cleared by a deploy.
   devBans: new Map(),
   devBanSkips: 0,          // different coins skipped because their dev wallet was banned (since the last deploy)
+  // Known dumpers: wallets whose sale caused a 40%+ one-move crash on a coin the bot held, kept DUMPER_LIST_MS.
+  // wallet -> { until, mint }. RECORD ONLY for now: the CSV marks trades a known dumper had bought (DumperBought);
+  // nothing is skipped because of it yet. Cleared by a deploy.
+  dumpers: new Map(),
   // Paper's own fresh pool: set by NEW PAPER TEST. Paper only trades coins added to the pool at or after this
   // moment (0 = every coin, as after a restart). The pool itself is shared with live and is never emptied.
   paperPoolSince: 0,
@@ -1139,10 +1143,6 @@ function handleSwap(t) {
     swapUsd = Math.max(baseUsd, quoteUsd) || 0;
   }
 
-  // A held coin's crash waiting for the wallet that sold (see noteOneMoveDrop). Before the market-cap floor
-  // check on purpose: a crash sale often takes the coin below the floor.
-  if (pendingCrashSellers.size && t.Side === 'Sell' && traderAddress) fillCrashSeller(mint, traderAddress, swapUsd);
-
   bqTradeLogCount++;
   if (bqTradeLogCount <= 3) log('BQ SWAP #' + bqTradeLogCount + ' | ' + (t.Side || '?') + ' | ' + mint.slice(0, 8) + '...', 'info');
 
@@ -1151,6 +1151,10 @@ function handleSwap(t) {
     var p = parseFloat(t.PriceInUsd);
     if (!isNaN(p) && p > 0) priceUsd = p;
   }
+
+  // A held coin's crash waiting for the wallet that sold (see noteOneMoveDrop). Before the market-cap floor
+  // check on purpose: a crash sale often takes the coin below the floor.
+  if (pendingCrashSellers.size && t.Side === 'Sell' && traderAddress) fillCrashSeller(mint, traderAddress, swapUsd, priceUsd);
 
   var protocolFamily = (pair.Market || {}).ProtocolFamily || '';
 
@@ -1845,6 +1849,8 @@ function closeTradeReal(id, reason) {
     crashSellUsd: tr.crashSellUsd !== undefined ? tr.crashSellUsd : null,
     crashSellerBought: tr.crashSellerBought || '',
     crashSellerIsDev: tr.crashSellerIsDev || '',
+    crashSellerRepeat: tr.crashSellerRepeat || '',
+    dumperBought: tr.dumperBought || '',
     // New - Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
     // tiered trades be reviewed with the same rigor as everything else ?
@@ -2387,6 +2393,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     mayhemCoin: (paperCheck && typeof paperCheck.mayhem === 'boolean') ? (paperCheck.mayhem ? 'Yes' : 'No') : '',
     devWallet: tok.devWallet || '',
     devBanSkipsAtEntry: S.devBanSkips,
+    dumperBought: dumperBoughtCoin(tok),
   };
 
   S.open.push(trade);
@@ -3618,6 +3625,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             top10Pct: (entrySnapshot && typeof entrySnapshot.top10Pct === 'number') ? entrySnapshot.top10Pct : null,
             devWallet: (S.tokens.get(mintStr) || {}).devWallet || '',
             devBanSkipsAtEntry: S.devBanSkips,
+            dumperBought: dumperBoughtCoin(S.tokens.get(mintStr)),
             feedLagMs: (entrySnapshot && typeof entrySnapshot.feedLagMs === 'number') ? entrySnapshot.feedLagMs : null,
             landPriceUsd: landSnap ? landSnap.price : null,
             landPriceAgeMs: landSnap ? landSnap.ageMs : null,
@@ -4427,6 +4435,8 @@ function liveTimingExtras(pos) {
     crashSellUsd: nz(pos.crashSellUsd),
     crashSellerBought: pos.crashSellerBought || '',
     crashSellerIsDev: pos.crashSellerIsDev || '',
+    crashSellerRepeat: pos.crashSellerRepeat || '',
+    dumperBought: pos.dumperBought || '',
     buyResends: nz(pos.buyResends),
     sellResends: nz(pos.sellResends),
     buyComputeUnits: nz(pos.buyComputeUnits),
@@ -5207,7 +5217,7 @@ app.get('/api/live/export', function(req, res) {
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
     'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt','Top10Pct',
-    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev'];
+    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -5237,7 +5247,8 @@ app.get('/api/live/export', function(req, res) {
       csvSafe(t.buySendRoute || ''), csvSafe(t.sellSendRoute || ''), csvSafe(t.buyAntiSandwich || ''), csvSafe(t.sellAntiSandwich || ''),
       t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || ''), csvSafe(t.sellPrebuilt || ''), t.top10Pct,
       csvSafe(t.devWallet || ''), csvSafe(t.devBanned || ''), t.banDropPct, t.devBanSkips, t.crashDropPct,
-      csvSafe(t.crashSeller || ''), t.crashSellUsd, csvSafe(t.crashSellerBought || ''), csvSafe(t.crashSellerIsDev || '')
+      csvSafe(t.crashSeller || ''), t.crashSellUsd, csvSafe(t.crashSellerBought || ''), csvSafe(t.crashSellerIsDev || ''),
+      csvSafe(t.crashSellerRepeat || ''), csvSafe(t.dumperBought || '')
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -5542,7 +5553,7 @@ function writeCsvInBatches(res, lines, done) {
 app.get('/api/portfolio/export', async function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
-  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin','DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev'].join(',');
+  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin','DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought'].join(',');
   // The file holds the oldest trade first; the CSV lists the newest first, as it always has.
   var body = [];
   try {
@@ -5633,6 +5644,8 @@ function paperCsvRow(t, sessionStartedAtStr, sessionEndedAtStr) {
       t.crashSellUsd !== null && t.crashSellUsd !== undefined ? t.crashSellUsd : '',
       csvSafe(t.crashSellerBought || ''),
       csvSafe(t.crashSellerIsDev || ''),
+      csvSafe(t.crashSellerRepeat || ''),
+      csvSafe(t.dumperBought || ''),
     ].join(',');
 }
 
@@ -5655,32 +5668,68 @@ var DEV_BAN_MS = 24 * 60 * 60 * 1000;
 // whose sale made the move, when the tick came from that sale; otherwise the next sale of the coin within
 // CRASH_SELLER_WAIT_MS is taken as the crash sale (the on-chain price can arrive before the trade feed has it).
 var CRASH_SELLER_WAIT_MS = 3000;
-var pendingCrashSellers = new Map();   // mint -> [{ holder, at }]
-function setCrashSeller(holder, wallet, sellUsd, tok) {
+// A waiting crash only takes a sale whose price is at the crashed price or lower (within this much), so a sale
+// that still carries the old, higher price -- or a small sale that is not the crash -- is not taken.
+var CRASH_SALE_PRICE_SLACK = 1.05;
+var pendingCrashSellers = new Map();   // mint -> [{ holder, at, crashPrice, fromLive }]
+var DUMPER_LIST_MS = 24 * 60 * 60 * 1000;
+
+function isKnownDumper(wallet) {
+  var d = S.dumpers.get(wallet);
+  if (!d) return false;
+  if (d.until <= Date.now()) { S.dumpers.delete(wallet); return false; }
+  return true;
+}
+// Yes if any wallet that has bought this coin is a known dumper. Only the coin's own buyer list is read.
+function dumperBoughtCoin(tok) {
+  if (!S.dumpers.size || !tok || !tok.uniqueBuyers) return 'No';
+  for (var w of tok.uniqueBuyers) { if (isKnownDumper(w)) return 'Yes'; }
+  return 'No';
+}
+// Called once per crash sale. Returns 'Yes' if the wallet was already on the list from a DIFFERENT coin,
+// then puts it on the list (24h from now). The bot's own live wallet is never listed.
+function noteDumper(wallet, mint, dropPct, fromLive) {
+  if (liveWalletKeypair && liveWalletKeypair.publicKey.toBase58() === wallet) return 'No';
+  var before = S.dumpers.get(wallet);
+  var repeat = (before && before.until > Date.now() && before.mint !== mint) ? 'Yes' : 'No';
+  if (before && before.mint === mint && before.until > Date.now()) return before.repeat || 'No';
+  S.dumpers.set(wallet, { until: Date.now() + DUMPER_LIST_MS, mint: mint, repeat: repeat });
+  if (S.dumpers.size > 5000) S.dumpers.delete(S.dumpers.keys().next().value);
+  var tok = S.tokens.get(mint);
+  var line = 'DUMPER ADDED 24h: wallet ' + wallet + ', sold into ' + ((tok && tok.n) || mint) + ' crash (-' + (dropPct || 0).toFixed(0) + '%)' + (repeat === 'Yes' ? ' -- repeat dumper' : '');
+  if (fromLive) liveLog(line, 'warn'); else log(line, 'rug');
+  return repeat;
+}
+function setCrashSeller(holder, wallet, sellUsd, tok, repeat) {
   holder.crashSeller = wallet;
   holder.crashSellUsd = (sellUsd > 0) ? parseFloat(sellUsd.toFixed(2)) : null;
   holder.crashSellerBought = (tok && tok.uniqueBuyers && tok.uniqueBuyers.has(wallet)) ? 'Yes' : 'No';
   holder.crashSellerIsDev = (tok && tok.devWallet) ? (tok.devWallet === wallet ? 'Yes' : 'No') : '';
+  holder.crashSellerRepeat = repeat || 'No';
 }
 // Called by the trade feed for every sale (cheap: nothing to do unless a crash is waiting for its seller).
-function fillCrashSeller(mint, wallet, sellUsd) {
+function fillCrashSeller(mint, wallet, sellUsd, salePrice) {
   var list = pendingCrashSellers.get(mint);
   if (!list) return;
-  pendingCrashSellers.delete(mint);
-  var tok = S.tokens.get(mint);
   var now = Date.now();
-  var fresh = list.some(function(w) { return (now - w.at) <= CRASH_SELLER_WAIT_MS; });
-  if (!fresh) return;
-  list.forEach(function(w) {
-    if (!w.holder.crashSeller && (now - w.at) <= CRASH_SELLER_WAIT_MS) setCrashSeller(w.holder, wallet, sellUsd, tok);
+  var live = list.filter(function(w) { return !w.holder.crashSeller && (now - w.at) <= CRASH_SELLER_WAIT_MS; });
+  if (!live.length) { pendingCrashSellers.delete(mint); return; }
+  var take = live.filter(function(w) { return salePrice > 0 && salePrice <= w.crashPrice * CRASH_SALE_PRICE_SLACK; });
+  if (!take.length) { pendingCrashSellers.set(mint, live); return; }   // not the crash sale: keep waiting
+  var rest = live.filter(function(w) { return take.indexOf(w) === -1; });
+  if (rest.length) pendingCrashSellers.set(mint, rest); else pendingCrashSellers.delete(mint);
+  var tok = S.tokens.get(mint);
+  take.forEach(function(w) {
+    var repeat = noteDumper(wallet, mint, w.holder.crashDropPct, w.fromLive);
+    setCrashSeller(w.holder, wallet, sellUsd, tok, repeat);
+    // The trade may already have closed (a stop loss sells on the crash itself): fill its closed record too.
+    // Paper's newest closed trades are at the front of S.closed, live's at the end of S.liveClosed.
+    var fillRec = function(rec) {
+      if (rec && rec.mint === mint && rec.crashDropPct !== null && rec.crashDropPct !== undefined && !rec.crashSeller) setCrashSeller(rec, wallet, sellUsd, tok, repeat);
+    };
+    if (w.fromLive) { for (var j = S.liveClosed.length - 1; j >= Math.max(0, S.liveClosed.length - 20); j--) fillRec(S.liveClosed[j]); }
+    else { for (var i = 0; i < Math.min(20, S.closed.length); i++) fillRec(S.closed[i]); }
   });
-  // The trade may already have closed (a stop loss sells on the crash itself): fill its closed record too.
-  // Paper's newest closed trades are at the front of S.closed, live's at the end of S.liveClosed.
-  var fillRec = function(rec) {
-    if (rec && rec.mint === mint && rec.crashDropPct !== null && rec.crashDropPct !== undefined && !rec.crashSeller) setCrashSeller(rec, wallet, sellUsd, tok);
-  };
-  for (var i = 0; i < Math.min(20, S.closed.length); i++) fillRec(S.closed[i]);
-  for (var j = Math.max(0, S.liveClosed.length - 20); j < S.liveClosed.length; j++) fillRec(S.liveClosed[j]);
 }
 function noteOneMoveDrop(holder, mint, priceBefore, priceNow, name, fromLive, seller, sellUsd) {
   if (!(priceBefore > 0) || !(priceNow > 0)) return;
@@ -5689,10 +5738,10 @@ function noteOneMoveDrop(holder, mint, priceBefore, priceNow, name, fromLive, se
   var tok = S.tokens.get(mint);
   if (holder && !holder.crashDropPct) {
     holder.crashDropPct = parseFloat((drop * 100).toFixed(1));
-    if (seller) setCrashSeller(holder, seller, sellUsd, tok);
+    if (seller) setCrashSeller(holder, seller, sellUsd, tok, noteDumper(seller, mint, holder.crashDropPct, fromLive));
     else {
       var waiting = pendingCrashSellers.get(mint) || [];
-      waiting.push({ holder: holder, at: Date.now() });
+      waiting.push({ holder: holder, at: Date.now(), crashPrice: priceNow, fromLive: !!fromLive });
       pendingCrashSellers.set(mint, waiting);
       if (pendingCrashSellers.size > 200) pendingCrashSellers.delete(pendingCrashSellers.keys().next().value);
     }
