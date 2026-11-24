@@ -250,6 +250,11 @@ const S = {
   // wallet -> { until, mint }. RECORD ONLY for now: the CSV marks trades a known dumper had bought (DumperBought);
   // nothing is skipped because of it yet. Cleared by a deploy.
   dumpers: new Map(),
+  // START/STOP SCHEDULE (Toronto time). Both switches OFF by default and after every deploy.
+  schedule: { paper: false, live: false, start: '00:00', stop: '09:30' },
+  startedBy: 'Manual',       // who started the current paper session: 'Manual' or 'Schedule'
+  liveStartedBy: 'Manual',
+  scheduleStopping: false,   // paper: scheduled stop reached -- no new entries, stops once open trades close
   // Paper's own fresh pool: set by NEW PAPER TEST. Paper only trades coins added to the pool at or after this
   // moment (0 = every coin, as after a restart). The pool itself is shared with live and is never emptied.
   paperPoolSince: 0,
@@ -1129,6 +1134,37 @@ async function handleNewPairFromInstruction(i) {
   log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
 }
 
+// -- BAD PRICE CHECK -------------------------------------------
+// Each trade-feed sale carries a price and a market cap. For one coin, price / market cap stays the same from
+// sale to sale (it is 1 / supply). Some sales -- mostly tiny ones -- carry a price far off from their own
+// market cap: paper used to read those as -60% "rugs" that never happened. A sale whose price / market cap
+// differs from the coin's last good sale by more than BAD_PRICE_LIMIT has its price ignored. If
+// BAD_PRICE_STREAK sales in a row disagree the same way, they are taken as real and become the new reference,
+// so a real change can never stay ignored. A coin's first sale is always taken (nothing to compare with).
+var BAD_PRICE_LIMIT = 0.25;
+var BAD_PRICE_STREAK = 3;
+var salePriceRef = new Map();   // mint -> { ref, streak, dir }
+function checkSalePrice(mint, priceUsd, mcapField) {
+  var ratio = priceUsd / mcapField;
+  var st = salePriceRef.get(mint);
+  if (!st) {
+    salePriceRef.set(mint, { ref: ratio, streak: 0, dir: 0 });
+    if (salePriceRef.size > 5000) salePriceRef.delete(salePriceRef.keys().next().value);
+    return true;
+  }
+  var off = ratio / st.ref - 1;
+  if (Math.abs(off) <= BAD_PRICE_LIMIT) { st.ref = ratio; st.streak = 0; st.dir = 0; return true; }
+  var dir = off > 0 ? 1 : -1;
+  if (st.dir === dir) st.streak++; else { st.dir = dir; st.streak = 1; }
+  if (st.streak >= BAD_PRICE_STREAK) { st.ref = ratio; st.streak = 0; st.dir = 0; return true; }
+  return false;
+}
+// Counts, on each open paper trade and live position in this coin, how many of its sale prices were ignored.
+function noteBadPriceIgnored(mint) {
+  for (var i = 0; i < S.open.length; i++) if (S.open[i].mint === mint) S.open[i].badPrices = (S.open[i].badPrices || 0) + 1;
+  for (var j = 0; j < S.liveOpen.length; j++) if (S.liveOpen[j].mint === mint) S.liveOpen[j].badPrices = (S.liveOpen[j].badPrices || 0) + 1;
+}
+
 function handleSwap(t) {
   var pair = t.Pair || {};
   var token = pair.Token || {};
@@ -1151,10 +1187,6 @@ function handleSwap(t) {
     var p = parseFloat(t.PriceInUsd);
     if (!isNaN(p) && p > 0) priceUsd = p;
   }
-
-  // A held coin's crash waiting for the wallet that sold (see noteOneMoveDrop). Before the market-cap floor
-  // check on purpose: a crash sale often takes the coin below the floor.
-  if (pendingCrashSellers.size && t.Side === 'Sell' && traderAddress) fillCrashSeller(mint, traderAddress, swapUsd, priceUsd);
 
   var protocolFamily = (pair.Market || {}).ProtocolFamily || '';
 
@@ -1180,6 +1212,19 @@ function handleSwap(t) {
   } else if (protocolFamily === 'Pumpfun' && priceUsd) {
     mcap = priceUsd * 1000000000;
   }
+
+  // BAD PRICE CHECK: a sale whose price disagrees with its own market cap has its price ignored (see
+  // checkSalePrice). The sale itself still counts (buyers, sellers, dev checks); only its price is dropped,
+  // so nothing -- paper, entries, the pool price, live's trade-feed backup -- acts on it.
+  var mcapField = (t.Supply && t.Supply.MarketCap) ? parseFloat(t.Supply.MarketCap) : 0;
+  if (priceUsd && mcapField > 0 && !checkSalePrice(mint, priceUsd, mcapField)) {
+    noteBadPriceIgnored(mint);
+    priceUsd = null;
+  }
+
+  // A held coin's crash waiting for the wallet that sold (see noteOneMoveDrop). Before the market-cap floor
+  // check on purpose: a crash sale often takes the coin below the floor.
+  if (pendingCrashSellers.size && t.Side === 'Sell' && traderAddress) fillCrashSeller(mint, traderAddress, swapUsd, priceUsd);
 
   // The exact market-cap floor (in SOL, turned into dollars with the latest SOL price). The stream only
   // filters at half of it, so this is what keeps coins below the floor out, as the stream used to.
@@ -1851,6 +1896,8 @@ function closeTradeReal(id, reason) {
     crashSellerIsDev: tr.crashSellerIsDev || '',
     crashSellerRepeat: tr.crashSellerRepeat || '',
     dumperBought: tr.dumperBought || '',
+    badPrices: tr.badPrices || 0,
+    startedBy: tr.startedBy || '',
     // New - Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
     // tiered trades be reviewed with the same rigor as everything else ?
@@ -2026,7 +2073,7 @@ var livePendingBuys = new Set();
 var liveCooldowns = new Map();
 
 function paperSlotFree() {
-  return S.running && !S.windingDown && S.open.length < S.maxOpen;
+  return S.running && !S.windingDown && !S.scheduleStopping && S.open.length < S.maxOpen;
 }
 
 function liveSlotFree() {
@@ -2394,6 +2441,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     devWallet: tok.devWallet || '',
     devBanSkipsAtEntry: S.devBanSkips,
     dumperBought: dumperBoughtCoin(tok),
+    startedBy: S.startedBy || 'Manual',
   };
 
   S.open.push(trade);
@@ -2467,9 +2515,72 @@ function stopFeed() {
   }
 }
 
+// -- START/STOP SCHEDULE ---------------------------------------
+// Checked every 10 seconds, away from trading. It acts only when the Toronto clock CROSSES the start or stop
+// time while that switch is on -- turning a switch on (or changing a time) mid-window never starts anything
+// at once, and a bot stopped by hand or by the Fund SL stays stopped until the next start time.
+// Start = exactly what the Start button / live switch do. Stop = no new trades; open trades finish by their
+// normal rules (paper then stops; live's open real coins keep being watched and sold, as with the switch).
+var schedPrevInside = { paper: null, live: null };
+function torontoMinutes() {
+  var parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Toronto', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  var h = 0, m = 0;
+  parts.forEach(function(p) { if (p.type === 'hour') h = parseInt(p.value, 10) % 24; if (p.type === 'minute') m = parseInt(p.value, 10); });
+  return h * 60 + m;
+}
+function hmToMinutes(hm) { var a = String(hm).split(':'); return parseInt(a[0], 10) * 60 + parseInt(a[1], 10); }
+function hmText(hm) {
+  var mins = hmToMinutes(hm), h = Math.floor(mins / 60), m = mins % 60;
+  return ((h % 12) || 12) + ':' + (m < 10 ? '0' : '') + m + (h < 12 ? ' AM' : ' PM');
+}
+function insideSchedule(nowMin) {
+  var a = hmToMinutes(S.schedule.start), b = hmToMinutes(S.schedule.stop);
+  if (a === b) return false;
+  return a < b ? (nowMin >= a && nowMin < b) : (nowMin >= a || nowMin < b);
+}
+function scheduleTick() {
+  try {
+    var inside = insideSchedule(torontoMinutes());
+    ['paper', 'live'].forEach(function(mode) {
+      if (!S.schedule[mode]) { schedPrevInside[mode] = null; return; }
+      var prev = schedPrevInside[mode];
+      schedPrevInside[mode] = inside;
+      if (prev === null || prev === inside) return;
+      if (inside) scheduledStart(mode); else scheduledStop(mode);
+    });
+    if (S.scheduleStopping && S.running && S.open.length === 0) stopBot();
+  } catch (e) { reportCaughtError('schedule', e); }
+}
+function scheduledStart(mode) {
+  if (mode === 'paper') {
+    if (S.running) { log('SCHEDULE: start time ' + hmText(S.schedule.start) + ' -- paper was already running', 'info'); return; }
+    S.startedBy = 'Schedule';
+    startBot();
+    log('SCHEDULE: paper started at ' + hmText(S.schedule.start), 'info');
+  } else {
+    if (S.liveTradingEnabled) { liveLog('SCHEDULE: start time ' + hmText(S.schedule.start) + ' -- live was already on', 'info'); return; }
+    S.liveStartedBy = 'Schedule';
+    setLiveTrading(true);
+    liveLog('SCHEDULE: automatic live trading started at ' + hmText(S.schedule.start), 'info');
+  }
+}
+function scheduledStop(mode) {
+  if (mode === 'paper') {
+    if (!S.running) return;
+    if (S.open.length === 0) { stopBot(); log('SCHEDULE: paper stopped at ' + hmText(S.schedule.stop), 'info'); return; }
+    S.scheduleStopping = true;
+    log('SCHEDULE: stop time ' + hmText(S.schedule.stop) + ' -- no new paper trades; paper stops once its ' + S.open.length + ' open trade(s) close', 'info');
+  } else {
+    if (!S.liveTradingEnabled) return;
+    turnOffLiveTrading('scheduled stop at ' + hmText(S.schedule.stop) + ' (open real coins keep being watched and sold)');
+  }
+}
+setInterval(scheduleTick, 10000);
+
 function startBot() {
   if (S.running) return;
   S.running = true;
+  S.scheduleStopping = false;
   S.startTime = Date.now();
   S.stats = { w: 0, l: 0, r: 0, t: 0, gw: 0, gl: 0, mcapCeiling: 0 };
   S.savings = 0;
@@ -2495,6 +2606,7 @@ function startBot() {
 
 function stopBot() {
   S.running = false;
+  S.scheduleStopping = false;
   S.lastStopTime = Date.now();
   // Reset moved here from startBot() - the bug was that pressing Start
   // unconditionally wiped autolock back to off every single time, even
@@ -2565,6 +2677,31 @@ function endLiveSession() {
   S.liveSessions.unshift(sum);
   saveLiveHistory();
 }
+
+// Turns automatic live trading on or off -- the Settings switch and the schedule both use this, so both do
+// exactly the same thing. (Moved here unchanged from the settings handler.)
+function setLiveTrading(on) {
+    S.liveTradingEnabled = !!on;
+    if (S.liveTradingEnabled) {
+      S.liveDayStartFund = liveEffectiveFund();
+      S.liveSessionHighFund = liveEffectiveFund();
+      S.liveWindingDown = false;
+      S.liveSession = { startTime: Date.now(), startFund: liveEffectiveFund(), startSavings: S.liveSavings, t: 0, w: 0, l: 0, fees: 0, recorded: false };
+      // Live's own skip counters and session-best trade start fresh with each live session.
+      S.liveRejectReasons = {};
+      S.liveSessionBest = null;
+      S.liveLastStopTime = null;
+    } else {
+      S.liveLastStopTime = Date.now();
+      endLiveSession();
+      // Same as paper's stopBot: auto fund protection turns off when a session ends.
+      S.liveAutoLockEnabled = false;
+    }
+    // Live runs on its own: turning it on starts the shared feed even if paper
+    // is stopped, and turning it off shuts the feed down only if paper is off too.
+    if (S.liveTradingEnabled) { startFeed(); warmLiveExecution(); } else if (!feedNeeded()) stopFeed();
+    liveLog('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
+  }
 
 // Turns automatic live trading off from inside the bot (the Settings switch does
 // the same thing from the page). Open real positions keep being watched and sold.
@@ -2708,6 +2845,8 @@ app.get('/api/state', function(req, res) {
     minBuyers: S.minBuyers,
     maxSellers: S.maxSellers,
     maxHolderPct: S.maxHolderPct,
+    schedule: { paper: S.schedule.paper, live: S.schedule.live, start: S.schedule.start, stop: S.schedule.stop,
+                startText: hmText(S.schedule.start), stopText: hmText(S.schedule.stop), paperStopping: S.scheduleStopping },
     logs: S.logs.slice(0, 100),
     sources: S.sources,
     startTime: S.startTime,
@@ -2765,7 +2904,7 @@ app.get('/api/state', function(req, res) {
 
 // Start and stop only answer a button press (POST). Simply opening the link (a GET -- a browser, a link
 // preview, a crawler) no longer starts or stops paper trading.
-app.post('/api/start', function(req, res) { startBot(); res.json({ success: true }); });
+app.post('/api/start', function(req, res) { if (!S.running) S.startedBy = 'Manual'; startBot(); res.json({ success: true }); });
 app.post('/api/stop', function(req, res) { stopBot(); res.json({ success: true }); });
 app.post('/api/sell/:id', function(req, res) { closeTradeReal(req.params.id, 'Manual sell'); res.json({ success: true }); });
 app.post('/api/lock-fund', function(req, res) {
@@ -3626,6 +3765,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             devWallet: (S.tokens.get(mintStr) || {}).devWallet || '',
             devBanSkipsAtEntry: S.devBanSkips,
             dumperBought: dumperBoughtCoin(S.tokens.get(mintStr)),
+            startedBy: S.liveStartedBy || 'Manual',
             feedLagMs: (entrySnapshot && typeof entrySnapshot.feedLagMs === 'number') ? entrySnapshot.feedLagMs : null,
             landPriceUsd: landSnap ? landSnap.price : null,
             landPriceAgeMs: landSnap ? landSnap.ageMs : null,
@@ -4437,6 +4577,8 @@ function liveTimingExtras(pos) {
     crashSellerIsDev: pos.crashSellerIsDev || '',
     crashSellerRepeat: pos.crashSellerRepeat || '',
     dumperBought: pos.dumperBought || '',
+    badPrices: pos.badPrices || 0,
+    startedBy: pos.startedBy || '',
     buyResends: nz(pos.buyResends),
     sellResends: nz(pos.sellResends),
     buyComputeUnits: nz(pos.buyComputeUnits),
@@ -5217,7 +5359,7 @@ app.get('/api/live/export', function(req, res) {
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
     'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt','Top10Pct',
-    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought'];
+    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','BadPricesIgnored','StartedBy'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -5248,7 +5390,8 @@ app.get('/api/live/export', function(req, res) {
       t.buyWaitedForCheckMs, t.topHolderPct, csvSafe(t.mayhemCoin || ''), csvSafe(t.sellPrebuilt || ''), t.top10Pct,
       csvSafe(t.devWallet || ''), csvSafe(t.devBanned || ''), t.banDropPct, t.devBanSkips, t.crashDropPct,
       csvSafe(t.crashSeller || ''), t.crashSellUsd, csvSafe(t.crashSellerBought || ''), csvSafe(t.crashSellerIsDev || ''),
-      csvSafe(t.crashSellerRepeat || ''), csvSafe(t.dumperBought || '')
+      csvSafe(t.crashSellerRepeat || ''), csvSafe(t.dumperBought || ''),
+      (t.badPrices || 0), csvSafe(t.startedBy || '')
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -5400,26 +5543,9 @@ app.post('/api/settings', function(req, res) {
     liveLog('LIVE ANTI-SANDWICH (Helius mev-protect): ' + (S.liveMevProtect ? 'ON' : 'OFF'), 'info');
   }
   if (req.body.liveTradingEnabled !== undefined) {
-    S.liveTradingEnabled = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
-    if (S.liveTradingEnabled) {
-      S.liveDayStartFund = liveEffectiveFund();
-      S.liveSessionHighFund = liveEffectiveFund();
-      S.liveWindingDown = false;
-      S.liveSession = { startTime: Date.now(), startFund: liveEffectiveFund(), startSavings: S.liveSavings, t: 0, w: 0, l: 0, fees: 0, recorded: false };
-      // Live's own skip counters and session-best trade start fresh with each live session.
-      S.liveRejectReasons = {};
-      S.liveSessionBest = null;
-      S.liveLastStopTime = null;
-    } else {
-      S.liveLastStopTime = Date.now();
-      endLiveSession();
-      // Same as paper's stopBot: auto fund protection turns off when a session ends.
-      S.liveAutoLockEnabled = false;
-    }
-    // Live runs on its own: turning it on starts the shared feed even if paper
-    // is stopped, and turning it off shuts the feed down only if paper is off too.
-    if (S.liveTradingEnabled) { startFeed(); warmLiveExecution(); } else if (!feedNeeded()) stopFeed();
-    liveLog('AUTOMATIC LIVE TRADING: ' + (S.liveTradingEnabled ? 'ON -- the bot will now buy for real on qualifying entries' : 'OFF'), S.liveTradingEnabled ? 'win' : 'info');
+    var wantLive = req.body.liveTradingEnabled === true || req.body.liveTradingEnabled === 'true';
+    if (wantLive && !S.liveTradingEnabled) S.liveStartedBy = 'Manual';
+    setLiveTrading(wantLive);
   }
   if (req.body.liveAutoLockEnabled !== undefined) {
     S.liveAutoLockEnabled = req.body.liveAutoLockEnabled === true || req.body.liveAutoLockEnabled === 'true';
@@ -5462,6 +5588,24 @@ app.post('/api/settings', function(req, res) {
   if (req.body.fundStopLossPct !== undefined) {
     var fl = parseFloat(req.body.fundStopLossPct);
     if (!isNaN(fl) && fl >= 1 && fl <= 100) { S.fundStopLossPct = parseFloat(fl.toFixed(1)); log('Fund SL: ' + S.fundStopLossPct + '%', 'info'); }
+  }
+  var schedChanged = false;
+  ['scheduleStart', 'scheduleStop'].forEach(function(k) {
+    if (req.body[k] === undefined) return;
+    var v = String(req.body[k]).trim();
+    if (/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) {
+      S.schedule[k === 'scheduleStart' ? 'start' : 'stop'] = v;
+      schedChanged = true;
+    }
+  });
+  ['schedulePaper', 'scheduleLive'].forEach(function(k) {
+    if (req.body[k] === undefined) return;
+    S.schedule[k === 'schedulePaper' ? 'paper' : 'live'] = req.body[k] === true || req.body[k] === 'true';
+    schedChanged = true;
+  });
+  if (schedChanged) {
+    schedPrevInside = { paper: null, live: null };   // start counting from now: a change never fires at once
+    log('SCHEDULE: paper ' + (S.schedule.paper ? 'ON' : 'OFF') + ', live ' + (S.schedule.live ? 'ON' : 'OFF') + ' | start ' + hmText(S.schedule.start) + ', stop ' + hmText(S.schedule.stop) + ' (Toronto time)', 'info');
   }
   if (req.body.maxHolderPct !== undefined) {
     var mh = parseFloat(req.body.maxHolderPct);
@@ -5553,7 +5697,7 @@ function writeCsvInBatches(res, lines, done) {
 app.get('/api/portfolio/export', async function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
-  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin','DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought'].join(',');
+  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin','DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','BadPricesIgnored','StartedBy'].join(',');
   // The file holds the oldest trade first; the CSV lists the newest first, as it always has.
   var body = [];
   try {
@@ -5646,6 +5790,8 @@ function paperCsvRow(t, sessionStartedAtStr, sessionEndedAtStr) {
       csvSafe(t.crashSellerIsDev || ''),
       csvSafe(t.crashSellerRepeat || ''),
       csvSafe(t.dumperBought || ''),
+      (t.badPrices || 0),
+      csvSafe(t.startedBy || ''),
     ].join(',');
 }
 

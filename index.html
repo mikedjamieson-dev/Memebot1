@@ -213,6 +213,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
   </div>
 
   <!-- Settings -->
+  <div id="schedule-line" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--dim);margin:6px 0;">⏰ Schedule: OFF</div>
   <button class="settings-toggle" onclick="toggleSettings()">⚙ SETTINGS</button>
   <div class="settings-panel" id="settings-panel">
     <div class="settings-menu" id="settings-menu">
@@ -225,6 +226,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-minbuyers')"><span>👥 MIN BUYERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-maxsellers')"><span>🚪 MAX SELLERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-maxholder')"><span>🐋 MAX HOLDER %</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-schedule')"><span>⏰ SCHEDULE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-newtest')"><span>🔄 NEW PAPER TEST</span><span class="settings-menu-arrow">›</span></div>
     </div>
 
@@ -336,6 +338,29 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-maxsellers-display">1</span>. The bot skips a coin if more than this many different wallets (the dev not counted) have already sold it before entry. 0 = skip any coin anyone has sold. Applies to paper and live. Range: 0-20. Resets to 1 on a deploy.</div>
       <button class="settings-save" onclick="saveMaxSellers()">SAVE MAX SELLERS</button>
       <div class="settings-status" id="status-maxsellers"></div>
+    </div>
+
+    <!-- Schedule -->
+    <div class="settings-sub" id="sub-schedule">
+      <button class="settings-back" onclick="closeSub('sub-schedule')">← BACK</button>
+      <div class="settings-sub-title">START / STOP SCHEDULE</div>
+      <div class="settings-lbl">START TIME (TORONTO)</div>
+      <input class="settings-input" id="input-sched-start" type="time" value="00:00"/>
+      <div class="settings-lbl">STOP TIME (TORONTO)</div>
+      <input class="settings-input" id="input-sched-stop" type="time" value="09:30"/>
+      <div class="settings-lbl">SCHEDULE PAPER</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-sched-paper-on" onclick="setSchedSwitch('paper', true)">● ON</button>
+        <button class="tp-btn active" id="btn-sched-paper-off" onclick="setSchedSwitch('paper', false)">○ OFF</button>
+      </div>
+      <div class="settings-lbl">SCHEDULE LIVE</div>
+      <div class="tp-mode-row">
+        <button class="tp-btn" id="btn-sched-live-on" onclick="setSchedSwitch('live', true)">● ON</button>
+        <button class="tp-btn active" id="btn-sched-live-off" onclick="setSchedSwitch('live', false)">○ OFF</button>
+      </div>
+      <div class="settings-hint">At the start time the bot does exactly what Start (paper) or the live switch does. At the stop time it takes no new trades; open trades finish by their normal rules, then it stops. It only acts when the clock passes a start or stop time while that switch is ON, so turning a switch on in the middle of the window does not start anything until the next start time. If the Fund SL hits or you stop it by hand, it stays stopped until the next start time. The Start/Stop buttons always work. Both switches go back to OFF after every deploy.</div>
+      <button class="settings-save" onclick="saveSchedule()">SAVE SCHEDULE</button>
+      <div class="settings-status" id="status-schedule"></div>
     </div>
 
     <!-- Max Holder % -->
@@ -1309,6 +1334,27 @@ async function saveMaxSellers() {
   el.textContent = ok ? '✅ Max sellers set to ' + n : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+var schedPick = { paper: false, live: false };
+var schedEdited = false;
+function setSchedSwitch(mode, on) {
+  schedPick[mode] = on;
+  schedEdited = true;
+  document.getElementById('btn-sched-' + mode + '-on').classList.toggle('active', on);
+  document.getElementById('btn-sched-' + mode + '-off').classList.toggle('active', !on);
+}
+async function saveSchedule() {
+  var el = document.getElementById('status-schedule');
+  var a = document.getElementById('input-sched-start').value;
+  var b = document.getElementById('input-sched-stop').value;
+  var ok24 = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!ok24.test(a) || !ok24.test(b)) { el.textContent = 'Enter a start and stop time'; el.style.color = 'var(--red)'; return; }
+  if (a === b) { el.textContent = 'Start and stop must be different'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ scheduleStart: a, scheduleStop: b, schedulePaper: schedPick.paper, scheduleLive: schedPick.live });
+  schedEdited = false;
+  el.textContent = ok ? '✅ Schedule saved -- paper ' + (schedPick.paper ? 'ON' : 'OFF') + ', live ' + (schedPick.live ? 'ON' : 'OFF') : '❌ Failed';
+  el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function saveMaxHolder() {
   var el = document.getElementById('status-maxholder');
   var raw = document.getElementById('input-maxholder').value;
@@ -1786,6 +1832,25 @@ async function fetchState() {
     if (minBuyersDisp && data.minBuyers) minBuyersDisp.textContent = data.minBuyers;
     var maxSellersDisp = document.getElementById('current-maxsellers-display');
     if (maxSellersDisp && data.maxSellers !== undefined) maxSellersDisp.textContent = data.maxSellers;
+    if (data.schedule) {
+      var sc = data.schedule;
+      var line = document.getElementById('schedule-line');
+      if (line) {
+        line.textContent = (sc.paper || sc.live)
+          ? '⏰ Schedule: paper ' + (sc.paper ? 'ON' : 'OFF') + ', live ' + (sc.live ? 'ON' : 'OFF') + ' | Next start ' + sc.startText + ' | Next stop ' + sc.stopText + (sc.paperStopping ? ' | paper stopping: finishing open trades' : '')
+          : '⏰ Schedule: OFF';
+      }
+      if (!schedEdited) {
+        schedPick.paper = !!sc.paper; schedPick.live = !!sc.live;
+        ['paper', 'live'].forEach(function(m) {
+          var on = document.getElementById('btn-sched-' + m + '-on'), off = document.getElementById('btn-sched-' + m + '-off');
+          if (on && off) { on.classList.toggle('active', !!sc[m]); off.classList.toggle('active', !sc[m]); }
+        });
+        var si = document.getElementById('input-sched-start'), so = document.getElementById('input-sched-stop');
+        if (si && document.activeElement !== si) si.value = sc.start;
+        if (so && document.activeElement !== so) so.value = sc.stop;
+      }
+    }
     var maxHolderDisp = document.getElementById('current-maxholder-display');
     if (maxHolderDisp && data.maxHolderPct !== undefined) maxHolderDisp.textContent = data.maxHolderPct;
 
