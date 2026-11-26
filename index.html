@@ -226,6 +226,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSub('sub-minbuyers')"><span>👥 MIN BUYERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-maxsellers')"><span>🚪 MAX SELLERS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-maxholder')"><span>🐋 MAX HOLDER %</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSub('sub-maxtop10')"><span>👥 MAX TOP 10 %</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-schedule')"><span>⏰ SCHEDULE</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSub('sub-newtest')"><span>🔄 NEW PAPER TEST</span><span class="settings-menu-arrow">›</span></div>
     </div>
@@ -361,6 +362,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">At the start time the bot does exactly what Start (paper) or the live switch does. At the stop time it takes no new trades; open trades finish by their normal rules, then it stops. It only acts when the clock passes a start or stop time while that switch is ON, so turning a switch on in the middle of the window does not start anything until the next start time. If the Fund SL hits or you stop it by hand, it stays stopped until the next start time. The Start/Stop buttons always work. Both switches go back to OFF after every deploy.</div>
       <button class="settings-save" onclick="saveSchedule()">SAVE SCHEDULE</button>
       <div class="settings-status" id="status-schedule"></div>
+    </div>
+
+    <!-- Max Top 10 % -->
+    <div class="settings-sub" id="sub-maxtop10">
+      <button class="settings-back" onclick="closeSub('sub-maxtop10')">← BACK</button>
+      <div class="settings-sub-title">MAX TOP 10 %</div>
+      <div class="settings-lbl">MOST THE 10 BIGGEST WALLETS MAY HOLD TOGETHER (%)</div>
+      <input class="settings-input" id="input-maxtop10" type="number" min="20" max="80" step="1" placeholder="e.g. 40"/>
+      <div class="settings-hint">Current: <span id="current-maxtop10-display">40</span>%. The bot skips a coin if its 10 biggest real wallets together hold this share of it or more (the bonding curve, burn wallet, Mayhem agent and LetsBonk pool are not counted). These coins crash in one burst that live cannot sell out of in time. Uses the same on-chain check as MAX HOLDER %, so it adds no time. Applies to paper and live. Range: 20-80. Resets to 40 on a deploy.</div>
+      <button class="settings-save" onclick="saveMaxTop10()">SAVE MAX TOP 10 %</button>
+      <div class="settings-status" id="status-maxtop10"></div>
     </div>
 
     <!-- Max Holder % -->
@@ -840,6 +852,17 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="port-stat"><div class="port-lbl">TOTAL FEES</div><div class="port-val" id="pt-fees" style="color:var(--red)">$0.00</div></div>
       <div class="port-stat"><div class="port-lbl">TOTAL WINS</div><div class="port-val" id="pt-wins" style="color:var(--green)">0</div></div>
       <div class="port-stat"><div class="port-lbl">TOTAL LOSSES</div><div class="port-val" id="pt-losses" style="color:var(--red)">0</div></div>
+    </div>
+  </div>
+
+  <!-- Fund peak / low (current or last session; follows the PAPER / LIVE switch) -->
+  <div class="card">
+    <div class="card-lbl" id="pt-marks-lbl">FUND PEAK / LOW — THIS SESSION</div>
+    <div class="port-grid" style="margin-top:8px;">
+      <div class="port-stat"><div class="port-lbl">FUND PEAK</div><div class="port-val" id="pt-fund-peak" style="color:var(--green)">—</div><div style="font-size:11px;color:var(--dim);" id="pt-fund-peak-at"></div></div>
+      <div class="port-stat"><div class="port-lbl">FUND LOW</div><div class="port-val" id="pt-fund-low" style="color:var(--red)">—</div><div style="font-size:11px;color:var(--dim);" id="pt-fund-low-at"></div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL PEAK (FUND + SAVINGS)</div><div class="port-val" id="pt-total-peak" style="color:var(--green)">—</div><div style="font-size:11px;color:var(--dim);" id="pt-total-peak-at"></div></div>
+      <div class="port-stat"><div class="port-lbl">TOTAL LOW (FUND + SAVINGS)</div><div class="port-val" id="pt-total-low" style="color:var(--red)">—</div><div style="font-size:11px;color:var(--dim);" id="pt-total-low-at"></div></div>
     </div>
   </div>
 
@@ -1355,6 +1378,15 @@ async function saveSchedule() {
   el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+async function saveMaxTop10() {
+  var el = document.getElementById('status-maxtop10');
+  var raw = document.getElementById('input-maxtop10').value;
+  var n = parseInt(raw);
+  if (raw === '' || isNaN(n) || n < 20 || n > 80) { el.textContent = 'Enter 20-80'; el.style.color = 'var(--red)'; return; }
+  var ok = await apiPost({ maxTop10Pct: n });
+  el.textContent = ok ? '✅ Max top 10 set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+}
+
 async function saveMaxHolder() {
   var el = document.getElementById('status-maxholder');
   var raw = document.getElementById('input-maxholder').value;
@@ -1851,6 +1883,8 @@ async function fetchState() {
         if (so && document.activeElement !== so) so.value = sc.stop;
       }
     }
+    var maxTop10Disp = document.getElementById('current-maxtop10-display');
+    if (maxTop10Disp && data.maxTop10Pct !== undefined) maxTop10Disp.textContent = data.maxTop10Pct;
     var maxHolderDisp = document.getElementById('current-maxholder-display');
     if (maxHolderDisp && data.maxHolderPct !== undefined) maxHolderDisp.textContent = data.maxHolderPct;
 
@@ -2254,11 +2288,26 @@ function searchTrades() { ptPage = 0; loadTrades(); }
 function changePage(dir) { ptPage += dir; loadTrades(); }
 function changePerPage() { ptLimit = parseInt(document.getElementById('pt-per-page').value); ptPage = 0; loadTrades(); }
 
+function showFundMarks(fm) {
+  var lbl = document.getElementById('pt-marks-lbl');
+  if (lbl) lbl.textContent = (ptSource === 'live' ? 'LIVE' : 'PAPER') + ' FUND PEAK / LOW — THIS SESSION';
+  var put = function(id, p) {
+    var v = document.getElementById(id), at = document.getElementById(id + '-at');
+    if (!v || !at) return;
+    if (!p) { v.textContent = '—'; at.textContent = ''; return; }
+    v.textContent = '$' + Number(p.v).toFixed(2);
+    at.textContent = 'at ' + p.text;
+  };
+  put('pt-fund-peak', fm && fm.fundPeak); put('pt-fund-low', fm && fm.fundLow);
+  put('pt-total-peak', fm && fm.totalPeak); put('pt-total-low', fm && fm.totalLow);
+}
+
 async function loadPortfolioPage() {
   try {
     var res = await fetch(BASE + (ptSource === 'live' ? '/api/live/portfolio' : '/api/portfolio'));
     if (!res.ok) return;
     var data = await res.json();
+    showFundMarks(data.fundMarks);
 
     if (statsMode === 'session' && ptSource === 'live') {
       var ls = data.session || {};

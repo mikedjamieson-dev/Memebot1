@@ -242,6 +242,11 @@ const S = {
   // live data: 5 of the 6 one-move crashes of 40%+ on normal coins had one wallet holding 25-30%.
   // Settable 5-50 (Paper Settings -> MAX HOLDER %).
   maxHolderPct: 20,
+  // MAX TOP 10 %: the most the 10 biggest real wallets may hold together before a coin is skipped (paper and
+  // live), in %. Same wallets left out as for MAX HOLDER %. Live 11/26: all 9 one-move crashes of -68% to -71%
+  // were coins at 44-47%; the 12 live trades below 40% had none. 6 paper tests: 7.6% of coins at 40%+ crashed
+  // 40% or more, against 2.4% below. Live cannot sell before such a crash finishes (it lasts ~0.3s).
+  maxTop10Pct: 40,
   // Dev wallets banned for DEV_BAN_MS after one of their coins, held by the bot, dropped DEV_BAN_DROP or more
   // in a single price move (paper or live). wallet -> time the ban ends. Cleared by a deploy.
   devBans: new Map(),
@@ -250,6 +255,8 @@ const S = {
   // wallet -> { until, mint }. RECORD ONLY for now: the CSV marks trades a known dumper had bought (DumperBought);
   // nothing is skipped because of it yet. Cleared by a deploy.
   dumpers: new Map(),
+  // FUND PEAK / LOW for the Portfolio page: { paper, live }, each for the current (or last) session.
+  fundMarks: { paper: null, live: null },
   // START/STOP SCHEDULE (Toronto time). Both switches OFF by default and after every deploy.
   schedule: { paper: false, live: false, start: '00:00', stop: '09:30' },
   startedBy: 'Manual',       // who started the current paper session: 'Manual' or 'Schedule'
@@ -626,7 +633,8 @@ async function checkWalletConcentration(mint) {
 //
 // The limit is S.maxHolderPct (MAX HOLDER %). LetsBonk coins: their unsold supply sits in the LetsBonk pool's
 // vault (Raydium LaunchLab, seeds ["pool_vault", pool, mint]), which is left out too. The result also gives
-// top10Pct: the 10 largest real wallets together, recorded for research only.
+// top10Pct: the 10 largest real wallets together; a coin at S.maxTop10Pct (MAX TOP 10 %) or more is not safe
+// (top10Block: true).
 var MAYHEM_PROGRAM_ADDRESS = 'MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e';
 var MAYHEM_SUPPLY_TOKENS = 1.5e9;          // a supply above this (normal coins: 1 billion) is a Mayhem coin
 var mayhemFoundLogged = 0;
@@ -731,6 +739,9 @@ async function checkWalletConcentrationOnChain(mintStr, src) {
   if (share >= S.maxHolderPct / 100) {
     return { safe: false, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + ' (limit ' + S.maxHolderPct + '%)' + agentText };
   }
+  if (top10Pct >= S.maxTop10Pct / 100) {
+    return { safe: false, unknown: false, top10Block: true, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'the 10 biggest wallets hold ' + (top10Pct * 100).toFixed(1) + '% of the ' + (mayhem ? 'normal billion' : 'total supply') + ' (limit ' + S.maxTop10Pct + '%)' + agentText };
+  }
   return { safe: true, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'largest holder has ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
 }
 
@@ -766,7 +777,7 @@ function liveEntryVerdict(tok, c) {
     return { go: false, reason: reason };
   };
   if (!c || c.unknown) return no('check_failed', 'the wallet check could not measure this coin (' + ((c && c.reason) || 'no answer') + '), so it is not traded', true);
-  if (!c.safe) return no('live_wallet_concentration', c.reason + ' -- not traded', true);
+  if (!c.safe) return no(c.top10Block ? 'top10_above_max' : 'live_wallet_concentration', c.reason + ' -- not traded', true);
   if (tok.devSold) return no('dev_wallet_sold_race', 'the dev wallet sold while the wallet check was running', false);
   if (!S.liveTradingEnabled || S.liveWindingDown) return no('live_turned_off_during_check', 'live trading was turned off or is winding down', false);
   if (rpcgate.entryPaused()) return no('rpc_slow_paused', 'the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), false);
@@ -1134,37 +1145,6 @@ async function handleNewPairFromInstruction(i) {
   log('NEW TOKEN ' + name + ' | ' + src + ' | ' + mint + ' | Added to pool', 'info');
 }
 
-// -- BAD PRICE CHECK -------------------------------------------
-// Each trade-feed sale carries a price and a market cap. For one coin, price / market cap stays the same from
-// sale to sale (it is 1 / supply). Some sales -- mostly tiny ones -- carry a price far off from their own
-// market cap: paper used to read those as -60% "rugs" that never happened. A sale whose price / market cap
-// differs from the coin's last good sale by more than BAD_PRICE_LIMIT has its price ignored. If
-// BAD_PRICE_STREAK sales in a row disagree the same way, they are taken as real and become the new reference,
-// so a real change can never stay ignored. A coin's first sale is always taken (nothing to compare with).
-var BAD_PRICE_LIMIT = 0.25;
-var BAD_PRICE_STREAK = 3;
-var salePriceRef = new Map();   // mint -> { ref, streak, dir }
-function checkSalePrice(mint, priceUsd, mcapField) {
-  var ratio = priceUsd / mcapField;
-  var st = salePriceRef.get(mint);
-  if (!st) {
-    salePriceRef.set(mint, { ref: ratio, streak: 0, dir: 0 });
-    if (salePriceRef.size > 5000) salePriceRef.delete(salePriceRef.keys().next().value);
-    return true;
-  }
-  var off = ratio / st.ref - 1;
-  if (Math.abs(off) <= BAD_PRICE_LIMIT) { st.ref = ratio; st.streak = 0; st.dir = 0; return true; }
-  var dir = off > 0 ? 1 : -1;
-  if (st.dir === dir) st.streak++; else { st.dir = dir; st.streak = 1; }
-  if (st.streak >= BAD_PRICE_STREAK) { st.ref = ratio; st.streak = 0; st.dir = 0; return true; }
-  return false;
-}
-// Counts, on each open paper trade and live position in this coin, how many of its sale prices were ignored.
-function noteBadPriceIgnored(mint) {
-  for (var i = 0; i < S.open.length; i++) if (S.open[i].mint === mint) S.open[i].badPrices = (S.open[i].badPrices || 0) + 1;
-  for (var j = 0; j < S.liveOpen.length; j++) if (S.liveOpen[j].mint === mint) S.liveOpen[j].badPrices = (S.liveOpen[j].badPrices || 0) + 1;
-}
-
 function handleSwap(t) {
   var pair = t.Pair || {};
   var token = pair.Token || {};
@@ -1211,15 +1191,6 @@ function handleSwap(t) {
     if (!isNaN(ts) && ts > 0) mcap = priceUsd * ts;
   } else if (protocolFamily === 'Pumpfun' && priceUsd) {
     mcap = priceUsd * 1000000000;
-  }
-
-  // BAD PRICE CHECK: a sale whose price disagrees with its own market cap has its price ignored (see
-  // checkSalePrice). The sale itself still counts (buyers, sellers, dev checks); only its price is dropped,
-  // so nothing -- paper, entries, the pool price, live's trade-feed backup -- acts on it.
-  var mcapField = (t.Supply && t.Supply.MarketCap) ? parseFloat(t.Supply.MarketCap) : 0;
-  if (priceUsd && mcapField > 0 && !checkSalePrice(mint, priceUsd, mcapField)) {
-    noteBadPriceIgnored(mint);
-    priceUsd = null;
   }
 
   // A held coin's crash waiting for the wallet that sold (see noteOneMoveDrop). Before the market-cap floor
@@ -1554,6 +1525,7 @@ function performTierOneSale(trade, currentPriceUsd) {
   }
   S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
   S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
+  markFunds('paper');
 
   // Reduce the trade's remaining live size - everything downstream (the
   // eventual trail/SL close of the other half) now naturally operates on
@@ -1614,6 +1586,7 @@ function performTierTwoSale(trade, currentPriceUsd) {
   }
   S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
   S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
+  markFunds('paper');
 
   trade.size = parseFloat((trade.size - sellSize).toFixed(4));
 
@@ -1685,6 +1658,7 @@ function closeTradeReal(id, reason) {
   }
   S.fund = parseFloat((S.fund + fundAmount).toFixed(4));
   S.savings = parseFloat((S.savings + savingsAmount).toFixed(4));
+  markFunds('paper');
 
   // Win/loss classification and the log message use blendedPnl - the
   // TRUE overall result of the original trade - not just this leg's own
@@ -1896,7 +1870,6 @@ function closeTradeReal(id, reason) {
     crashSellerIsDev: tr.crashSellerIsDev || '',
     crashSellerRepeat: tr.crashSellerRepeat || '',
     dumperBought: tr.dumperBought || '',
-    badPrices: tr.badPrices || 0,
     startedBy: tr.startedBy || '',
     // New - Tiered Profits mode: whether this trade's first half was sold
     // at +100% gain, and the details of that partial sale if so. Lets
@@ -2347,7 +2320,7 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
     }
     if (!concCheck.safe) {
       S.rejectCount++;
-      trackSkip('wallet_concentration');
+      trackSkip(concCheck.top10Block ? 'top10_above_max' : 'wallet_concentration');
       if(diag) feedLog('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
       return;
     }
@@ -2515,6 +2488,36 @@ function stopFeed() {
   }
 }
 
+// -- FUND PEAK / LOW -------------------------------------------
+// Highest and lowest fund, and highest and lowest total (fund + this session's savings), with times, for the
+// current or last session of paper and of live. Paper fund = S.fund; live fund = liveEffectiveFund(), the
+// same figure the live Fund SL uses. Updated wherever the fund changes (paper: every close and tier sale;
+// live: every point that runs the live Fund SL check -- buys, sales, tier sales, rent refunds). No timer.
+function resetFundMarks(which) {
+  var now = Date.now();
+  var fund = which === 'paper' ? S.fund : liveEffectiveFund();
+  var pt = function(v) { return { v: parseFloat(v.toFixed(4)), at: now }; };
+  S.fundMarks[which] = { startedAt: now, startSavings: which === 'paper' ? 0 : (S.liveSavings || 0),
+    fundPeak: pt(fund), fundLow: pt(fund), totalPeak: pt(fund), totalLow: pt(fund) };
+}
+function markFunds(which) {
+  var m = S.fundMarks[which];
+  if (!m) return;
+  var fund = which === 'paper' ? S.fund : liveEffectiveFund();
+  var total = fund + (which === 'paper' ? (S.savings || 0) : ((S.liveSavings || 0) - m.startSavings));
+  var now = Date.now();
+  if (fund > m.fundPeak.v) m.fundPeak = { v: parseFloat(fund.toFixed(4)), at: now };
+  if (fund < m.fundLow.v) m.fundLow = { v: parseFloat(fund.toFixed(4)), at: now };
+  if (total > m.totalPeak.v) m.totalPeak = { v: parseFloat(total.toFixed(4)), at: now };
+  if (total < m.totalLow.v) m.totalLow = { v: parseFloat(total.toFixed(4)), at: now };
+}
+function fundMarksForPage(which) {
+  var m = S.fundMarks[which];
+  if (!m) return null;
+  var t = function(p) { return { v: p.v, at: p.at, text: new Date(p.at).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }) }; };
+  return { startedAt: m.startedAt, fundPeak: t(m.fundPeak), fundLow: t(m.fundLow), totalPeak: t(m.totalPeak), totalLow: t(m.totalLow) };
+}
+
 // -- START/STOP SCHEDULE ---------------------------------------
 // Checked every 10 seconds, away from trading. It acts only when the Toronto clock CROSSES the start or stop
 // time while that switch is on -- turning a switch on (or changing a time) mid-window never starts anything
@@ -2595,6 +2598,7 @@ function startBot() {
   S.dayStartFund = S.sessionFund;
   S.fund = S.sessionFund;
   S.sessionHighFund = S.sessionFund;
+  resetFundMarks('paper');
 
   startFeed();
 
@@ -2687,6 +2691,7 @@ function setLiveTrading(on) {
       S.liveSessionHighFund = liveEffectiveFund();
       S.liveWindingDown = false;
       S.liveSession = { startTime: Date.now(), startFund: liveEffectiveFund(), startSavings: S.liveSavings, t: 0, w: 0, l: 0, fees: 0, recorded: false };
+      resetFundMarks('live');
       // Live's own skip counters and session-best trade start fresh with each live session.
       S.liveRejectReasons = {};
       S.liveSessionBest = null;
@@ -2738,6 +2743,7 @@ app.get('/api/live/portfolio', function(req, res) {
     allTime: S.liveAllTime, bestTrade: S.liveBestTrade, worstTrade: S.liveWorstTrade,
     sessions: S.liveSessions.slice(0, 50), totalSessions: S.liveSessions.length, totalTrades: S.liveClosed.length,
     session: liveSessionSummary(),
+    fundMarks: fundMarksForPage('live'),
   });
 });
 
@@ -2845,6 +2851,7 @@ app.get('/api/state', function(req, res) {
     minBuyers: S.minBuyers,
     maxSellers: S.maxSellers,
     maxHolderPct: S.maxHolderPct,
+    maxTop10Pct: S.maxTop10Pct,
     schedule: { paper: S.schedule.paper, live: S.schedule.live, start: S.schedule.start, stop: S.schedule.stop,
                 startText: hmText(S.schedule.start), stopText: hmText(S.schedule.stop), paperStopping: S.scheduleStopping },
     logs: S.logs.slice(0, 100),
@@ -3036,6 +3043,7 @@ function liveEffectiveFund() {
 // watched normally), and it auto-resumes if the fund recovers back
 // above the line before everything closes.
 function checkLiveFundStopLoss() {
+  markFunds('live');
   if (!S.liveDayStartFund || S.liveDayStartFund <= 0) return;
   // A fund stop loss of 0 means no fund stop loss at all: live keeps trading.
   if (!(S.liveFundStopLossPct > 0)) { S.liveWindingDown = false; return; }
@@ -4577,7 +4585,6 @@ function liveTimingExtras(pos) {
     crashSellerIsDev: pos.crashSellerIsDev || '',
     crashSellerRepeat: pos.crashSellerRepeat || '',
     dumperBought: pos.dumperBought || '',
-    badPrices: pos.badPrices || 0,
     startedBy: pos.startedBy || '',
     buyResends: nz(pos.buyResends),
     sellResends: nz(pos.sellResends),
@@ -5359,7 +5366,7 @@ app.get('/api/live/export', function(req, res) {
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
     'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt','Top10Pct',
-    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','BadPricesIgnored','StartedBy'];
+    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','StartedBy'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -5391,7 +5398,7 @@ app.get('/api/live/export', function(req, res) {
       csvSafe(t.devWallet || ''), csvSafe(t.devBanned || ''), t.banDropPct, t.devBanSkips, t.crashDropPct,
       csvSafe(t.crashSeller || ''), t.crashSellUsd, csvSafe(t.crashSellerBought || ''), csvSafe(t.crashSellerIsDev || ''),
       csvSafe(t.crashSellerRepeat || ''), csvSafe(t.dumperBought || ''),
-      (t.badPrices || 0), csvSafe(t.startedBy || '')
+      csvSafe(t.startedBy || '')
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other
@@ -5607,6 +5614,10 @@ app.post('/api/settings', function(req, res) {
     schedPrevInside = { paper: null, live: null };   // start counting from now: a change never fires at once
     log('SCHEDULE: paper ' + (S.schedule.paper ? 'ON' : 'OFF') + ', live ' + (S.schedule.live ? 'ON' : 'OFF') + ' | start ' + hmText(S.schedule.start) + ', stop ' + hmText(S.schedule.stop) + ' (Toronto time)', 'info');
   }
+  if (req.body.maxTop10Pct !== undefined) {
+    var mt = parseFloat(req.body.maxTop10Pct);
+    if (!isNaN(mt) && mt >= 20 && mt <= 80) { S.maxTop10Pct = parseFloat(mt.toFixed(1)); log('Max top 10: ' + S.maxTop10Pct + '% of supply for the 10 biggest wallets together', 'info'); }
+  }
   if (req.body.maxHolderPct !== undefined) {
     var mh = parseFloat(req.body.maxHolderPct);
     if (!isNaN(mh) && mh >= 5 && mh <= 50) { S.maxHolderPct = parseFloat(mh.toFixed(1)); log('Max holder: ' + S.maxHolderPct + '% of supply for any one wallet', 'info'); }
@@ -5634,6 +5645,7 @@ app.get('/api/portfolio', function(req, res) {
   res.json({
     allTime: P.allTime, bestTrade: P.bestTrade, worstTrade: P.worstTrade,
     sessions: P.sessions.slice(0, 50), totalSessions: P.sessions.length, totalTrades: P.historyCount || 0,
+    fundMarks: fundMarksForPage('paper'),
   });
 });
 
@@ -5697,7 +5709,7 @@ function writeCsvInBatches(res, lines, done) {
 app.get('/api/portfolio/export', async function(req, res) {
   var sessionStartedAtStr = S.startTime ? new Date(S.startTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
   var sessionEndedAtStr = (S.lastStopTime && !S.running) ? new Date(S.lastStopTime).toLocaleString('en-US', { timeZone: 'America/New_York' }) : '';
-  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin','DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','BadPricesIgnored','StartedBy'].join(',');
+  var header = ['Name','Mint','Chain','Source','Size','EntryPrice','ExitPrice','PnL','PnLPct','TickCount','PeakGainPct','SecToFirstUpdate','CloseReason','OpenedAt','ClosedAt','ClosedDate','Fees','EntryMcap','ExitMcap','EntryBuys','EntrySells','SessionStartedAt','SessionEndedAt','LargestSellUsd','MaxRepeatSellerCount','EntrySlipCost','NetFundImpact','FundAmount','SavingsAmount','HoldTimeSec','PoolSizeAtEntry','ScanCountAtEntry','TriggerTickJumpPct','EntryUniqueBuyers','EntryUniqueSellers','EntryDustSwaps','EntryRealSwaps','EntryPreVolatilityPct','EntryPreVolTickCount','FundAfterTrade','FundSLTriggerAt','AutoLockStatus','TrailTriggerTickJumpPct','LowestPricePct','PriceHistory','EntryLiquidityUsd','TieredSold','Tier1ExitPrice','Tier1RealizedPct','Tier1RealizedPnl','Tier1ClosedAt','EntryTrigger','WindingDownAtClose','SecondsSinceDiscovery','EntryDevBought','EntryDevSold','HasDevWalletData','TieredSold2','Tier2ExitPrice','Tier2RealizedPct','Tier2RealizedPnl','Tier2ClosedAt','TopHolderPct','Top10Pct','MayhemCoin','DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','StartedBy'].join(',');
   // The file holds the oldest trade first; the CSV lists the newest first, as it always has.
   var body = [];
   try {
@@ -5790,7 +5802,6 @@ function paperCsvRow(t, sessionStartedAtStr, sessionEndedAtStr) {
       csvSafe(t.crashSellerIsDev || ''),
       csvSafe(t.crashSellerRepeat || ''),
       csvSafe(t.dumperBought || ''),
-      (t.badPrices || 0),
       csvSafe(t.startedBy || ''),
     ].join(',');
 }
@@ -5947,6 +5958,7 @@ app.post('/api/paper/new-test', function(req, res) {
     S.dayStartFund = S.sessionFund;
     S.sessionHighFund = S.sessionFund;
     S.savings = 0;
+    S.fundMarks.paper = null;   // a fresh test: shown again once paper starts
     S.totalFees = 0;
     S.bestTrade = null;
     S.windingDown = false;
