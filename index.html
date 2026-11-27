@@ -325,7 +325,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-sub-title">MIN BUYERS</div>
       <div class="settings-lbl">DIFFERENT WALLETS BEFORE ENTRY</div>
       <input class="settings-input" id="input-minbuyers" type="number" min="3" max="50" step="1" placeholder="e.g. 10"/>
-      <div class="settings-hint">Current: <span id="current-minbuyers-display">10</span>. How many different wallets (the dev not counted) must have bought a coin before the bot enters. Applies to paper and live. Range: 3-50. Resets to 10 on a deploy.</div>
+      <div class="settings-hint">Current: <span id="current-minbuyers-display">10</span>. How many different wallets (the dev not counted) must have bought a coin before the bot enters. Paper only -- live has its own in Live Settings. Range: 3-50. Resets to 10 on a deploy.</div>
       <button class="settings-save" onclick="saveMinBuyers()">SAVE MIN BUYERS</button>
       <div class="settings-status" id="status-minbuyers"></div>
     </div>
@@ -336,7 +336,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-sub-title">MAX SELLERS</div>
       <div class="settings-lbl">MOST DIFFERENT SELLERS BEFORE ENTRY</div>
       <input class="settings-input" id="input-maxsellers" type="number" min="0" max="20" step="1" placeholder="e.g. 1"/>
-      <div class="settings-hint">Current: <span id="current-maxsellers-display">1</span>. The bot skips a coin if more than this many different wallets (the dev not counted) have already sold it before entry. 0 = skip any coin anyone has sold. Applies to paper and live. Range: 0-20. Resets to 1 on a deploy.</div>
+      <div class="settings-hint">Current: <span id="current-maxsellers-display">1</span>. The bot skips a coin if more than this many different wallets (the dev not counted) have already sold it before entry. 0 = skip any coin anyone has sold. Paper only -- live has its own in Live Settings. Range: 0-20. Resets to 1 on a deploy.</div>
       <button class="settings-save" onclick="saveMaxSellers()">SAVE MAX SELLERS</button>
       <div class="settings-status" id="status-maxsellers"></div>
     </div>
@@ -370,7 +370,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-sub-title">MAX TOP 10 %</div>
       <div class="settings-lbl">MOST THE 10 BIGGEST WALLETS MAY HOLD TOGETHER (%)</div>
       <input class="settings-input" id="input-maxtop10" type="number" min="20" max="80" step="1" placeholder="e.g. 40"/>
-      <div class="settings-hint">Current: <span id="current-maxtop10-display">40</span>%. The bot skips a coin if its 10 biggest real wallets together hold this share of it or more (the bonding curve, burn wallet, Mayhem agent and LetsBonk pool are not counted). These coins crash in one burst that live cannot sell out of in time. Uses the same on-chain check as MAX HOLDER %, so it adds no time. Applies to paper and live. Range: 20-80. Resets to 40 on a deploy.</div>
+      <div class="settings-hint">Current: <span id="current-maxtop10-display">40</span>%. The bot skips a coin if its 10 biggest real wallets together hold this share of it or more (the bonding curve, burn wallet, Mayhem agent and LetsBonk pool are not counted). These coins crash in one burst that live cannot sell out of in time. Uses the same on-chain check as MAX HOLDER %, so it adds no time. Paper only -- live has its own in Live Settings. Range: 20-80. Resets to 40 on a deploy.</div>
       <button class="settings-save" onclick="saveMaxTop10()">SAVE MAX TOP 10 %</button>
       <div class="settings-status" id="status-maxtop10"></div>
     </div>
@@ -381,7 +381,7 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-sub-title">MAX HOLDER %</div>
       <div class="settings-lbl">MOST ONE WALLET MAY HOLD (%)</div>
       <input class="settings-input" id="input-maxholder" type="number" min="5" max="50" step="1" placeholder="e.g. 20"/>
-      <div class="settings-hint">Current: <span id="current-maxholder-display">20</span>%. The bot skips a coin if any one real wallet holds this share of it or more (the bonding curve, burn wallet, Mayhem agent and LetsBonk pool are not counted). Checked on-chain right before entry. If the check can't be done, the coin is skipped. Applies to paper and live. Range: 5-50. Resets to 20 on a deploy.</div>
+      <div class="settings-hint">Current: <span id="current-maxholder-display">20</span>%. The bot skips a coin if any one real wallet holds this share of it or more (the bonding curve, burn wallet, Mayhem agent and LetsBonk pool are not counted). Checked on-chain right before entry. If the check can't be done, the coin is skipped. Paper only -- live has its own in Live Settings. Range: 5-50. Resets to 20 on a deploy.</div>
       <button class="settings-save" onclick="saveMaxHolder()">SAVE MAX HOLDER %</button>
       <div class="settings-status" id="status-maxholder"></div>
     </div>
@@ -533,6 +533,10 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-menu-item" onclick="openSubLive('sub-live-sl')"><span>🛡️ STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-maxopen')"><span>📊 MAX OPEN TRADES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-live-fundloss')"><span>🛑 FUND STOP LOSS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-minbuyers')"><span>👥 MIN BUYERS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-maxsellers')"><span>🚪 MAX SELLERS</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-maxholder')"><span>🐋 MAX HOLDER %</span><span class="settings-menu-arrow">›</span></div>
+      <div class="settings-menu-item" onclick="openSubLive('sub-live-maxtop10')"><span>👥 MAX TOP 10 %</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-wallets')"><span>👛 WALLET ADDRESSES</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-testing')"><span>🧪 TESTING</span><span class="settings-menu-arrow">›</span></div>
       <div class="settings-menu-item" onclick="openSubLive('sub-livetrade')" style="border-color:var(--red);"><span style="color:var(--red);">🔴 LIVE TRADE TEST</span><span class="settings-menu-arrow" style="color:var(--red);">›</span></div>
@@ -572,6 +576,46 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-hint">Current: <span id="current-live-maxopen-display">4</span>. Range: 1-20. Separate from paper's own setting.</div>
       <button class="settings-save" onclick="saveLiveMaxOpen()">SAVE MAX TRADES</button>
       <div class="settings-status" id="status-live-maxopen"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-minbuyers">
+      <button class="settings-back" onclick="closeSubLive('sub-live-minbuyers')">← BACK</button>
+      <div class="settings-sub-title">MIN BUYERS (LIVE)</div>
+      <div class="settings-lbl">LEAST DIFFERENT WALLETS THAT MUST HAVE BOUGHT</div>
+      <input class="settings-input" id="input-live-minbuyers" type="number" min="3" max="50" step="1" placeholder="e.g. 10"/>
+      <div class="settings-hint">Current: <span id="current-live-minbuyers-display">10</span>. Live only buys a coin at least this many different wallets have bought (the dev not counted). Separate from paper's own setting. Range: 3-50. Resets to 10 on a deploy.</div>
+      <button class="settings-save" onclick="saveLiveMinBuyers()">SAVE MIN BUYERS</button>
+      <div class="settings-status" id="status-live-minbuyers"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-maxsellers">
+      <button class="settings-back" onclick="closeSubLive('sub-live-maxsellers')">← BACK</button>
+      <div class="settings-sub-title">MAX SELLERS (LIVE)</div>
+      <div class="settings-lbl">MOST DIFFERENT WALLETS THAT MAY HAVE SOLD</div>
+      <input class="settings-input" id="input-live-maxsellers" type="number" min="0" max="20" step="1" placeholder="e.g. 1"/>
+      <div class="settings-hint">Current: <span id="current-live-maxsellers-display">1</span>. Live skips a coin more than this many different wallets have already sold (the dev not counted). Separate from paper's own setting. Range: 0-20. Resets to 1 on a deploy.</div>
+      <button class="settings-save" onclick="saveLiveMaxSellers()">SAVE MAX SELLERS</button>
+      <div class="settings-status" id="status-live-maxsellers"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-maxholder">
+      <button class="settings-back" onclick="closeSubLive('sub-live-maxholder')">← BACK</button>
+      <div class="settings-sub-title">MAX HOLDER % (LIVE)</div>
+      <div class="settings-lbl">MOST ONE WALLET MAY HOLD (%)</div>
+      <input class="settings-input" id="input-live-maxholder" type="number" min="5" max="50" step="1" placeholder="e.g. 20"/>
+      <div class="settings-hint">Current: <span id="current-live-maxholder-display">20</span>%. Live skips a coin if any one real wallet holds this share or more (curve, burn wallet, Mayhem agent and LetsBonk pool not counted). Separate from paper's own setting. Range: 5-50. Resets to 20 on a deploy.</div>
+      <button class="settings-save" onclick="saveLiveMaxHolder()">SAVE MAX HOLDER %</button>
+      <div class="settings-status" id="status-live-maxholder"></div>
+    </div>
+
+    <div class="settings-sub" id="sub-live-maxtop10">
+      <button class="settings-back" onclick="closeSubLive('sub-live-maxtop10')">← BACK</button>
+      <div class="settings-sub-title">MAX TOP 10 % (LIVE)</div>
+      <div class="settings-lbl">MOST THE 10 BIGGEST WALLETS MAY HOLD TOGETHER (%)</div>
+      <input class="settings-input" id="input-live-maxtop10" type="number" min="20" max="80" step="1" placeholder="e.g. 40"/>
+      <div class="settings-hint">Current: <span id="current-live-maxtop10-display">40</span>%. Live skips a coin if its 10 biggest real wallets together hold this share or more -- the coins that crash in one burst live cannot sell out of in time. Separate from paper's own setting. Range: 20-80. Resets to 40 on a deploy.</div>
+      <button class="settings-save" onclick="saveLiveMaxTop10()">SAVE MAX TOP 10 %</button>
+      <div class="settings-status" id="status-live-maxtop10"></div>
     </div>
 
     <div class="settings-sub" id="sub-live-fundloss">
@@ -1305,6 +1349,22 @@ async function saveLiveSL() {
   el.textContent = ok ? '✅ Live Stop Loss set to ' + n + '%' : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
 }
 
+function liveLimitSave(inputId, statusId, key, lo, hi, label, unit) {
+  return async function() {
+    var el = document.getElementById(statusId);
+    var raw = document.getElementById(inputId).value;
+    var n = parseInt(raw);
+    if (raw === '' || isNaN(n) || n < lo || n > hi) { el.textContent = 'Enter ' + lo + '-' + hi; el.style.color = 'var(--red)'; return; }
+    var body = {}; body[key] = n;
+    var ok = await apiPost(body);
+    el.textContent = ok ? '✅ Live ' + label + ' set to ' + n + unit : '❌ Failed'; el.style.color = ok ? 'var(--green)' : 'var(--red)';
+  };
+}
+var saveLiveMinBuyers = liveLimitSave('input-live-minbuyers', 'status-live-minbuyers', 'liveMinBuyers', 3, 50, 'min buyers', '');
+var saveLiveMaxSellers = liveLimitSave('input-live-maxsellers', 'status-live-maxsellers', 'liveMaxSellers', 0, 20, 'max sellers', '');
+var saveLiveMaxHolder = liveLimitSave('input-live-maxholder', 'status-live-maxholder', 'liveMaxHolderPct', 5, 50, 'max holder', '%');
+var saveLiveMaxTop10 = liveLimitSave('input-live-maxtop10', 'status-live-maxtop10', 'liveMaxTop10Pct', 20, 80, 'max top 10', '%');
+
 async function saveLiveMaxOpen() {
   var el = document.getElementById('status-live-maxopen');
   var n = parseInt(document.getElementById('input-live-maxopen').value);
@@ -1846,6 +1906,11 @@ async function fetchState() {
     if (maxOpenDisp) maxOpenDisp.textContent = data.maxOpen || 8;
     var liveSlDisp = document.getElementById('current-live-sl-display');
     if (liveSlDisp) liveSlDisp.textContent = data.liveStopLossPct || 10;
+    [['current-live-minbuyers-display', 'liveMinBuyers'], ['current-live-maxsellers-display', 'liveMaxSellers'],
+     ['current-live-maxholder-display', 'liveMaxHolderPct'], ['current-live-maxtop10-display', 'liveMaxTop10Pct']].forEach(function(p) {
+      var d = document.getElementById(p[0]);
+      if (d && data[p[1]] !== undefined) d.textContent = data[p[1]];
+    });
     var liveMaxOpenDisp = document.getElementById('current-live-maxopen-display');
     if (liveMaxOpenDisp) liveMaxOpenDisp.textContent = data.liveMaxOpen || 4;
     var liveFundLossDisp = document.getElementById('current-live-fundloss-display');

@@ -247,6 +247,12 @@ const S = {
   // were coins at 44-47%; the 12 live trades below 40% had none. 6 paper tests: 7.6% of coins at 40%+ crashed
   // 40% or more, against 2.4% below. Live cannot sell before such a crash finishes (it lasts ~0.3s).
   maxTop10Pct: 40,
+  // LIVE's own entry limits -- same meaning and defaults as paper's minBuyers / maxSellers / maxHolderPct /
+  // maxTop10Pct above, set separately in Live Settings. Changing one side never changes the other.
+  liveMinBuyers: 10,
+  liveMaxSellers: 1,
+  liveMaxHolderPct: 20,
+  liveMaxTop10Pct: 40,
   // Dev wallets banned for DEV_BAN_MS after one of their coins, held by the bot, dropped DEV_BAN_DROP or more
   // in a single price move (paper or live). wallet -> time the ban ends. Cleared by a deploy.
   devBans: new Map(),
@@ -631,10 +637,9 @@ async function checkWalletConcentration(mint) {
 // buys a coin it could not measure. Paper now uses this same check (see walletCheckShared); the Bitquery
 // check (checkWalletConcentration) is no longer used for entries.
 //
-// The limit is S.maxHolderPct (MAX HOLDER %). LetsBonk coins: their unsold supply sits in the LetsBonk pool's
-// vault (Raydium LaunchLab, seeds ["pool_vault", pool, mint]), which is left out too. The result also gives
-// top10Pct: the 10 largest real wallets together; a coin at S.maxTop10Pct (MAX TOP 10 %) or more is not safe
-// (top10Block: true).
+// LetsBonk coins: their unsold supply sits in the LetsBonk pool's vault (Raydium LaunchLab, seeds
+// ["pool_vault", pool, mint]), which is left out too. The result gives topPct (largest real wallet) and
+// top10Pct (the 10 largest real wallets together); the limits are applied per side by holderLimitFail.
 var MAYHEM_PROGRAM_ADDRESS = 'MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e';
 var MAYHEM_SUPPLY_TOKENS = 1.5e9;          // a supply above this (normal coins: 1 billion) is a Mayhem coin
 var mayhemFoundLogged = 0;
@@ -736,13 +741,23 @@ async function checkWalletConcentrationOnChain(mintStr, src) {
   if (!top) return { safe: true, unknown: false, topPct: 0, top10Pct: 0, mayhem: mayhem, reason: 'only the curve, burn and agent accounts hold this coin' + agentText };
   var share = top.amount / base;
   var pctText = (share * 100).toFixed(1) + '%';
-  if (share >= S.maxHolderPct / 100) {
-    return { safe: false, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'one wallet (token account ' + top.address + ') holds ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + ' (limit ' + S.maxHolderPct + '%)' + agentText };
+  return { safe: true, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, topAddress: top.address, agentText: agentText,
+    reason: 'largest holder has ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
+}
+
+// The check above only MEASURES the coin (shared by paper and live). Each side then applies its own limits:
+// paper S.maxHolderPct / S.maxTop10Pct, live S.liveMaxHolderPct / S.liveMaxTop10Pct.
+// Returns null when the coin passes, else { top10: true|false, reason }.
+function holderLimitFail(c, maxHolderPct, maxTop10Pct) {
+  if (!c || c.unknown || !c.safe) return null;   // unknown is handled by the caller
+  var of = ' of the ' + (c.mayhem ? 'normal billion' : 'total supply');
+  if ((c.topPct || 0) >= maxHolderPct / 100) {
+    return { top10: false, reason: 'one wallet (token account ' + c.topAddress + ') holds ' + (c.topPct * 100).toFixed(1) + '%' + of + ' (limit ' + maxHolderPct + '%)' + (c.agentText || '') };
   }
-  if (top10Pct >= S.maxTop10Pct / 100) {
-    return { safe: false, unknown: false, top10Block: true, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'the 10 biggest wallets hold ' + (top10Pct * 100).toFixed(1) + '% of the ' + (mayhem ? 'normal billion' : 'total supply') + ' (limit ' + S.maxTop10Pct + '%)' + agentText };
+  if ((c.top10Pct || 0) >= maxTop10Pct / 100) {
+    return { top10: true, reason: 'the 10 biggest wallets hold ' + (c.top10Pct * 100).toFixed(1) + '%' + of + ' (limit ' + maxTop10Pct + '%)' + (c.agentText || '') };
   }
-  return { safe: true, unknown: false, topPct: share, top10Pct: top10Pct, mayhem: mayhem, reason: 'largest holder has ' + pctText + ' of the ' + (mayhem ? 'normal billion' : 'total supply') + agentText };
+  return null;
 }
 
 // One wallet check per coin, shared by paper and live: a second request for the same coin within
@@ -777,7 +792,9 @@ function liveEntryVerdict(tok, c) {
     return { go: false, reason: reason };
   };
   if (!c || c.unknown) return no('check_failed', 'the wallet check could not measure this coin (' + ((c && c.reason) || 'no answer') + '), so it is not traded', true);
-  if (!c.safe) return no(c.top10Block ? 'top10_above_max' : 'live_wallet_concentration', c.reason + ' -- not traded', true);
+  if (!c.safe) return no('live_wallet_concentration', c.reason + ' -- not traded', true);
+  var liveLimit = holderLimitFail(c, S.liveMaxHolderPct, S.liveMaxTop10Pct);
+  if (liveLimit) return no(liveLimit.top10 ? 'top10_above_max' : 'live_wallet_concentration', liveLimit.reason + ' -- not traded (live limits)', true);
   if (tok.devSold) return no('dev_wallet_sold_race', 'the dev wallet sold while the wallet check was running', false);
   if (!S.liveTradingEnabled || S.liveWindingDown) return no('live_turned_off_during_check', 'live trading was turned off or is winding down', false);
   if (rpcgate.entryPaused()) return no('rpc_slow_paused', 'the node is running slow, new buys are paused -- ' + rpcgate.pauseReason(), false);
@@ -2017,6 +2034,10 @@ function computeMaxTickSwing(prices) {
   return parseFloat(maxSwing.toFixed(2));
 }
 
+// A skip that only one side took (the other side is still trying the coin).
+function paperSkip(reason) { S.rejectReasons[reason] = (S.rejectReasons[reason] || 0) + 1; }
+function liveSkip(reason) { if (S.liveTradingEnabled) S.liveRejectReasons[reason] = (S.liveRejectReasons[reason] || 0) + 1; }
+
 function trackSkip(reason) {
   S.rejectReasons[reason] = (S.rejectReasons[reason] || 0) + 1;
   // Live keeps its own skip counts (reset when automatic live trading is turned
@@ -2237,8 +2258,14 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   var realSellers = 0;
   if (tok.uniqueSellers) tok.uniqueSellers.forEach(function(addr) { if (!tok.devWallet || addr !== tok.devWallet) realSellers++; });
   if (devIsBanned(tok.devWallet)) { if (!tok.devBanCounted) { tok.devBanCounted = true; S.devBanSkips++; } trackSkip('dev_banned'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: dev wallet banned (a coin of theirs dropped 40%+ in one move)', 'info'); return; }
-  if (realSellers > S.maxSellers) { trackSkip('sellers_above_max'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: sellers='+realSellers+' (max '+S.maxSellers+', dev not counted) | sells='+(tok.sells||0), 'info'); return; }
-  if (realBuyers < S.minBuyers) { trackSkip('buyers_below_min'); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buyers='+realBuyers+' (need '+S.minBuyers+', dev not counted'+(tok.devWallet ? '' : ' -- dev wallet unknown, all buyers counted')+') | buys='+tok.buys, 'info'); return; }
+  // Paper and live each use their OWN limits (paper: S.maxSellers / S.minBuyers, live: S.liveMaxSellers /
+  // S.liveMinBuyers). A side that fails drops out; the other carries on.
+  var paperBS = realSellers > S.maxSellers ? 'sellers_above_max' : (realBuyers < S.minBuyers ? 'buyers_below_min' : null);
+  var liveBS = realSellers > S.liveMaxSellers ? 'sellers_above_max' : (realBuyers < S.liveMinBuyers ? 'buyers_below_min' : null);
+  var bsLabel = (paperOk && paperBS) ? paperBS : liveBS;   // the reason of a side that was still trying
+  if (paperOk && paperBS) { paperOk = false; if (liveOk && !liveBS) paperSkip(paperBS); }
+  if (liveOk && liveBS) { liveOk = false; if (paperOk) liveSkip(liveBS); }
+  if (!paperOk && !liveOk) { trackSkip(bsLabel); if(diag) feedLog('DIAG '+tok.n+' | SKIP: buyers='+realBuyers+' sellers='+realSellers+' (dev not counted'+(tok.devWallet ? '' : ', dev wallet unknown -- all wallets counted')+') | paper needs '+S.minBuyers+'+ buyers & max '+S.maxSellers+' sellers, live needs '+S.liveMinBuyers+'+ & max '+S.liveMaxSellers, 'info'); return; }
 
   // Paper's size check applies to paper only; live sizes its own buy.
   var size = parseFloat((S.fund * CFG.MAX_POS).toFixed(4));
@@ -2318,10 +2345,11 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
       if(diag) feedLog('DIAG '+tok.n+' | SKIP: wallet check could not measure the coin ('+((concCheck && concCheck.reason) || 'no answer')+')', 'info');
       return;
     }
-    if (!concCheck.safe) {
+    var paperLimit = concCheck.safe ? holderLimitFail(concCheck, S.maxHolderPct, S.maxTop10Pct) : { top10: false, reason: concCheck.reason };
+    if (paperLimit) {
       S.rejectCount++;
-      trackSkip(concCheck.top10Block ? 'top10_above_max' : 'wallet_concentration');
-      if(diag) feedLog('DIAG '+tok.n+' | SKIP: '+concCheck.reason, 'info');
+      paperSkip(paperLimit.top10 ? 'top10_above_max' : 'wallet_concentration');
+      if(diag) feedLog('DIAG '+tok.n+' | SKIP: '+paperLimit.reason, 'info');
       return;
     }
   }
@@ -2852,6 +2880,10 @@ app.get('/api/state', function(req, res) {
     maxSellers: S.maxSellers,
     maxHolderPct: S.maxHolderPct,
     maxTop10Pct: S.maxTop10Pct,
+    liveMinBuyers: S.liveMinBuyers,
+    liveMaxSellers: S.liveMaxSellers,
+    liveMaxHolderPct: S.liveMaxHolderPct,
+    liveMaxTop10Pct: S.liveMaxTop10Pct,
     schedule: { paper: S.schedule.paper, live: S.schedule.live, start: S.schedule.start, stop: S.schedule.stop,
                 startText: hmText(S.schedule.start), stopText: hmText(S.schedule.stop), paperStopping: S.scheduleStopping },
     logs: S.logs.slice(0, 100),
@@ -5613,6 +5645,22 @@ app.post('/api/settings', function(req, res) {
   if (schedChanged) {
     schedPrevInside = { paper: null, live: null };   // start counting from now: a change never fires at once
     log('SCHEDULE: paper ' + (S.schedule.paper ? 'ON' : 'OFF') + ', live ' + (S.schedule.live ? 'ON' : 'OFF') + ' | start ' + hmText(S.schedule.start) + ', stop ' + hmText(S.schedule.stop) + ' (Toronto time)', 'info');
+  }
+  if (req.body.liveMinBuyers !== undefined) {
+    var lmb = parseInt(req.body.liveMinBuyers, 10);
+    if (!isNaN(lmb) && lmb >= 3 && lmb <= 50) { S.liveMinBuyers = lmb; liveLog('LIVE min buyers: ' + S.liveMinBuyers + ' different wallets (dev not counted)', 'info'); }
+  }
+  if (req.body.liveMaxSellers !== undefined) {
+    var lms = parseInt(req.body.liveMaxSellers, 10);
+    if (!isNaN(lms) && lms >= 0 && lms <= 20) { S.liveMaxSellers = lms; liveLog('LIVE max sellers: ' + S.liveMaxSellers + ' different wallets before entry (dev not counted)', 'info'); }
+  }
+  if (req.body.liveMaxHolderPct !== undefined) {
+    var lmh = parseFloat(req.body.liveMaxHolderPct);
+    if (!isNaN(lmh) && lmh >= 5 && lmh <= 50) { S.liveMaxHolderPct = parseFloat(lmh.toFixed(1)); liveLog('LIVE max holder: ' + S.liveMaxHolderPct + '% of supply for any one wallet', 'info'); }
+  }
+  if (req.body.liveMaxTop10Pct !== undefined) {
+    var lmt = parseFloat(req.body.liveMaxTop10Pct);
+    if (!isNaN(lmt) && lmt >= 20 && lmt <= 80) { S.liveMaxTop10Pct = parseFloat(lmt.toFixed(1)); liveLog('LIVE max top 10: ' + S.liveMaxTop10Pct + '% of supply for the 10 biggest wallets together', 'info'); }
   }
   if (req.body.maxTop10Pct !== undefined) {
     var mt = parseFloat(req.body.maxTop10Pct);
