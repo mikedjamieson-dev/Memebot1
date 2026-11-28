@@ -667,10 +667,10 @@ body{background:var(--bg);color:var(--text);font-family:'Share Tech Mono',monosp
       <div class="settings-status" id="status-live-fund"></div>
 
       <div class="settings-lbl" style="margin-top:16px;">SEND ROUTE (REAL BUYS, SELLS AND SAVINGS)</div>
-      <div class="settings-hint" style="margin-bottom:8px;">MAX sends every trade on every path at once (Helius, Jito and others) — the fastest landing. Tip: the higher of 0.001 SOL and Jito's current going rate, per send. CHEAP sends on one path only. Tip: 0.000005 SOL per send. The Live CSV records the route of every trade.</div>
+      <div class="settings-hint" style="margin-bottom:8px;">CHEAP (the default, also after every deploy) sends on one path. Tip: 0.000005 SOL per send. MAX sends every trade on every path at once (Helius, Jito and others). Tip: the higher of 0.001 SOL and Jito's current going rate, per send -- about 3% of a $5 trade. In your live tests MAX landed no faster than CHEAP. The Live CSV records the route of every trade.</div>
       <div class="tp-mode-row">
-        <button class="tp-btn active" id="btn-route-max" onclick="setLiveRoute('MAX')">⚡ MAX</button>
-        <button class="tp-btn" id="btn-route-cheap" onclick="setLiveRoute('SWQOS_ONLY')">CHEAP</button>
+        <button class="tp-btn" id="btn-route-max" onclick="setLiveRoute('MAX')">⚡ MAX</button>
+        <button class="tp-btn active" id="btn-route-cheap" onclick="setLiveRoute('SWQOS_ONLY')">CHEAP</button>
       </div>
       <button class="settings-save" onclick="saveLiveRoute()">SAVE SEND ROUTE</button>
       <div class="settings-status" id="status-live-route"></div>
@@ -1207,9 +1207,9 @@ async function lockLiveFund() {
   } catch(e) { el.textContent = '❌ Server error'; el.style.color = 'var(--red)'; }
 }
 
-var currentLiveRoute = 'MAX';
+var currentLiveRoute = 'SWQOS_ONLY';
 function setLiveRoute(route) {
-  currentLiveRoute = route === 'SWQOS_ONLY' ? 'SWQOS_ONLY' : 'MAX';
+  currentLiveRoute = route === 'MAX' ? 'MAX' : 'SWQOS_ONLY';
   document.getElementById('btn-route-max').classList.toggle('active', currentLiveRoute === 'MAX');
   document.getElementById('btn-route-cheap').classList.toggle('active', currentLiveRoute === 'SWQOS_ONLY');
 }

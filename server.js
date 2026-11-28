@@ -221,7 +221,7 @@ const S = {
   liveAutoLockEnabled: false,
   liveTipsPaidUsd: 0,
   liveNetworkFeesUsd: 0,
-  liveSendRoute: 'MAX',        // 'MAX' (fastest, default) or 'SWQOS_ONLY' (cheapest) -- see liveSendRoute()
+  liveSendRoute: 'SWQOS_ONLY', // 'SWQOS_ONLY' (cheap, the default -- also after every deploy) or 'MAX' -- see liveSendRoute()
   liveMevProtect: false,       // Helius anti-sandwich option, off by default
   dashboardSeenAt: 0,          // when the dashboard last asked for /api/state (the wallet balance is read while it is open)
   liveLogs: [],
@@ -3131,11 +3131,12 @@ function computeLivePositionSizeUsd() {
 }
 
 // The route every real buy, sell and savings transfer is sent on (Settings, "Send Route"):
-//   MAX        - Helius Sender on every path at once, the fastest landing (tip: the higher of 0.001 SOL
-//                and Jito's current going rate). The default.
-//   SWQOS_ONLY - the single cheap path (tip: 0.000005 SOL, always).
+//   SWQOS_ONLY - the single cheap path (tip: 0.000005 SOL, always). The default.
+//   MAX        - Helius Sender on every path at once (tip: the higher of 0.001 SOL and Jito's current going
+//                rate). Live data 11/7-11/28: buys landed no faster than on SWQOS_ONLY (0.58-0.59s median)
+//                while the tips cost ~3% of a $5 trade, so it is only used when chosen in Settings.
 function liveSendRoute() {
-  return S.liveSendRoute === 'SWQOS_ONLY' ? 'SWQOS_ONLY' : 'MAX';
+  return S.liveSendRoute === 'MAX' ? 'MAX' : 'SWQOS_ONLY';
 }
 
 // How long a sent buy is watched before its outcome is called unknown. A transaction can still land until
