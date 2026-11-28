@@ -6,7 +6,7 @@
 // logic we built and tested ourselves.
 //
 // ONE SDK, ONE PATH PER KIND OF COIN
-// Every trade is built by @pump-fun/pump-sdk 4.2.0 -- nothing else is installed.
+// Every trade is built by @pump-fun/pump-sdk (the version pinned in package.json) -- nothing else is installed.
 //   - Normal coins: the v3 instructions (buyV3Instructions / sellV3Instructions).
 //   - Cashback coins: v3 refuses them on purpose (CashbackCoinNotSupportedError), so they use
 //     the same package's regular buyInstructions / sellInstructions, with the cashback flag
@@ -493,6 +493,41 @@ async function buildSellFromCurveData(curveData, mint, user, tokenAmount, slippa
   return built;
 }
 
+// -- READY-MADE BUY (built from chain data the bot already has) -------
+// Builds the same buy as buildBuyInstructions -- same buyV3Instructions call, same quote, same slippage, same
+// buyback recipients -- but from bonding-curve data the live buy watcher already received from the chain, so
+// it needs NO request at the moment of the signal. Only for a coin the wallet holds no token account for (the
+// caller checks that), so associatedUserAccountInfo is null exactly as the normal path reads it for such a
+// coin. Anything this cannot build exactly as the normal path would (a cashback coin, a graduated coin, a coin
+// not paired with SOL) is refused with code NOT_PREBUILDABLE, and the normal buy is used.
+async function buildBuyFromCurveData(curveData, mint, user, solAmountLamports, slippagePercent, tokenProgram) {
+  assertSdk();
+  var bc = sdk.PUMP_SDK.decodeBondingCurve({ data: curveData });
+  if (!bc || !bc.virtualQuoteReserves || !bc.virtualTokenReserves) {
+    throw new Error('bonding curve data could not be read -- ' + describe('bondingCurve', bc));
+  }
+  var refuse = function(why) { var e = new Error(why); e.code = 'NOT_PREBUILDABLE'; return e; };
+  if (bc.complete) throw refuse('the coin has graduated');
+  if (bc.isCashbackCoin) throw refuse('cashback coin (its buy needs data that is read at the moment of the buy)');
+  checkSolPaired(bc, null);
+  var solAmountBN = new BN(String(solAmountLamports));
+  var amount = quoteTokensForSol(bc, solAmountBN);
+  var ixs = await sdk.PUMP_SDK.buyV3Instructions({
+    bondingCurve: bc,
+    associatedUserAccountInfo: null,
+    mint: mint,
+    user: user,
+    amount: amount,
+    quoteAmount: solAmountBN,
+    slippage: slippagePercent,
+    buybackFeeRecipient: pickBuybackRecipient(),
+    tokenProgram: tokenProgram,
+  });
+  var built = tagBuiltWith(checkInstructions(ixs, 'buyV3Instructions (ready-made)'), 'v3-ready-made');
+  try { Object.defineProperty(built, 'pumpBuyInfo', { value: { realQuoteLamports: realLamportsOf(bc) }, enumerable: false, configurable: true }); } catch (e) { /* optional */ }
+  return built;
+}
+
 // Checks whether a pump.fun token has graduated off its bonding curve
 // to PumpSwap. Uses the exact same fetchBuyState call buildSellInstructions
 // already makes -- confirmed from six independent raw Rust account-layout
@@ -515,6 +550,7 @@ module.exports = {
   buildBuyInstructions,
   buildSellInstructions,
   buildSellFromCurveData,
+  buildBuyFromCurveData,
   quoteTokensForSol,
   quoteSolForTokens,
   capSellToRealReserves,

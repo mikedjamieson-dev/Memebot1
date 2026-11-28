@@ -1251,6 +1251,7 @@ function handleSwap(t) {
         if (t.Side === 'Buy') poolTok.devBought = true;
         else if (t.Side === 'Sell') poolTok.devSold = true;
       }
+      if (t.Side === 'Buy' && S.liveTradingEnabled) considerBuyCandidate(poolTok);
     }
     if (swapUsd > 0) {
       if (swapUsd < 5) {
@@ -2153,7 +2154,7 @@ function startLiveEntry(tok, snapshot, gate) {
   var platformKey = 'pumpfun';
   var buildBuyFn = require('./pumpfun').buildBuyInstructions;
   livePendingBuys.add(tok.mint);
-  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY', snapshot, { gate: gate }).then(function(r) {
+  performRealBuy(tok.mint, platformName, platformKey, buildBuyFn, 'LIVE AUTO ENTRY', snapshot, { gate: gate, readyMade: true }).then(function(r) {
     // Any automatic buy that did not end in a real position puts the coin on the normal cooldown: a skipped
     // coin (thin liquidity, not SOL-paired, failed wallet check), a buy that could not be built or sent, and a
     // buy that FAILED or EXPIRED on chain. A missed first buy on a new coin is not chased.
@@ -2313,6 +2314,8 @@ async function tryEnterTokenInner(tok, freshPrice, triggerSource) {
   if (liveOk) {
     var liveSnap = buildLiveEntrySnapshot(tok, triggerSource, { signalPrice: entryPrice, signalAt: entryCheckStartedAt, concentrationMs: null });
     var liveCheckT0 = Date.now();
+    var hcHit = walletCheckCache.get(tok.mint);
+    liveSnap.holderCheckAgeMs = (hcHit && (Date.now() - hcHit.at) < WALLET_CHECK_SHARE_MS) ? (Date.now() - hcHit.at) : 0;
     var liveCheck = walletCheckShared(tok.mint, tok.src).then(function(c) {
       liveSnap.concentrationMs = Date.now() - liveCheckT0;
       liveSnap.topHolderPct = (c && typeof c.topPct === 'number') ? parseFloat((c.topPct * 100).toFixed(2)) : null;
@@ -3606,12 +3609,27 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
     var laneBefore = rpcgate.setCurrentPriority(rpcgate.FAST_LANE);
     var buyRoute = liveSendRoute();
     var prefetched = execution.prefetchSendParts(connection, buyRoute);
-    var instructions;
-    try {
-      instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
-    } catch (buildErr) {
-      rpcgate.setCurrentPriority(laneBefore);
-      throw buildErr;
+    var instructions = null;
+    // READY-MADE BUY: an automatic entry first takes the buy already built for this coin from live chain data
+    // (see READY-MADE BUYS). If there is none, or it cannot be used, the buy is built here exactly as before.
+    if (opts.readyMade) {
+      var rmb = await takeReadyMadeBuy(mintStr, solAmountLamports);
+      if (rmb.buy) {
+        instructions = rmb.buy.ixs;
+        if (entrySnapshot) { entrySnapshot.buyReadyMade = 'Yes'; entrySnapshot.readyMadeAgeMs = rmb.buy.ageMs; }
+        liveLog(logPrefix + ' (' + platformName + ' buy): using the READY-MADE buy (built from chain data ' + rmb.buy.ageMs + 'ms old) -- no read, no build', 'info');
+      } else if (entrySnapshot) {
+        entrySnapshot.buyReadyMade = 'No';
+        entrySnapshot.readyMadeWhyNot = rmb.why;
+      }
+    }
+    if (!instructions) {
+      try {
+        instructions = await buildBuyFn(connection, mint, liveWalletKeypair.publicKey, solAmountLamports, 15);
+      } catch (buildErr) {
+        rpcgate.setCurrentPriority(laneBefore);
+        throw buildErr;
+      }
     }
     var buyBuiltMs = Date.now() - buyT0;
 
@@ -3802,6 +3820,10 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             topHolderPct: (entrySnapshot && typeof entrySnapshot.topHolderPct === 'number') ? entrySnapshot.topHolderPct : null,
             mayhemCoin: (entrySnapshot && typeof entrySnapshot.mayhemCoin === 'boolean') ? entrySnapshot.mayhemCoin : null,
             top10Pct: (entrySnapshot && typeof entrySnapshot.top10Pct === 'number') ? entrySnapshot.top10Pct : null,
+            buyReadyMade: (entrySnapshot && entrySnapshot.buyReadyMade) || '',
+            readyMadeAgeMs: (entrySnapshot && typeof entrySnapshot.readyMadeAgeMs === 'number') ? entrySnapshot.readyMadeAgeMs : null,
+            readyMadeWhyNot: (entrySnapshot && entrySnapshot.readyMadeWhyNot) || '',
+            holderCheckAgeMs: (entrySnapshot && typeof entrySnapshot.holderCheckAgeMs === 'number') ? entrySnapshot.holderCheckAgeMs : null,
             devWallet: (S.tokens.get(mintStr) || {}).devWallet || '',
             devBanSkipsAtEntry: S.devBanSkips,
             dumperBought: dumperBoughtCoin(S.tokens.get(mintStr)),
@@ -3846,6 +3868,7 @@ async function performRealBuyInner(mintStr, platformName, platformKey, buildBuyF
             currentMcap: 0,
           };
           S.liveOpen.push(openedPos);
+          liveTradedMints.add(mintStr);
           openedPos.landedToOpenMs = Date.now() - landedAt;
           syncOnchainPrices();
           liveLog('LIVE ENTER ' + (S.tokens.get(mintStr) ? S.tokens.get(mintStr).n : mintStr.slice(0, 6) + '...') + ' [' + platformName + '] | ' + mintStr + ' | $' + sizeUsd.toFixed(2) + ' | Entry $' + entryPriceUsd.toFixed(10) + ' | ' + tokensHeld + ' tokens held', 'entry');
@@ -4323,6 +4346,157 @@ function syncOnchainPrices() {
 }
 setInterval(syncOnchainPrices, 1000);
 
+// -- READY-MADE BUYS (live, pump.fun) -------------------------------
+// The two slow steps of a live buy -- reading the coin from the node to build the buy (~0.13s) and the
+// on-chain holder check (~0.13s) -- ran at the moment of the signal, side by side. Both now happen BEFORE it:
+// a coin that is close to a signal becomes a "buy candidate", and for each candidate live
+//   - reads it once and subscribes to its bonding curve (a second chain socket, separate from the one that
+//     prices held coins), and rebuilds a finished buy from EVERY curve update (pumpfun.js
+//     buildBuyFromCurveData), so the buy is never built from old data;
+//   - runs the shared holder check early, and again whenever its answer is WALLET_CHECK_SHARE_MS - 500ms old,
+//     so at the signal the check answers from an answer under 3 seconds old (the same freshness the shared
+//     check has always accepted).
+// At the signal every entry check still runs; the buy is sent with the ready-made instructions if they are
+// usable (takeReadyMadeBuy), and built the normal way if not. Paper is not affected.
+var BUY_WATCH_MAX = 6;                    // most coins watched at once (Helius Free plan: keep requests low)
+var BUY_WATCH_BUYERS_BEFORE = 3;          // a coin becomes a candidate this many buyers before live MIN BUYERS
+var BUY_WATCH_MAX_AGE_MS = 5000;          // the same age limit as entries (too_stale_at_entry)
+var READY_BUY_SLIPPAGE = 15;              // the same slippage the normal buy uses
+var READY_BUY_SIZE_TOLERANCE = 0.01;      // the ready-made size may differ from the size at the signal by 1%
+var buyCandidates = new Map();            // mint -> { startedAt, tok }
+var readyMadeBuys = new Map();            // mint -> { at, lamports, promise, ixs, error, buildMs }
+var liveTradedMints = new Set();          // coins live has held since the last deploy (their token account may exist)
+var buyWatcher = null;
+
+function getBuyWatcher() {
+  if (buyWatcher) return buyWatcher;
+  try {
+    buyWatcher = require('./onchainprice').createWatcher({
+      getRpcUrl: function() {
+        var env = (liveWalletModule && liveWalletModule.LIVE_RPC_ENV) || 'LIVE_RPC_URL';
+        return process.env[env];
+      },
+      getSolPrice: function() { return null; },          // candidates are not priced here, only built
+      getConnection: function() { return liveWalletModule.getConnection(); },
+      onPrice: function() {},
+      onCurveData: function(mint, buf) { prepareReadyMadeBuy(mint, buf); },
+      log: function(msg, type) { liveLog('BUY WATCH: ' + msg, type || 'info'); },
+      quiet: true,
+      keepOpen: true,
+    });
+  } catch (e) {
+    liveLog('BUY WATCH could not start: ' + e.message + ' -- live buys are built at the signal as before', 'warn');
+    buyWatcher = null;
+  }
+  return buyWatcher;
+}
+
+function syncBuyWatcher() {
+  var w = getBuyWatcher();
+  if (!w) return;
+  var list = [];
+  buyCandidates.forEach(function(c, mint) { list.push({ mint: mint, platform: 'pumpfun', entryPriceUsd: 1, tokenDecimals: 6 }); });
+  w.sync(list);
+}
+
+function countRealWallets(set, dev) {
+  var n = 0;
+  if (set) set.forEach(function(a) { if (!dev || a !== dev) n++; });
+  return n;
+}
+
+// Called for every buy the trade feed reports while live is on. Cheap: a few checks, nothing fetched.
+function considerBuyCandidate(tok) {
+  if (!tok || !tok.mint || tok.src !== 'PUMP') return;
+  if (buyCandidates.has(tok.mint) || buyCandidates.size >= BUY_WATCH_MAX) return;
+  if (!liveWalletKeypair || !liveWalletModule || S.liveWindingDown) return;
+  if (!tok.addedAt || (Date.now() - tok.addedAt) >= BUY_WATCH_MAX_AGE_MS) return;
+  if (!liveWantsEntry(tok) || liveTradedMints.has(tok.mint)) return;
+  if (tok.devSold || devIsBanned(tok.devWallet)) return;
+  if (countRealWallets(tok.uniqueSellers, tok.devWallet) > S.liveMaxSellers) return;
+  if (countRealWallets(tok.uniqueBuyers, tok.devWallet) < Math.max(1, S.liveMinBuyers - BUY_WATCH_BUYERS_BEFORE)) return;
+  if (rpcgate.entryPaused()) return;
+  buyCandidates.set(tok.mint, { startedAt: Date.now(), tok: tok });
+  walletCheckShared(tok.mint, tok.src);   // the holder check, early (its answer is shared with the signal)
+  try {
+    var web3 = require('@solana/web3.js');
+    liveWalletModule.getTokenProgramId(liveWalletModule.getConnection(), new web3.PublicKey(tok.mint)).catch(function() {});
+  } catch (e) { /* the normal buy reads it if needed */ }
+  syncBuyWatcher();
+}
+
+function prepareReadyMadeBuy(mint, buf) {
+  if (!buyCandidates.has(mint) || !liveWalletKeypair || !liveWalletModule) { readyMadeBuys.delete(mint); return; }
+  var sizeUsd = computeLivePositionSizeUsd();
+  if (!sizeUsd || !SOL_PRICE_USD || !isSolPriceFreshForBuy()) { readyMadeBuys.delete(mint); return; }
+  var lamports = Math.round((sizeUsd / SOL_PRICE_USD) * 1000000000);
+  var entry = { at: Date.now(), lamports: lamports, ixs: null, error: null, buildMs: null };
+  var t0 = Date.now();
+  entry.promise = Promise.resolve().then(function() {
+    var web3 = require('@solana/web3.js');
+    var mintPk = new web3.PublicKey(mint);
+    return liveWalletModule.getTokenProgramId(liveWalletModule.getConnection(), mintPk).then(function(tokenProgram) {
+      return require('./pumpfun').buildBuyFromCurveData(buf, mintPk, liveWalletKeypair.publicKey, lamports, READY_BUY_SLIPPAGE, tokenProgram);
+    });
+  }).then(function(ixs) {
+    entry.ixs = ixs; entry.buildMs = Date.now() - t0; return ixs;
+  }, function(e) {
+    entry.error = e; entry.buildMs = Date.now() - t0; return null;
+  });
+  readyMadeBuys.set(mint, entry);
+}
+
+// The ready-made buy for an automatic entry, or null with the reason it cannot be used.
+async function takeReadyMadeBuy(mintStr, lamportsNow) {
+  var entry = readyMadeBuys.get(mintStr);
+  readyMadeBuys.delete(mintStr);   // used once at most
+  if (!entry) return { buy: null, why: buyCandidates.has(mintStr) ? 'no chain data for this coin yet' : 'the coin was not watched before its signal' };
+  if (liveTradedMints.has(mintStr)) return { buy: null, why: 'live has held this coin before (its token account may exist)' };
+  var ageMs = Date.now() - entry.at;
+  // The subscription sends every change to the curve, so data that has not changed is still current while it is
+  // subscribed; without a confirmed subscription only data under a second old is used.
+  var subscribed = buyWatcher && buyWatcher.isSubscribed(mintStr);
+  if (!subscribed && ageMs > 1000) return { buy: null, why: 'its chain data is ' + ageMs + 'ms old and the coin is not subscribed yet' };
+  if (!(lamportsNow > 0) || Math.abs(entry.lamports - lamportsNow) / lamportsNow > READY_BUY_SIZE_TOLERANCE) return { buy: null, why: 'the trade size changed' };
+  var ixs = await entry.promise;
+  if (!ixs) return { buy: null, why: (entry.error && entry.error.message) || 'it could not be built' };
+  return { buy: { ixs: ixs, ageMs: ageMs, buildMs: entry.buildMs }, why: null };
+}
+
+// Every half second: drop candidates that can no longer be bought, keep their holder check under 3 seconds
+// old, keep the shared blockhash warm while anything is watched, and close the socket when live is off.
+function buyCandidateTick() {
+  try {
+    if (!S.liveTradingEnabled || S.liveWindingDown) {
+      if (buyCandidates.size) { buyCandidates.clear(); readyMadeBuys.clear(); }
+      if (buyWatcher) { try { buyWatcher.stop(); } catch (e) {} buyWatcher = null; }
+      return;
+    }
+    var changed = false;
+    buyCandidates.forEach(function(c, mint) {
+      var tok = c.tok;
+      var tooOld = !tok.addedAt || (Date.now() - tok.addedAt) >= BUY_WATCH_MAX_AGE_MS;
+      var gone = livePendingBuys.has(mint) || S.liveOpen.some(function(p) { return p.mint === mint; }) || !S.tokens.has(mint);
+      if (tooOld || gone || tok.devSold) {
+        buyCandidates.delete(mint);
+        if (!livePendingBuys.has(mint)) readyMadeBuys.delete(mint);
+        changed = true;
+        return;
+      }
+      var hc = walletCheckCache.get(mint);
+      if (!hc || (Date.now() - hc.at) >= WALLET_CHECK_SHARE_MS - 500) {
+        walletCheckCache.delete(mint);
+        walletCheckShared(mint, tok.src);
+      }
+    });
+    if (changed) syncBuyWatcher();
+    if (buyCandidates.size) require('./execution').prefetchSendParts(liveWalletModule.getConnection(), liveSendRoute());
+  } catch (e) {
+    reportCaughtError('buy watch', e);
+  }
+}
+setInterval(buyCandidateTick, 500);
+
 // The shared data feed has to stay up for as long as anything needs it:
 // paper running, automatic live trading on, or a real position still open
 // (its exits depend on the same price feed).
@@ -4606,6 +4780,10 @@ function liveTimingExtras(pos) {
     topHolderPct: nz(pos.topHolderPct),
     mayhemCoin: pos.mayhemCoin === true ? 'Yes' : (pos.mayhemCoin === false ? 'No' : ''),
     top10Pct: nz(pos.top10Pct),
+    buyReadyMade: pos.buyReadyMade || '',
+    readyMadeAgeMs: nz(pos.readyMadeAgeMs),
+    readyMadeWhyNot: pos.readyMadeWhyNot || '',
+    holderCheckAgeMs: nz(pos.holderCheckAgeMs),
     devWallet: pos.devWallet || '',
     devBanned: pos.devBanned || 'No',
     banDropPct: nz(pos.banDropPct),
@@ -5398,7 +5576,8 @@ app.get('/api/live/export', function(req, res) {
     'BuySenderHost','SellSenderHost',
     'BuyLandSource','SellLandSource','PostBuyReadMs','LandedToOpenMs','BuyBookkeepingMs','SellBalanceMs','SellBuildMs','SellPreSendMs','SellCappedParts','Sell6024Count','BuyListenerMs','BuyCheckerMs','SellListenerMs','SellCheckerMs','RealSolAtBuy','BuyTipSource','SellTipSource','BuyResends','SellResends','BuyComputeUnits','SellComputeUnits',
     'BuySendRoute','SellSendRoute','BuyAntiSandwich','SellAntiSandwich','BuyWaitedForCheckMs','TopHolderPct','MayhemCoin','SellPrebuilt','Top10Pct',
-    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','StartedBy'];
+    'DevWallet','DevBanned','BanDropPct','DevBanSkips','CrashDropPct','CrashSeller','CrashSellUsd','CrashSellerBought','CrashSellerIsDev','CrashSellerRepeat','DumperBought','StartedBy',
+    'BuyReadyMade','ReadyMadeAgeMs','ReadyMadeWhyNot','HolderCheckAgeMs'];
   var rows = [cols.join(',')];
   S.liveClosed.forEach(function(t) {
     rows.push([
@@ -5430,7 +5609,8 @@ app.get('/api/live/export', function(req, res) {
       csvSafe(t.devWallet || ''), csvSafe(t.devBanned || ''), t.banDropPct, t.devBanSkips, t.crashDropPct,
       csvSafe(t.crashSeller || ''), t.crashSellUsd, csvSafe(t.crashSellerBought || ''), csvSafe(t.crashSellerIsDev || ''),
       csvSafe(t.crashSellerRepeat || ''), csvSafe(t.dumperBought || ''),
-      csvSafe(t.startedBy || '')
+      csvSafe(t.startedBy || ''),
+      csvSafe(t.buyReadyMade || ''), t.readyMadeAgeMs, csvSafe(t.readyMadeWhyNot || ''), t.holderCheckAgeMs
     ].map(function(v) { return (v === null || v === undefined) ? '' : v; }).join(','));
   });
   // Things that still need attention are added as marked rows at the bottom (every other

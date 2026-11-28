@@ -144,6 +144,11 @@ function createWatcher(opts) {
   // exit check then uses.
   var onCurveData = opts.onCurveData || null;
   var log = opts.log || function() {};
+  // quiet: no per-coin "watching" line (the live buy watcher follows many short-lived coins).
+  // keepOpen: keep the socket open while nothing is watched, so the next coin's subscription does not have
+  // to wait for a new connection (the owner calls stop() when it is no longer needed).
+  var quiet = !!opts.quiet;
+  var keepOpen = !!opts.keepOpen;
 
   // One entry per watched coin. An entry has one or more subscriptions ("subs"): one for a coin still on
   // its bonding curve or LetsBonk pool, three once a pump.fun coin has moved to PumpSwap.
@@ -532,7 +537,7 @@ function createWatcher(opts) {
     };
     entry.subs = [makeSub(entry, 'curve', adapter.address)];
     entries.set(pos.mint, entry);
-    log('ONCHAIN: watching ' + pos.mint.slice(0, 8) + '... [' + pos.platform + '] pool ' + entry.address.toBase58(), 'info');
+    if (!quiet) log('ONCHAIN: watching ' + pos.mint.slice(0, 8) + '... [' + pos.platform + '] pool ' + entry.address.toBase58(), 'info');
     // Immediate first reading, in parallel with the subscription.
     readEntryNow(entry);
     if (wsReady) subscribeEntry(entry);
@@ -577,7 +582,7 @@ function createWatcher(opts) {
     want.forEach(function(p, mint) {
       if (!entries.has(mint) && !failed.has(mint)) addEntry(p);
     });
-    if (entries.size > 0) {
+    if (entries.size > 0 || keepOpen) {
       if (!ws && !reconnectTimer) connect();
     } else if (ws || reconnectTimer) {
       closeSocket();
@@ -599,9 +604,17 @@ function createWatcher(opts) {
     closeSocket();
   }
 
+  // True once the chain has accepted every subscription for this coin, so any change to it will be sent.
+  function isSubscribed(mint) {
+    var e = entries.get(mint);
+    if (!(e && !e.disabled && wsReady)) return false;
+    return e.subs.every(function(sub) { return sub.subId !== null && sub.subId !== undefined; });
+  }
+
   return {
     sync: sync,
     isLive: isLive,
+    isSubscribed: isSubscribed,
     stop: stop,
     stats: function() {
       return { watching: entries.size, connected: wsReady, notifications: stats.notifications, prices: stats.prices, reconnects: stats.reconnects, disabled: stats.disabled, graduated: stats.graduated };
